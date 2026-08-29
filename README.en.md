@@ -4,6 +4,9 @@
 
 [中文说明](./README.md) · MIT · Zero runtime dependencies
 
+- Repository: https://github.com/xiaoxiaohaigui/dsh-tui-find
+- npm: https://www.npmjs.com/package/dsh-tui-find
+
 ## What it is
 
 dsh-TUI (`@deepseek-harness-tui/dsh-tui`) ships a resume browser, in-session `/` search, and Ctrl+R input history — but **no cross-session content search**. Once a conversation scrolls out of the current window it becomes an unsearchable archive.
@@ -12,11 +15,23 @@ dsh-TUI (`@deepseek-harness-tui/dsh-tui`) ships a resume browser, in-session `/`
 
 ## Install
 
+> **Development notice**: the project is in its 0.x stage; interfaces and config keys may change between versions. See upgrade/uninstall below.
+
 ```bash
 dsh plugin add dsh-tui-find
 ```
 
-Or mount manually — insert into `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`:
+Full form (explicit profile, matching the host ecosystem convention):
+
+```bash
+dsh plugin --profile dsh-tui add dsh-tui-find
+```
+
+Or install from source: clone this repository, `npm install && npm run build`, then inside the profile directory (`$DSH_HOME/profiles/dsh-tui/`) run `pnpm add <local path or git URL>`, and make sure the patch line below exists.
+
+### Manual mounting
+
+The package ships its own `cordis.patch.yml`; `dsh plugin add` mounts the plugin into the profile's bundle list automatically. Manual way — insert into `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`:
 
 ```yaml
 - insert:
@@ -24,7 +39,29 @@ Or mount manually — insert into `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`:
       name: 'dsh-tui-find'
 ```
 
-The package ships its own `cordis.patch.yml`; `dsh plugin add` performs the mount automatically.
+## Upgrade
+
+Re-run the install command pinned to `@latest` (the host ecosystem's upgrade convention; `dsh plugin add` is idempotent):
+
+```bash
+dsh plugin --profile dsh-tui add dsh-tui-find@latest
+```
+
+If the new version does not appear, refresh the npm cache first: `npm cache clean --force`. Verify via `/plugins` (or `/plugins check`) inside the TUI.
+
+## Uninstall
+
+Two steps, both reversible, neither touches the host core:
+
+1. **Remove the mount**: delete the `- id: dsh-tui-find` insert block from `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`; if the profile's `dsh.profile.bundles` list also references this package (appended by the CLI when installed via `dsh plugin add`), remove that entry too.
+2. **Remove the package**:
+
+```bash
+cd "$DSH_HOME/profiles/dsh-tui"   # bash; PowerShell: Set-Location
+pnpm remove dsh-tui-find
+```
+
+Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.dsh-tui`, the plugin was strictly read-only with no on-disk index, and removing it leaves your sessions untouched.
 
 ## Usage
 

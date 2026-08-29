@@ -21,11 +21,30 @@
     "README.en.md",
     "LICENSE"
   ],
+  "keywords": [
+    "dsh",
+    "dsh-tui",
+    "deepseek",
+    "search",
+    "cross-session",
+    "full-text-search",
+    "cordis",
+    "plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaoxiaohaigui/dsh-tui-find.git"
+  },
+  "homepage": "https://github.com/xiaoxiaohaigui/dsh-tui-find#readme",
+  "bugs": {
+    "url": "https://github.com/xiaoxiaohaigui/dsh-tui-find/issues"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "pretest": "npm run build",
     "test": "vitest run",
-    "fixtures": "node scripts/make-fixtures.mjs"
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "prepublishOnly": "npm run build && npm test"
   },
   "engines": {
     "node": "^22.19 || >=24"

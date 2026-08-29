@@ -4,6 +4,9 @@
 
 [English](./README.en.md) · MIT · 零第三方运行时依赖
 
+- 仓库：https://github.com/xiaoxiaohaigui/dsh-tui-find
+- npm：https://www.npmjs.com/package/dsh-tui-find
+
 ## 这是什么
 
 dsh-TUI（`@deepseek-harness-tui/dsh-tui`）有 resume 浏览器、会话内 `/` 搜索、Ctrl+R 输入历史，但**没有跨会话内容检索**——一段对话滚出当前窗口后就成了不可搜索的档案。
@@ -12,11 +15,23 @@ dsh-TUI（`@deepseek-harness-tui/dsh-tui`）有 resume 浏览器、会话内 `/`
 
 ## 安装
 
+> **开发中提示**：项目处于 0.x 阶段，接口与配置项可能随版本调整。升级与卸载见下文。
+
 ```bash
 dsh plugin add dsh-tui-find
 ```
 
-或手动挂载：把下面这行插入 `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`：
+完整形式（显式指定 profile，与宿主生态惯例一致）：
+
+```bash
+dsh plugin --profile dsh-tui add dsh-tui-find
+```
+
+或从源码安装：clone 本仓库后 `npm install && npm run build`，再在 profile 目录（`$DSH_HOME/profiles/dsh-tui/`）内 `pnpm add <本地路径或 git URL>`，并确认下述 patch 行存在。
+
+### 手动挂载
+
+包内自带 `cordis.patch.yml`，`dsh plugin add` 会自动把插件挂进 profile 的 bundle 列表。手动方式：把下面这行插入 `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`：
 
 ```yaml
 - insert:
@@ -24,7 +39,29 @@ dsh plugin add dsh-tui-find
       name: 'dsh-tui-find'
 ```
 
-包内自带 `cordis.patch.yml`，`dsh plugin add` 会自动完成挂载。
+## 升级
+
+复用安装命令、显式指定 `@latest`（宿主生态的升级惯例，`dsh plugin add` 是幂等的）：
+
+```bash
+dsh plugin --profile dsh-tui add dsh-tui-find@latest
+```
+
+若 profile 内没有出现新版本，先刷新 npm 缓存再重试：`npm cache clean --force`。验证版本：TUI 内执行 `/plugins`（或 `/plugins check`）查看已挂载插件及其版本。
+
+## 卸载
+
+两步，均可逆、不动宿主核心：
+
+1. **摘掉挂载行**：从 `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml` 删除 `- id: dsh-tui-find` 的 insert 块；若 profile 的 `dsh.profile.bundles` 列表里也收录了本包（`dsh plugin add` 方式安装时由 CLI 追加），一并删除该条目。
+2. **移除包本体**：在 profile 目录内执行：
+
+```bash
+cd "$DSH_HOME/profiles/dsh-tui"   # bash；PowerShell 用 Set-Location
+pnpm remove dsh-tui-find
+```
+
+卸载只影响本插件：会话数据在 `~/.dsh` / `~/.dsh-tui` 下，插件全程只读、无落盘索引，卸载后搜索历史自然消失，会话本身不受任何影响。
 
 ## 使用
 
