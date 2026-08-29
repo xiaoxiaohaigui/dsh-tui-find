@@ -1,6 +1,6 @@
 {
   "name": "dsh-tui-find",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-session full-text search for dsh-TUI — /find over all local dsh session logs (zstd frame chains and plain JSONL), read-only.",
   "type": "module",
   "main": "dist/main.js",
@@ -48,6 +48,11 @@
   },
   "engines": {
     "node": "^22.19 || >=24"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "license": "MIT",
   "peerDependencies": {
