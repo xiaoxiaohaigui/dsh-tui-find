@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+*.tgz
 test/fixtures/generated/
 
 # Agent 协作文档（工作记录与交接资料，不随仓库发布）
