@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+test/fixtures/generated/
+
+# Agent 协作文档（工作记录与交接资料，不随仓库发布）
+AGENTS.md
+HANDOFF.md
+REVIEW.md
+docs/
