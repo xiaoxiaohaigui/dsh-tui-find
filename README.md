@@ -17,34 +17,35 @@ dsh-TUI（`@deepseek-harness-tui/dsh-tui`）有 resume 浏览器、会话内 `/`
 
 > **开发中提示**：项目处于 0.x 阶段，接口与配置项可能随版本调整。升级与卸载见下文。
 
-```bash
-dsh plugin add dsh-tui-find
-```
-
-完整形式（显式指定 profile，与宿主生态惯例一致）：
+**方式一：从 npm（已发布）**
 
 ```bash
-dsh plugin --profile dsh-tui add dsh-tui-find
+dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 ```
 
-或从源码安装：clone 本仓库后 `npm install && npm run build`，再在 profile 目录（`$DSH_HOME/profiles/dsh-tui/`）内 `pnpm add <本地路径或 git URL>`，并确认下述 patch 行存在。
+`dsh plugin ... add` 会把参数转发给 profile 目录内的 pnpm（`--profile` 必填；`-w` 允许直接操作 profile 根），并读取包内 `cordis.patch.yml` 自动挂载为组合层——无需手动改配置。
 
-### 手动挂载
+**方式二：本地 tarball（开发/自用；不要直接安装源码目录）**
 
-包内自带 `cordis.patch.yml`，`dsh plugin add` 会自动把插件挂进 profile 的 bundle 列表。手动方式：把下面这行插入 `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml`：
-
-```yaml
-- insert:
-    - id: dsh-tui-find
-      name: 'dsh-tui-find'
+```bash
+cd /path/to/dsh-tui-find
+npm run build
+npm pack
+dsh plugin --profile dsh-tui add -w ./dsh-tui-find-<版本号>.tgz
 ```
+
+`--profile` 名请换成你实际的 profile（`$DSH_HOME/profiles/` 下的目录名；未设置 `DSH_HOME` 时默认根为 `~/.dsh`）。
+
+### 挂载机制
+
+`dsh plugin ... add` 完成后 CLI 会把本包收录进 profile 的 `package.json → dsh.profile.bundles` 列表；本包自带的 `cordis.patch.yml` 作为组合层随 bundle 顺序自动应用，启动顺序为：`dsh-base → 其他 bundle → dsh-tui-find patch → 用户 profile patch`。正常情况下无需手动编辑任何配置。
 
 ## 升级
 
-复用安装命令、显式指定 `@latest`（宿主生态的升级惯例，`dsh plugin add` 是幂等的）：
+复用安装命令、显式指定 `@latest`（`dsh plugin ... add` 是幂等的）：
 
 ```bash
-dsh plugin --profile dsh-tui add dsh-tui-find@latest
+dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 ```
 
 若 profile 内没有出现新版本，先刷新 npm 缓存再重试：`npm cache clean --force`。验证版本：TUI 内执行 `/plugins`（或 `/plugins check`）查看已挂载插件及其版本。
@@ -53,13 +54,13 @@ dsh plugin --profile dsh-tui add dsh-tui-find@latest
 
 两步，均可逆、不动宿主核心：
 
-1. **摘掉挂载行**：从 `$DSH_HOME/profiles/dsh-tui/cordis.patch.yml` 删除 `- id: dsh-tui-find` 的 insert 块；若 profile 的 `dsh.profile.bundles` 列表里也收录了本包（`dsh plugin add` 方式安装时由 CLI 追加），一并删除该条目。
-2. **移除包本体**：在 profile 目录内执行：
+1. **移除包本体**（同时会把 bundle 从解析树摘掉）：
 
 ```bash
-cd "$DSH_HOME/profiles/dsh-tui"   # bash；PowerShell 用 Set-Location
-pnpm remove dsh-tui-find
+dsh plugin --profile dsh-tui remove -w dsh-tui-find
 ```
+
+2. **确认 bundle 列表已清理**：若 `$DSH_HOME/profiles/dsh-tui/package.json` 的 `dsh.profile.bundles` 数组里仍残留 `dsh-tui-find` 条目（CLI 版本行为差异），手动删除该条目即可。
 
 卸载只影响本插件：会话数据在 `~/.dsh` / `~/.dsh-tui` 下，插件全程只读、无落盘索引，卸载后搜索历史自然消失，会话本身不受任何影响。
 
