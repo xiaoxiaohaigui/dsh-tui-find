@@ -96,39 +96,64 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     ctx.effect(() => dispose)
   }
 
-  // /find — declared as contribution `dsh-tui-find.find` in the manifest;
-  // registerCommand verifies the binding against the admitted identity.
+  // /find — declared as contribution `dsh-tui-find.find` in the manifest.
+  //
+  // Preferred path: the mediated registration (C-041 attribution). It
+  // requires a verified admission identity — which the current host runtime
+  // does not issue (the cordis-plugin-loader never calls admit), so in
+  // practice this throws COMPONENT_NOT_ADMITTED. Fallback: the documented
+  // C-070 boundary — a direct registration through the commands service,
+  // the same surface the host's own commands use. When the commands service
+  // is absent entirely (bare cordis.yml), the registration degrades to a
+  // logged warning; the scene and shortcut keep working.
+  const commandDefinition: CommandDefinition = {
+    name: COMMAND_NAME,
+    description: 'Search all local dsh sessions (cross-session full-text)',
+    input: { hint: '<keywords>' },
+    // Opening the scene is UI state, not conversation content — keep
+    // the raw input out of the session log.
+    recordInput: false,
+    handler: invocation => {
+      pendingQuery = invocation.rawInput.trim()
+      const scenes = ctx.get('tuiScenes', false)
+      if (scenes === undefined) {
+        return { kind: 'error', text: 'dsh-tui-find: TUI scenes seam unavailable' }
+      }
+      // An already-open scene does not remount on re-open, so a new
+      // `/find <words>` while the scene is up would silently drop the
+      // query — cycle the scene to force a remount that consumes it.
+      if (scenes.active?.id === SCENE_ID) scenes.close()
+      const opened = scenes.open(SCENE_ID)
+      return opened
+        ? { kind: 'success' }
+        : { kind: 'error', text: 'dsh-tui-find: failed to open the find scene' }
+    },
+  }
+  let commandRegistered = false
   if (host !== undefined) {
     try {
-      const definition: CommandDefinition = {
-        name: COMMAND_NAME,
-        description: 'Search all local dsh sessions (cross-session full-text)',
-        input: { hint: '<keywords>' },
-        // Opening the scene is UI state, not conversation content — keep
-        // the raw input out of the session log.
-        recordInput: false,
-        handler: invocation => {
-          pendingQuery = invocation.rawInput.trim()
-          const scenes = ctx.get('tuiScenes', false)
-          if (scenes === undefined) {
-            return { kind: 'error', text: 'dsh-tui-find: TUI scenes seam unavailable' }
-          }
-          // An already-open scene does not remount on re-open, so a new
-          // `/find <words>` while the scene is up would silently drop the
-          // query — cycle the scene to force a remount that consumes it.
-          if (scenes.active?.id === SCENE_ID) scenes.close()
-          const opened = scenes.open(SCENE_ID)
-          return opened
-            ? { kind: 'success' }
-            : { kind: 'error', text: 'dsh-tui-find: failed to open the find scene' }
-        },
-      }
-      const dispose = host.registerCommand(ctx, COMMAND_CONTRIBUTION_ID, definition)
+      const dispose = host.registerCommand(ctx, COMMAND_CONTRIBUTION_ID, commandDefinition)
       ctx.effect(() => dispose)
+      commandRegistered = true
     } catch (error) {
       ctx.logger.warn(
-        `dsh-tui-find: /find registration failed (${error instanceof Error ? error.message : String(error)})`,
+        `dsh-tui-find: mediated /find registration unavailable (${error instanceof Error ? error.message : String(error)}); falling back to direct registration`,
       )
+    }
+  }
+  if (!commandRegistered) {
+    const commandsRuntime = ctx.get('commands', false)
+    if (commandsRuntime !== undefined) {
+      try {
+        const dispose = commandsRuntime.register(commandDefinition)
+        ctx.effect(() => dispose)
+      } catch (error) {
+        ctx.logger.warn(
+          `dsh-tui-find: /find registration failed (${error instanceof Error ? error.message : String(error)})`,
+        )
+      }
+    } else {
+      ctx.logger.warn('dsh-tui-find: /find unavailable — the commands service is not mounted')
     }
   }
 
