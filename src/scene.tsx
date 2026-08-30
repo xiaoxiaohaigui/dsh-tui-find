@@ -31,7 +31,7 @@ import type { ResolvedConfig } from './config.js'
 import { getLang, t } from './i18n.js'
 import { SessionScanner, type ScanProgress, type ScannedSession } from './core/scan.js'
 import { searchSessions, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
-import { displayWidth, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
+import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
 
 /** The host ui kit's component/hook surface, derived from the scene props. */
@@ -183,7 +183,9 @@ function SearchCard(props: {
   )
 }
 
-/** Highlight `ranges` inside `text` with the theme accent. */
+/** Highlight `ranges` inside `text` with the theme accent. Plain spans keep
+ *  the row's selection treatment (suggestion + bold) so a card whose title
+ *  carries the highlight reads as selected exactly like every other card. */
 function HighlightedText(props: {
   React: TuiSceneProps['React']
   ui: Ui
@@ -191,16 +193,23 @@ function HighlightedText(props: {
   ranges: readonly (readonly [number, number])[]
   color: TextColor
   width: number
+  selected?: boolean
 }): React.ReactElement {
-  const { React: R, ui, text, ranges, color, width } = props
+  const { React: R, ui, text, ranges, color, width, selected } = props
   const { Text } = ui
+  const plainColor: TextColor = selected === true ? 'suggestion' : 'text'
   const parts: React.ReactElement[] = []
   let cursor = 0
   const clipped = truncateWidth(text, width)
   ranges.forEach(([start, end], index) => {
     if (start >= clipped.length) return
     const safeEnd = Math.min(end, clipped.length)
-    if (start > cursor) parts.push(<Text key={`p${index}`} color="text">{clipped.slice(cursor, start)}</Text>)
+    if (start > cursor)
+      parts.push(
+        <Text key={`p${index}`} color={plainColor} bold={selected === true}>
+          {clipped.slice(cursor, start)}
+        </Text>,
+      )
     parts.push(
       <Text key={`h${index}`} color={color} bold>
         {clipped.slice(start, safeEnd)}
@@ -208,7 +217,12 @@ function HighlightedText(props: {
     )
     cursor = safeEnd
   })
-  if (cursor < clipped.length) parts.push(<Text key="tail" color="text">{clipped.slice(cursor)}</Text>)
+  if (cursor < clipped.length)
+    parts.push(
+      <Text key="tail" color={plainColor} bold={selected === true}>
+        {clipped.slice(cursor)}
+      </Text>,
+    )
   return <>{parts}</>
 }
 
@@ -503,9 +517,10 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
   const listHeight = Math.max(2, rows - CHROME_LINES)
   const titleWidth = Math.max(16, Math.min(48, columns - 40))
   // Hit text budget: the row spends marker (4) + `#<seq> <role>: ` (up to
-  // ~16) before the text — an overlong text must be CUT to this budget, not
-  // wrapped: a wrapped row inflates the list's physical height beyond the
-  // window and gets rows crushed out of the layout (the on-device bug).
+  // ~16) before the text — an overlong text is flattened and windowed down
+  // to this budget (around the first highlight), never wrapped: a wrapped
+  // row inflates the list's physical height beyond the window and gets rows
+  // crushed out of the layout (the on-device bug).
   const hitWidth = Math.max(20, columns - 22)
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
 
@@ -707,6 +722,15 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
   )
 }
 
+/** Physical terminal lines a flat row spends: a session card is the title +
+ *  metadata pair, a hit row is exactly one (windowed, non-wrapping) line.
+ *  The scroll window is fitted in these units — a row-count window lets the
+ *  selection walk off the bottom of a card-heavy list without the page ever
+ *  following (the on-device bug). */
+function rowLineCount(row: FlatRow): number {
+  return row.kind === 'session' ? 2 : 1
+}
+
 function ListView(props: {
   React: TuiSceneProps['React']
   ui: TuiSceneProps['ui']
@@ -720,21 +744,24 @@ function ListView(props: {
 }): React.ReactElement {
   const { React: R, ui, rows, selectable, selected, height, titleWidth, hitWidth, lang } = props
   const { Box, Text } = ui
-  const { useState } = R
+  const { useState, useMemo } = R
 
-  // Scroll window over the flat rows, keeping the selected row visible.
+  // Scroll window over the flat rows, fitted in physical lines so the
+  // selected row is always on screen (fitScrollWindow for the contract).
   const selectedIndex = selectable[selected]
   const [scroll, setScroll] = useState(0)
-  if (selectedIndex !== undefined) {
-    if (selectedIndex < scroll) setScroll(selectedIndex)
-    else if (selectedIndex >= scroll + height) setScroll(selectedIndex - height + 1)
-  }
-  const visible = rows.slice(scroll, scroll + height)
+  const weights = useMemo(() => rows.map(rowLineCount), [rows])
+  const view = useMemo(
+    () => fitScrollWindow(weights, selectedIndex ?? -1, height, scroll),
+    [weights, selectedIndex, height, scroll],
+  )
+  if (view.start !== scroll) setScroll(view.start)
+  const visible = rows.slice(view.start, view.end)
 
   return (
     <Box flexDirection="column">
       {visible.map((row, offset) => {
-        const rowIndex = scroll + offset
+        const rowIndex = view.start + offset
         const isSelected = selectable[selected] === rowIndex
         if (row.kind === 'session') {
           const session = row.session
@@ -742,12 +769,17 @@ function ListView(props: {
           // this the conversation I mean", the metadata line answers "which
           // of the ones that look alike is it". The card's title hit rides
           // INSIDE the title line — highlighted there, never as a separate
-          // row repeating the title.
+          // row repeating the title — and is windowed around the match so a
+          // long title cannot cut the keyword off.
+          const titleLine =
+            row.titleHit === undefined
+              ? undefined
+              : hitLine(displayTitle(session), row.titleHit.ranges, titleWidth)
           return (
             <Box key={`s${rowIndex}`} flexDirection="column" flexShrink={0}>
               <Box flexShrink={0}>
                 <Text color={isSelected ? 'suggestion' : 'subtle'}>{isSelected ? '❯ ' : '  '}</Text>
-                {row.titleHit === undefined ? (
+                {titleLine === undefined ? (
                   <Text color={isSelected ? 'suggestion' : 'text'} bold={isSelected}>
                     {truncateWidth(displayTitle(session), titleWidth)}
                   </Text>
@@ -755,10 +787,11 @@ function ListView(props: {
                   <HighlightedText
                     React={R}
                     ui={ui}
-                    text={displayTitle(session)}
-                    ranges={row.titleHit.ranges}
+                    text={titleLine.text}
+                    ranges={titleLine.ranges}
                     color="warning"
                     width={titleWidth}
+                    selected={isSelected}
                   />
                 )}
               </Box>
@@ -792,15 +825,31 @@ function ListView(props: {
         const roleColor: TextColor | undefined =
           hit.role === undefined ? undefined : ROLE_MARK[hit.role].color
         const marker = isSelected ? '  ❯ ' : '    '
-        const more = row.more > 0 && !isSelected ? <Text dimColor>{t('more-hits', { count: row.more })}</Text> : null
+        // The `(+N)` tail is reserved from the text budget even while the
+        // row is selected (it is hidden then): a budget that depends on the
+        // selection would reflow the row's whole content on every focus move.
+        const more = row.more > 0 ? t('more-hits', { count: row.more }) : undefined
+        const moreReserve = more === undefined ? 0 : displayWidth(more) + 1
+        const budget = Math.max(8, hitWidth - moreReserve)
+        // One line, guaranteed: newlines flatten, and the visible slice is
+        // cut around the first highlight so the keyword cannot be truncated
+        // out of view on a long message.
+        const line = hitLine(hit.text, hit.ranges, budget)
         return (
           <Box key={`m${rowIndex}`} flexDirection="row" flexShrink={0}>
             <Text color={isSelected ? 'suggestion' : 'subtle'}>{marker}</Text>
             <Text dimColor={!isSelected} {...(isSelected && roleColor !== undefined ? { color: roleColor } : {})}>
               #{hit.seq ?? '·'} {roleLabel}:{' '}
             </Text>
-            <HighlightedText React={R} ui={ui} text={hit.text} ranges={hit.ranges} color="warning" width={hitWidth} />
-            {more}
+            <HighlightedText
+              React={R}
+              ui={ui}
+              text={line.text}
+              ranges={line.ranges}
+              color="warning"
+              width={budget}
+            />
+            {more !== undefined && !isSelected ? <Text dimColor>{` ${more}`}</Text> : null}
           </Box>
         )
       })}

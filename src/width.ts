@@ -125,6 +125,217 @@ export function wrapWidth(text: string, width: number): string[] {
 }
 
 /**
+ * Scroll-window arithmetic for the flattened list, fitted in PHYSICAL
+ * terminal lines. Rows spend different line counts (a session card is its
+ * title + metadata pair; a hit row is one line), so a window sliced by row
+ * COUNT renders up to twice the viewport in a card-heavy list and the
+ * selection walks off the bottom without the window ever moving — the
+ * on-device "arrow keys don't scroll the page" bug. `previous` is the
+ * caller's current window start: moving up snaps the selection to the top
+ * of the window, moving down keeps it inside by advancing the start just
+ * far enough for the selected row's own lines to fit.
+ *
+ * @param weights - Physical line count of each row.
+ * @param selected - Flat index of the selected row (clamped here).
+ * @param height - Viewport budget in terminal lines.
+ * @param previous - Previous window start (hysteresis; avoids jumping).
+ * @returns The visible flat-index range `[start, end)`; `end` stops at the
+ *   physical budget so the list never overflows the viewport.
+ */
+export function fitScrollWindow(
+  weights: readonly number[],
+  selected: number,
+  height: number,
+  previous: number,
+): { start: number; end: number } {
+  const count = weights.length
+  if (count === 0 || height <= 0) return { start: 0, end: 0 }
+  const prefix = new Array<number>(count + 1)
+  prefix[0] = 0
+  for (let index = 0; index < count; index++) prefix[index + 1] = prefix[index]! + weights[index]!
+  const span = (from: number, to: number): number => prefix[to]! - prefix[from]!
+
+  const sel = Math.min(Math.max(0, selected), count - 1)
+  let start = Math.min(Math.max(0, previous), sel)
+  while (start < sel && span(start, sel + 1) > height) start++
+
+  let end = start
+  while (end < count && span(start, end + 1) <= height) end++
+  // Degenerate guard: a single row taller than the window still renders.
+  if (end <= sel) end = sel + 1
+  return { start, end }
+}
+
+/** A one-line hit preview: the flattened text plus highlight ranges
+ *  expressed over that text's own UTF-16 coordinates. */
+export interface HitLine {
+  readonly text: string
+  readonly ranges: readonly (readonly [number, number])[]
+}
+
+interface FlatCps {
+  readonly chars: string[]
+  readonly widths: readonly number[]
+  /** Flat code-point index → origin code-point index in the source text. */
+  readonly origins: readonly number[]
+}
+
+/** Whitespace as a single flat column: any run of blanks (spaces, tabs,
+ *  and the newlines a message body carries) collapses to one space — a hit
+ *  row must be exactly one terminal line, and multi-line markdown bodies
+ *  would otherwise paint whole paragraphs into the list. */
+function flattenCodePoints(text: string): FlatCps {
+  const chars: string[] = []
+  const widths: number[] = []
+  const origins: number[] = []
+  const codePoints = [...text]
+  let inBlank = false
+  for (let index = 0; index < codePoints.length; index++) {
+    const char = codePoints[index]!
+    if (char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f' || char === '\v') {
+      if (!inBlank) {
+        chars.push(' ')
+        widths.push(1)
+        origins.push(index)
+        inBlank = true
+      }
+      continue
+    }
+    inBlank = false
+    chars.push(char)
+    widths.push(charWidth(char))
+    origins.push(index)
+  }
+  return { chars, widths, origins }
+}
+
+/**
+ * One search-hit row's text, ready to paint: the message is flattened to a
+ * single line (whitespace runs — newlines included — become one space), and
+ * when the line still exceeds `maxWidth` the window is cut AROUND THE FIRST
+ * HIGHLIGHT with `…` marking each cut side, so the keyword the user searched
+ * for is always on screen even when it sits deep inside a long message (a
+ * head-cut alone hides it whenever the match is past the budget).
+ *
+ * The returned ranges are rebased into the returned string's own UTF-16
+ * coordinates, ready for a highlight renderer.
+ */
+export function hitLine(
+  text: string,
+  ranges: readonly (readonly [number, number])[],
+  maxWidth: number,
+): HitLine {
+  if (maxWidth <= 0) return { text: '', ranges: [] }
+  const flat = flattenCodePoints(text)
+  const count = flat.chars.length
+  if (count === 0) return { text: '', ranges: [] }
+
+  // Original code-point index → flat code-point index (`origins` is sorted).
+  const flatIndexOfOrigin = (origin: number): number => {
+    let low = 0
+    let high = count
+    while (low < high) {
+      const mid = (low + high) >> 1
+      if (flat.origins[mid]! < origin) low = mid + 1
+      else high = mid
+    }
+    return low
+  }
+  // Original UTF-16 index → original code-point index (ranges produced by
+  // matchRanges are code-point aligned, so exact boundary hits exist).
+  const cpStarts: number[] = []
+  let utf16 = 0
+  for (const char of text) {
+    cpStarts.push(utf16)
+    utf16 += char.length
+  }
+  const cpOfUtf16 = (at: number): number => {
+    let low = 0
+    let high = cpStarts.length
+    while (low < high) {
+      const mid = (low + high) >> 1
+      if (cpStarts[mid]! < at) low = mid + 1
+      else high = mid
+    }
+    return low
+  }
+  const flatRanges = ranges
+    .map(([start, end]) => [flatIndexOfOrigin(cpOfUtf16(start)), flatIndexOfOrigin(cpOfUtf16(end))] as const)
+    .filter(([start, end]) => end > start)
+
+  // Flat code-point index → UTF-16 offset inside the flat string.
+  const flatUtf16: number[] = []
+  let flatOffset = 0
+  for (let index = 0; index < count; index++) {
+    flatUtf16.push(flatOffset)
+    flatOffset += flat.chars[index]!.length
+  }
+  const toUtf16Range = ([start, end]: readonly [number, number]): [number, number] => [
+    flatUtf16[start]!,
+    flatUtf16[end] ?? flatOffset,
+  ]
+
+  const widths = flat.widths
+  const prefix = new Array<number>(count + 1)
+  prefix[0] = 0
+  for (let index = 0; index < count; index++) prefix[index + 1] = prefix[index]! + widths[index]!
+
+  if (prefix[count]! <= maxWidth) {
+    return { text: flat.chars.join(''), ranges: flatRanges.map(toUtf16Range) }
+  }
+
+  // Window around the first highlight. Reserve one column per cut side up
+  // front (a window of this size always fits `maxWidth`), center the match
+  // with a lean toward the leading context, and walk outward by width.
+  const first = flatRanges[0] ?? [0, Math.min(1, count)]
+  const [matchStart, matchEnd] = first
+  const matchWidth = prefix[matchEnd]! - prefix[matchStart]!
+  const budget = Math.max(1, maxWidth - 2)
+  let startCp = matchStart
+  let used = 0
+  const leftGoal = matchStart > 0 ? Math.floor(Math.max(0, budget - matchWidth) * 0.6) : 0
+  while (startCp > 0 && used + widths[startCp - 1]! <= leftGoal) {
+    startCp -= 1
+    used += widths[startCp]!
+  }
+  let endCp = matchEnd
+  while (endCp < count && used + (prefix[endCp + 1]! - prefix[endCp]!) <= budget - matchWidth) {
+    used += widths[endCp]!
+    endCp += 1
+  }
+  // The match itself must never be the thing that does not fit.
+  if (used + matchWidth > budget) {
+    startCp = matchStart
+    endCp = matchStart
+    used = 0
+    while (endCp < matchEnd && used + widths[endCp]! <= budget) {
+      used += widths[endCp]!
+      endCp += 1
+    }
+  }
+
+  const lead = startCp > 0 ? '…' : ''
+  const tail = endCp < count ? '…' : ''
+  const slice = flat.chars.slice(startCp, endCp).join('')
+  const base = lead.length
+  const windowed = flatRanges
+    .map(([start, end]) =>
+      [
+        Math.max(start, startCp),
+        Math.min(end, endCp),
+      ] as const,
+    )
+    .filter(([start, end]) => end > start)
+    .map(([start, end]) =>
+      [
+        base + flatUtf16[start]! - flatUtf16[startCp]!,
+        base + (flatUtf16[end] ?? flatOffset) - flatUtf16[startCp]!,
+      ] as [number, number],
+    )
+  return { text: `${lead}${slice}${tail}`, ranges: windowed }
+}
+
+/**
  * Lay out one row with its two ends pushed apart, never wider than
  * `columns`: the left segment yields first, the right is truncated, and at
  * least one column of separation always remains.
