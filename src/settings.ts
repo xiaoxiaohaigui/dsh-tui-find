@@ -81,6 +81,15 @@ function section(): TuiSettingsSection {
         kind: 'text',
         placeholder: 'C:\\Users\\me\\.dsh\\sessions',
       },
+      {
+        path: ['maxMessageChars'],
+        label: 'Per-message index budget',
+        descriptions: zh('单条消息索引字符上限'),
+        hint: 'Per-message character budget for the index (200–65536, default 4000)',
+        hintDescriptions: zh('索引时单条消息保留的字符数（200–65536，默认 4000）'),
+        kind: 'number',
+        placeholder: '4000',
+      },
     ],
   }
 }
@@ -120,7 +129,14 @@ export function registerSettingsSection(ctx: Context, resolved: ResolvedConfig):
           indexTools: z.boolean().default(resolved.indexTools),
           indexThinking: z.boolean().default(resolved.indexThinking),
           sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),
-          maxMessageChars: z.number().default(resolved.maxMessageChars),
+          // Same bounds the row-config schema enforces (config.ts) — the
+          // namespace must not accept values the row config would reject.
+          maxMessageChars: z
+            .number()
+            .step(100)
+            .min(200)
+            .max(65536)
+            .default(resolved.maxMessageChars),
         })
         settings.register(mod.settingsNamespace(SETTINGS_NS), schema)
       } catch {

@@ -95,15 +95,99 @@ export function sessionCwdMatches(
 }
 
 /**
- * Every occurrence of `needle` in `haystack`, returning ranges over the
- * ORIGINAL string.
+ * A case-folded text plus the mapping needed to translate a match found in
+ * the folded string back onto exact original ranges.
  *
  * Case-insensitive matching cannot simply fold the haystack once and index
  * into it: a fold that changes length (e.g. U+0130 `İ` folds to two code
- * units) shifts every later offset. Instead the haystack is folded code
- * point by code point while recording, for each folded unit, the original
- * span it came from — matches found in the folded string are mapped back
- * onto exact original ranges.
+ * units) shifts every later offset. The fold is therefore built per code
+ * point with two prefix tables — `cumUnits[c]` counts the folded UTF-16
+ * units produced by the first `c` code points, `cpStart[c]` is the code
+ * point's UTF-16 start in the original text — so a folded index maps back
+ * onto its original span with a binary search. This costs ~8 bytes per code
+ * point instead of one heap tuple per unit, which is what makes caching the
+ * fold across keystrokes affordable.
+ */
+interface FoldedText {
+  readonly folded: string
+  readonly cumUnits: Uint32Array
+  readonly cpStart: Uint32Array
+  /** Original text length the fold was built from (staleness guard). */
+  readonly sourceLength: number
+}
+
+/** Build the fold of one text. */
+function buildFold(text: string): FoldedText {
+  const characters = [...text]
+  const cpStart = new Uint32Array(characters.length + 1)
+  const cumUnits = new Uint32Array(characters.length + 1)
+  let folded = ''
+  let utf16 = 0
+  let units = 0
+  for (let index = 0; index < characters.length; index++) {
+    const char = characters[index]!
+    cpStart[index] = utf16
+    utf16 += char.length
+    const lower = char.toLowerCase()
+    folded += lower
+    units += lower.length
+    cumUnits[index + 1] = units
+  }
+  cpStart[characters.length] = utf16
+  return { folded, cumUnits, cpStart, sourceLength: text.length }
+}
+
+/**
+ * The fold is a pure function of the text, and scanned texts are stable
+ * objects held alive by the scanner's cache — so one WeakMap entry per
+ * message (and per session title) lets every keystroke after the first
+ * search against a session skip the fold entirely. Rebuilding per call was
+ * the dominant per-keystroke cost on large indexes.
+ */
+const foldCache = new WeakMap<object, FoldedText>()
+
+function foldOf(owner: object, text: string): FoldedText {
+  const cached = foldCache.get(owner)
+  if (cached !== undefined && cached.sourceLength === text.length) return cached
+  const built = buildFold(text)
+  foldCache.set(owner, built)
+  return built
+}
+
+/** The code point a folded UTF-16 index belongs to (binary search). */
+function charOfUnit(fold: FoldedText, unit: number): number {
+  let low = 0
+  let high = fold.cumUnits.length - 1
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (fold.cumUnits[mid]! <= unit) low = mid + 1
+    else high = mid
+  }
+  return low - 1
+}
+
+/** Every occurrence of `needle` in a fold, as ranges over the ORIGINAL text. */
+function rangesInFold(fold: FoldedText, needle: string): [number, number][] {
+  const ranges: [number, number][] = []
+  let searchFrom = 0
+  for (;;) {
+    const found = fold.folded.indexOf(needle, searchFrom)
+    if (found === -1) break
+    const startChar = charOfUnit(fold, found)
+    const endChar = charOfUnit(fold, found + needle.length - 1)
+    ranges.push([fold.cpStart[startChar]!, fold.cpStart[endChar + 1]!])
+    searchFrom = found + needle.length
+  }
+  return ranges
+}
+
+/**
+ * Every occurrence of `needle` in `haystack`, returning ranges over the
+ * ORIGINAL string.
+ *
+ * The case-insensitive path folds per code point (see {@link FoldedText});
+ * the case-sensitive path is a direct scan. Standalone calls build the fold
+ * per invocation — hot paths should go through `foldOf` instead.
  *
  * @param haystack - Original text.
  * @param needle - The already-folded needle (`toLowerCase`d by the caller
@@ -116,36 +200,18 @@ export function matchRanges(
   caseSensitive = false,
 ): [number, number][] {
   if (needle.length === 0) return []
-
-  // Fold per code point, remembering each folded unit's original span.
-  let folded = ''
-  const spans: Array<[number, number]> = []
   if (caseSensitive) {
-    folded = haystack
-    for (let index = 0; index < haystack.length; index++) spans.push([index, index + 1])
-  } else {
-    let at = 0
-    for (const char of haystack) {
-      const lower = char.toLowerCase()
-      for (let unit = 0; unit < lower.length; unit++) spans.push([at, at + char.length])
-      folded += lower
-      at += char.length
+    const ranges: [number, number][] = []
+    let searchFrom = 0
+    for (;;) {
+      const found = haystack.indexOf(needle, searchFrom)
+      if (found === -1) break
+      ranges.push([found, found + needle.length])
+      searchFrom = found + needle.length
     }
+    return ranges
   }
-
-  const ranges: [number, number][] = []
-  let searchFrom = 0
-  for (;;) {
-    const found = folded.indexOf(needle, searchFrom)
-    if (found === -1) break
-    const spanStart = spans[found]
-    const spanEnd = spans[found + needle.length - 1]
-    if (spanStart !== undefined && spanEnd !== undefined) {
-      ranges.push([spanStart[0], spanEnd[1]])
-    }
-    searchFrom = found + needle.length
-  }
-  return ranges
+  return rangesInFold(buildFold(haystack), needle)
 }
 
 /**
@@ -187,7 +253,14 @@ export function searchSessions(
     const messageHits: MessageHit[] = []
     let total = 0
 
-    const titleRanges = matchRanges(session.title ?? '', needle, caseSensitive)
+    // Title and message folds are cached per object (see foldOf) — across
+    // keystrokes only the indexOf scan repeats, never the fold.
+    const titleRanges =
+      session.title === undefined
+        ? []
+        : caseSensitive
+          ? matchRanges(session.title, needle, true)
+          : rangesInFold(foldOf(session, session.title), needle)
     if (titleRanges.length > 0) {
       messageHits.push({
         kind: 'title',
@@ -202,7 +275,9 @@ export function searchSessions(
     }
 
     for (const [sourceIndex, message] of session.messages.entries()) {
-      const ranges = matchRanges(message.text, needle, caseSensitive)
+      const ranges = caseSensitive
+        ? matchRanges(message.text, needle, true)
+        : rangesInFold(foldOf(message, message.text), needle)
       if (ranges.length === 0) continue
       messageHits.push({
         kind: 'message',

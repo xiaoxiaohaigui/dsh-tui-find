@@ -23,6 +23,13 @@ const LANG_FILE = join(homedir(), '.dsh-tui', 'lang.json')
 let override: Lang | undefined
 let cachedFileLang: Lang | undefined
 let cachedFileMtime = 0
+/** The lang file is probed at most once per this interval: `getLang()` runs
+ *  on every `t()` call (dozens per frame while the list renders), and a
+ *  statSync per call is a syscall tax on every render. A change to the file
+ *  is still picked up within one probe interval — well inside the
+ *  "next render" contract a `/lang` switch relies on. */
+const FILE_PROBE_INTERVAL_MS = 1000
+let lastProbeAt = 0
 
 /** Pin the language (plugin config or a test); undefined reverts to auto. */
 export function setLangOverride(lang: Lang | undefined): void {
@@ -34,6 +41,9 @@ function parseLang(value: unknown): Lang | undefined {
 }
 
 function fileLang(): Lang | undefined {
+  const now = Date.now()
+  if (now - lastProbeAt < FILE_PROBE_INTERVAL_MS) return cachedFileLang
+  lastProbeAt = now
   try {
     const mtime = statSync(LANG_FILE).mtimeMs
     if (mtime !== cachedFileMtime) {
@@ -45,10 +55,10 @@ function fileLang(): Lang | undefined {
         cachedFileLang = undefined
       }
     }
-    return cachedFileLang
   } catch {
-    return undefined
+    cachedFileLang = undefined
   }
+  return cachedFileLang
 }
 
 function localeLang(): Lang | undefined {
@@ -142,6 +152,7 @@ export const dict = {
   'resume-failed': { zh: '恢复失败：{{error}}', en: 'Resume failed: {{error}}' },
   'resumed': { zh: '已恢复会话', en: 'Session resumed' },
   'scan-aborted': { zh: '扫描已中止（部分索引可用）', en: 'Scan aborted (partial index available)' },
+  'scan-failed': { zh: '扫描失败：{{error}}', en: 'Scan failed: {{error}}' },
 } as const satisfies Record<string, { zh: string; en: string }>
 
 export type I18nKey = keyof typeof dict

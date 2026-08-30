@@ -63,6 +63,16 @@ describe('manifest admission', () => {
     // No DecisionEvents — the plugin never intercepts anything.
     expect(coordinates.some(c => c.includes('DecisionEvents'))).toBe(false)
   })
+
+  it('keeps the manifest version in lockstep with package.json', () => {
+    // The 0.1.4 pack shipped a manifest still declaring 0.1.3 — the host
+    // reads the manifest version, so drift here misreports the plugin.
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as {
+      version: string
+    }
+    const manifest = parseManifest(MANIFEST_TEXT, { source: 'dsh-plugin.json' })
+    expect(manifest.version).toBe(pkg.version)
+  })
 })
 
 /**

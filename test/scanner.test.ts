@@ -4,7 +4,8 @@
  * query semantics (case folding, CJK substrings, highlight ranges, MRU).
  */
 import { beforeAll, describe, expect, it } from 'vitest'
-import { utimesSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionScanner, enumerateLogs } from '../src/core/scan.js'
 import { matchRanges, searchSessions, sessionCwdMatches } from '../src/core/search.js'
@@ -191,6 +192,44 @@ describe('SessionScanner', () => {
     expect(empty).toEqual([])
     expect(scanner.size).toBe(0)
   })
+
+  it('decodes a large plain log across event-loop yields and accounts its bytes', async () => {
+    // The plain branch yields every PLAIN_YIELD_EVERY_LINES (2048) lines;
+    // 6000 lines force at least two yields, and a completed read must
+    // account the buffer into progress.decodedBytes like the zstd path does.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-plain-'))
+    try {
+      const id = '99999999-9999-4999-8999-999999999999'
+      const dir = join(root, 'ws', id)
+      mkdirSync(dir, { recursive: true })
+      const lines = [JSON.stringify({ type: 'session', version: 0, id, createdAt: 1, cwd: 'D:/work/plain' })]
+      for (let index = 0; index < 6000; index++) {
+        lines.push(
+          JSON.stringify({
+            type: 'user/message',
+            seq: index + 1,
+            time: 1_750_000_000_000 + index,
+            data: { content: [{ type: 'text', text: `plain line ${index}` }], source: { kind: 'user' } },
+          }),
+        )
+      }
+      writeFileSync(join(dir, 'session.jsonl'), lines.join('\n') + '\n')
+
+      const scanner = new SessionScanner()
+      let decoded = 0
+      const sessions = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+        },
+      })
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0]!.messages).toHaveLength(6000)
+      expect(decoded).toBeGreaterThan(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('searchSessions', () => {
@@ -276,6 +315,27 @@ describe('searchSessions', () => {
 
   it('returns nothing for the empty query', () => {
     expect(searchSessions(sessions, '   ', { scope: 'all' })).toEqual([])
+  })
+
+  it('is idempotent across repeated searches (cached folds do not shift ranges)', () => {
+    // The per-object fold cache must not change results between the first
+    // (fold built) and subsequent (cache hit) evaluations. Fresh object
+    // identities guarantee the first call really builds the folds.
+    const fresh = sessions.map(session => ({
+      ...session,
+      header: { ...session.header },
+      messages: session.messages.map(message => ({ ...message })),
+    }))
+    const first = searchSessions(fresh, 'AUTH', { scope: 'all' })
+    const second = searchSessions(fresh, 'AUTH', { scope: 'all' })
+    expect(second).toEqual(first)
+    for (const hit of second) {
+      for (const message of hit.hits) {
+        for (const [start, end] of message.ranges) {
+          expect(message.text.toLowerCase().slice(start, end)).toBe('auth')
+        }
+      }
+    }
   })
 })
 

@@ -71,7 +71,7 @@ const ROLE_MARK: Record<'user' | 'assistant' | 'tool', { glyph: string; color: T
  * Elapsed time as a person would say it, mirroring the host browser's
  * `formatWhen` thresholds and wording (relative up to a week, then a date).
  */
-export function formatWhen(at: number | undefined, _lang: 'zh' | 'en'): string {
+export function formatWhen(at: number | undefined): string {
   if (at === undefined || !Number.isFinite(at)) return ''
   const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
   if (seconds < 45) return t('when-now')
@@ -277,7 +277,14 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
           setProgress(undefined)
         }
       })
-      .catch(() => setStatus({ text: t('scan-aborted'), tone: 'error' }))
+      .catch((error: unknown) => {
+        // An aborted sweep RESOLVES with its partial results; a rejection here
+        // is a real failure and must not borrow the "aborted" copy.
+        setStatus({
+          text: t('scan-failed', { error: error instanceof Error ? error.message : String(error) }),
+          tone: 'error',
+        })
+      })
     return () => {
       signal.abort()
     }
@@ -322,18 +329,15 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
   }, [recentMode, sessions, hits, expanded])
 
   // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
-  // from the top), hit rows answer the full hit vocabulary.
-  const selectable = useMemo(() => flat.map((_row, index) => index), [flat])
+  // from the top), hit rows answer the full hit vocabulary. The selection is
+  // a flat index into `rows` directly.
 
   // Keep the selection valid as results change.
   useEffect(() => {
-    setSelected(current => Math.min(current, Math.max(0, selectable.length - 1)))
-  }, [selectable.length])
+    setSelected(current => Math.min(current, Math.max(0, flat.length - 1)))
+  }, [flat.length])
 
-  const selectedRow = useMemo<FlatRow | undefined>(() => {
-    const rowIndex = selectable[selected]
-    return rowIndex === undefined ? undefined : flat[rowIndex]
-  }, [flat, selectable, selected])
+  const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
   // Reset selection when the query or scope changes shape.
   useEffect(() => {
@@ -482,19 +486,26 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
         return
       }
       if (key.downArrow) {
-        setSelected(current => Math.min(Math.max(0, selectable.length - 1), current + 1))
+        setSelected(current => Math.min(Math.max(0, flat.length - 1), current + 1))
         return
       }
       if (key.pageUp || key.pageDown) {
         const jump = Math.max(1, rows - CHROME_LINES)
         setSelected(current => {
           const next = key.pageUp ? current - jump : current + jump
-          return Math.min(Math.max(0, selectable.length - 1), Math.max(0, next))
+          return Math.min(Math.max(0, flat.length - 1), Math.max(0, next))
         })
         return
       }
       if (key.backspace || key.delete) {
-        setQuery(current => (current.length > 0 ? current.slice(0, -1) : current))
+        // Delete a whole CODE POINT — a UTF-16 code-unit slice would leave a
+        // lone surrogate behind after backspacing over an emoji.
+        setQuery(current => {
+          if (current.length === 0) return current
+          const characters = [...current]
+          characters.pop()
+          return characters.join('')
+        })
         return
       }
       if (input.length > 0 && plain) {
@@ -610,7 +621,7 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
           <Text dimColor>
             {' '}
             {truncateWidth(
-              `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt, lang)} · ${t('msgs-count', { n: all.length })}`,
+              `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt)} · ${t('msgs-count', { n: all.length })}`,
               Math.max(0, columns - 2),
             )}
           </Text>
@@ -633,7 +644,7 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
                   : entry.role === 'tool'
                     ? t('role-tool')
                     : t('role-assistant')}
-                {entry.at === undefined ? '' : ` · ${formatWhen(entry.at, lang)}`}
+                {entry.at === undefined ? '' : ` · ${formatWhen(entry.at)}`}
               </Text>
               {shown.map((line, lineIndex) => (
                 <Text key={lineIndex} dimColor={entry.role === 'assistant'}>
@@ -700,7 +711,6 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
             React={React}
             ui={ui}
             rows={flat}
-            selectable={selectable}
             selected={selected}
             height={listHeight}
             titleWidth={titleWidth}
@@ -742,25 +752,23 @@ function ListView(props: {
   React: TuiSceneProps['React']
   ui: TuiSceneProps['ui']
   rows: readonly FlatRow[]
-  selectable: readonly number[]
   selected: number
   height: number
   titleWidth: number
   hitWidth: number
   lang: 'zh' | 'en'
 }): React.ReactElement {
-  const { React: R, ui, rows, selectable, selected, height, titleWidth, hitWidth, lang } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, lang } = props
   const { Box, Text } = ui
   const { useState, useMemo } = R
 
   // Scroll window over the flat rows, fitted in physical lines so the
   // selected row is always on screen (fitScrollWindow for the contract).
-  const selectedIndex = selectable[selected]
   const [scroll, setScroll] = useState(0)
   const weights = useMemo(() => rows.map(rowLineCount), [rows])
   const view = useMemo(
-    () => fitScrollWindow(weights, selectedIndex ?? -1, height, scroll),
-    [weights, selectedIndex, height, scroll],
+    () => fitScrollWindow(weights, selected, height, scroll),
+    [weights, selected, height, scroll],
   )
   if (view.start !== scroll) setScroll(view.start)
   const visible = rows.slice(view.start, view.end)
@@ -769,7 +777,7 @@ function ListView(props: {
     <Box flexDirection="column">
       {visible.map((row, offset) => {
         const rowIndex = view.start + offset
-        const isSelected = selectable[selected] === rowIndex
+        const isSelected = selected === rowIndex
         if (row.kind === 'session') {
           const session = row.session
           // Two lines per session, the browser's rule: the title answers "is
@@ -807,7 +815,7 @@ function ListView(props: {
                   {'  '}
                   {truncateWidth(
                     [
-                      formatWhen(session.modifiedAt, lang),
+                      formatWhen(session.modifiedAt),
                       t('msgs-count', { n: session.messages.length }),
                       session.header.cwd?.split(/[\\/]/).pop() ?? session.id.slice(0, 8),
                     ].join(' · '),

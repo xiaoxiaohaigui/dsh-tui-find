@@ -86,6 +86,12 @@ interface CacheEntry {
  * outside anything the format produces in practice; the cap is a seatbelt.) */
 const MAX_LOG_BYTES = 128 * 1024 * 1024
 
+/** Plain-JSONL decode yields to the event loop every this many lines — the
+ *  zstd path yields per frame batch, but the plain path has no frame
+ *  boundaries, and without a yield a near-`MAX_LOG_BYTES` log would block
+ *  the loop (and with it the abort check and the UI) for seconds. */
+const PLAIN_YIELD_EVERY_LINES = 2048
+
 /**
  * Session ids reach `path.join()`; a safe single segment (UUID or
  * `session-<uuid>`-shaped) is enforced exactly like the host's compat layer.
@@ -245,10 +251,18 @@ export class SessionScanner {
         }
       }
     } else {
+      let sinceYield = 0
       for (const line of plainLines(buffer)) {
         if (signal?.aborted) return undefined
         extractLine(state, line, options)
+        if (++sinceYield >= PLAIN_YIELD_EVERY_LINES) {
+          sinceYield = 0
+          await yieldToLoop()
+        }
       }
+      // Aborted reads report nothing; a completed one accounts the whole
+      // buffer, matching the zstd path's per-frame accounting.
+      progress.decodedBytes += buffer.length
     }
 
     return {

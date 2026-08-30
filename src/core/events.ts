@@ -62,9 +62,28 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-/** A trimmed non-empty string, or undefined. */
+/**
+ * Indexed text carries no control characters: a raw ESC/BEL/C1 byte in a
+ * message body would be written to the terminal verbatim by the scene —
+ * escape injection, up to an OSC 52 clipboard overwrite — and CR/tab break
+ * the rows' column math (the list path collapses whitespace, but the preview
+ * pane honors newlines). Newline is the one control the preview needs; CR and
+ * tab degrade to printable whitespace; every other Cc is dropped. `JSON.stringify`
+ * escapes below 0x20 but passes U+007F–U+009F through, so tool summaries go
+ * through this too.
+ */
+function sanitizeText(value: string): string {
+  return value
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, ' ')
+    .replace(/[^\P{Cc}\n]/gu, '')
+}
+
+/** A sanitized, trimmed non-empty string, or undefined. */
 function text(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+  if (typeof value !== 'string') return undefined
+  const cleaned = sanitizeText(value).trim()
+  return cleaned.length > 0 ? cleaned : undefined
 }
 
 /**
@@ -76,7 +95,10 @@ function text(value: unknown): string | undefined {
  * indexing is enabled both block types are honored.
  */
 function textOfBlocks(content: unknown, thinking: boolean): string | undefined {
-  if (typeof content === 'string') return content.trim() || undefined
+  if (typeof content === 'string') {
+    const cleaned = sanitizeText(content).trim()
+    return cleaned.length > 0 ? cleaned : undefined
+  }
   if (!Array.isArray(content)) return undefined
   const parts: string[] = []
   for (const block of content) {
@@ -84,12 +106,18 @@ function textOfBlocks(content: unknown, thinking: boolean): string | undefined {
     const record = block as Record<string, unknown>
     if (record['type'] === 'text') {
       const value = record['text']
-      if (typeof value === 'string' && value.trim().length > 0) parts.push(value.trim())
+      if (typeof value === 'string') {
+        const cleaned = sanitizeText(value).trim()
+        if (cleaned.length > 0) parts.push(cleaned)
+      }
       continue
     }
     if (thinking && (record['type'] === 'reasoning' || record['type'] === 'thinking')) {
       const value = record['text'] ?? record['thinking']
-      if (typeof value === 'string' && value.trim().length > 0) parts.push(value.trim())
+      if (typeof value === 'string') {
+        const cleaned = sanitizeText(value).trim()
+        if (cleaned.length > 0) parts.push(cleaned)
+      }
     }
   }
   return parts.length === 0 ? undefined : parts.join('\n')
@@ -149,7 +177,7 @@ function toolSummary(line: LogLine, limit: number): string | undefined {
     }
   }
   const body = args === undefined ? '' : ` ${args.slice(0, Math.max(0, limit))}`
-  return `[${name}]${body}`
+  return sanitizeText(`[${name}]${body}`)
 }
 
 /**
