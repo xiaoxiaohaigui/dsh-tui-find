@@ -27,11 +27,13 @@
  * offset just past the last complete frame (or newline-terminated plain
  * line) its extract state has folded, and keeps that state alive — so when
  * a log GROWS, the next sweep re-walks the frame chain (structural, no
- * decode), verifies a frame still ends exactly at the watermark (the
- * append-only prefix proof), and decodes only the frames beyond it,
- * continuing the fold. A same-size mtime touch verifies the same way and
- * decodes nothing. Any mismatch (shrunk file, moved boundary, encoding
- * flip, options change) falls back to a full decode.
+ * decode), verifies a frame still ends exactly at the watermark, verifies
+ * a sampled digest of the bytes before it (first/last 4 KB — the boundary
+ * proof alone cannot see a same-boundary equal-length rewrite), and decodes
+ * only the frames beyond it, continuing the fold. A same-size mtime touch
+ * verifies the same way and decodes nothing. Any mismatch (shrunk file,
+ * moved boundary, rewritten prefix, encoding flip, options change) falls
+ * back to a full decode.
  *
  * The watermark also survives process restarts as a durable journal — a
  * small offsets-only file (no conversation text ever leaves memory) written
@@ -42,6 +44,7 @@
  *
  * @module dsh-tui-find/core/scan
  */
+import { createHash } from 'node:crypto'
 import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { decodeFrame, sniffEncoding, walkFrames, type LogLine } from './frames.js'
@@ -108,6 +111,16 @@ interface CacheEntry {
    * implies the snapshot covers everything decodable in that file version.
    */
   readonly decodedTo: number
+  /**
+   * Digest of the sampled bytes before {@link decodedTo} (first/last 4 KB,
+   * whole prefix when smaller) — the second half of the append-only prefix
+   * proof: the boundary check proves the watermark is still a frame/line
+   * boundary, this proves the bytes before it are still the ones the cached
+   * fold was built from, closing the same-boundary equal-length rewrite
+   * hole. In-memory only; the journal stays offsets-only (it never takes
+   * part in resume decisions).
+   */
+  readonly prefixDigest: string
   /** Encoding the watermark was taken under; an encoding flip is a rewrite
    *  and forces a full decode. */
   readonly isZstd: boolean
@@ -123,6 +136,7 @@ interface DecodedLog {
   readonly session: ScannedSession
   readonly state: ExtractState
   readonly decodedTo: number
+  readonly prefixDigest: string
   readonly isZstd: boolean
 }
 
@@ -255,6 +269,31 @@ function* plainLines(buffer: Buffer, from = 0): Generator<{ line: LogLine | unde
     yield { line, end }
     start = end
   }
+}
+
+/** Sample size for {@link prefixDigest}: the first and last this many bytes
+ *  before the watermark (the whole prefix when it is smaller). An append
+ *  leaves both windows byte-identical; an equal-length rewrite of the
+ *  decoded prefix moves bytes in at least one of them with overwhelming
+ *  likelihood, at O(kilobytes) per resume check regardless of log size. */
+const PREFIX_SAMPLE_BYTES = 4096
+
+/**
+ * Digest of the sampled bytes before offset `end` of `buffer` — the resume
+ * path recomputes this over the live buffer and compares against the value
+ * committed with the cache entry. Sampled rather than whole-prefix so the
+ * check stays cheap on 100 MB logs; deterministic, so equal inputs always
+ * compare equal and an untouched prefix never forces a full decode.
+ */
+function prefixDigest(buffer: Buffer, end: number): string {
+  const hash = createHash('sha256')
+  if (end <= PREFIX_SAMPLE_BYTES) {
+    hash.update(buffer.subarray(0, end))
+  } else {
+    hash.update(buffer.subarray(0, PREFIX_SAMPLE_BYTES))
+    hash.update(buffer.subarray(end - PREFIX_SAMPLE_BYTES, end))
+  }
+  return hash.digest('hex')
 }
 
 /** Yield to the event loop so a cold sweep never blocks the render tick. */
@@ -408,9 +447,10 @@ export class SessionScanner {
   /**
    * Decode one log into its cache content.
    *
-   * With a resumable cache entry (same options, matching encoding, and a
-   * watermark that is still a frame/line boundary of the current file), only
-   * the frames or lines BEYOND the watermark are decoded, folded into a
+   * With a resumable cache entry (same options, matching encoding, a
+   * watermark that is still a frame/line boundary of the current file, and
+   * a matching sampled digest of the bytes before it), only the frames or
+   * lines BEYOND the watermark are decoded, folded into a
    * clone of the cached state; every other case decodes from zero. Frames
    * are decoded one at a time; after every 64 frames (and inside very large
    * plain logs) the event loop gets a turn and the abort signal is honored.
@@ -435,16 +475,19 @@ export class SessionScanner {
 
     if (isZstd) {
       // The walk is structural, not a decode — cheap even over the whole
-      // file, and it doubles as the watermark's boundary proof: the
-      // append-only prefix is still the one already folded into the cached
-      // state exactly when some complete frame ends at the watermark.
+      // file, and it doubles as the watermark's boundary proof: some
+      // complete frame of the current file ends exactly at the watermark.
+      // The boundary alone cannot tell an append from a same-boundary
+      // equal-length rewrite, so the sampled prefix digest must also
+      // match before the cached fold is trusted.
       const frames = walkFrames(buffer)
       let startIndex = 0
       if (
         resume !== undefined &&
         resume.isZstd &&
         facts.bytes >= resume.decodedTo &&
-        frames.some(frame => frame.end === resume.decodedTo)
+        frames.some(frame => frame.end === resume.decodedTo) &&
+        resume.prefixDigest === prefixDigest(buffer, resume.decodedTo)
       ) {
         startIndex = frames.findIndex(frame => frame.end === resume.decodedTo) + 1
         decodedTo = resume.decodedTo
@@ -468,13 +511,17 @@ export class SessionScanner {
       }
     } else {
       // Plain resume boundary: the watermark must sit right after a
-      // newline of the current file (decodedTo 0 is the trivial one).
+      // newline of the current file (decodedTo 0 is the trivial one), and
+      // the sampled prefix digest must still match — a newline at the
+      // boundary alone would let an equal-length rewrite of the decoded
+      // prefix resume on stale fold state.
       let startOffset = 0
       if (
         resume !== undefined &&
         !resume.isZstd &&
         buffer.length >= resume.decodedTo &&
-        (resume.decodedTo === 0 || buffer[resume.decodedTo - 1] === 0x0a)
+        (resume.decodedTo === 0 || buffer[resume.decodedTo - 1] === 0x0a) &&
+        resume.prefixDigest === prefixDigest(buffer, resume.decodedTo)
       ) {
         startOffset = resume.decodedTo
         decodedTo = startOffset
@@ -506,7 +553,7 @@ export class SessionScanner {
       header: state.header,
       messages: state.messages,
     }
-    return { session, state, decodedTo, isZstd }
+    return { session, state, decodedTo, prefixDigest: prefixDigest(buffer, decodedTo), isZstd }
   }
 
   /**
@@ -563,6 +610,7 @@ export class SessionScanner {
             mtimeMs: facts.mtimeMs,
             optionsKey,
             decodedTo: decoded.decodedTo,
+            prefixDigest: decoded.prefixDigest,
             isZstd: decoded.isZstd,
             state: decoded.state,
             session: decoded.session,

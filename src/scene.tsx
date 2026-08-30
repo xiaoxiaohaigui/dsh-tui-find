@@ -350,10 +350,16 @@ export function FindScene(props: TuiSceneProps & {
   }, [])
 
   const recentMode = query.trim().length === 0
-  // The time window's cutoff, recomputed per render (a mounted scene that
-  // sits open crosses its own window boundary naturally on the next render).
+  // The time window's cutoff, quantized to the minute: renders within the
+  // same minute share one cutoff, so the `hits`/`flat` memos stay stable
+  // across direction-key steps, toasts and progress ticks instead of
+  // re-searching on every render — while a mounted scene that sits open
+  // still crosses its own window boundary on the first render after the
+  // minute flips (the boundary can trail the exact one by up to a minute).
   const sinceMs =
-    timeFilter === 'all' ? undefined : Date.now() - (timeFilter === '7d' ? 7 : 30) * 86_400_000
+    timeFilter === 'all'
+      ? undefined
+      : Math.floor(Date.now() / 60_000) * 60_000 - (timeFilter === '7d' ? 7 : 30) * 86_400_000
   const hits = useMemo(
     () =>
       searchSessions(sessions, query, {

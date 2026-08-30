@@ -319,6 +319,20 @@ describe('offset watermark (incremental decode)', () => {
   const chain = (batches: string[][]): Buffer =>
     Buffer.concat(batches.map(batch => zstdCompressSync(Buffer.from(batch.join('\n') + '\n', 'utf8'))))
 
+  /** One Raw-block zstd frame (RFC 8878 §3.1.1.1.3.1): its encoded size is
+   *  exactly 9 + payload bytes, so an equal-length rewrite can be built
+   *  byte-exactly without hunting for a matching compressed length. */
+  const rawFrame = (payload: string): Buffer => {
+    const body = Buffer.from(payload, 'utf8')
+    const frame = Buffer.alloc(9 + body.length)
+    frame.writeUInt32LE(0xfd2fb528, 0)
+    frame[4] = 0x00 // descriptor: not single-segment, no checksum, no dict
+    frame[5] = 0x50 // window descriptor: exponent 10 → 1 MB window
+    frame.writeUIntLE((body.length << 3) | 1, 6, 3) // last block, Raw, N bytes
+    body.copy(frame, 9)
+    return frame
+  }
+
   const writeSession = (root: string, id: string, bytes: Buffer, name = 'session.jsonl.zstd'): string => {
     const path = join(root, 'ws', id, name)
     mkdirSync(dirname(path), { recursive: true })
@@ -471,6 +485,112 @@ describe('offset watermark (incremental decode)', () => {
       expect(decoded).toBeGreaterThan(0)
       // Stale folded state must not leak through.
       expect(second[0]!.messages.map(m => m.text)).toEqual(['rewritten one'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('full-decodes a zstd rewrite that keeps the old watermark a frame boundary', async () => {
+    // An equal-length rewrite keeps every check the boundary proof makes:
+    // same total bytes, so the rewrite's last frame still ends exactly at
+    // the old watermark. Only the sampled prefix digest can tell this
+    // rewrite from an append and force the full decode the README promises.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a6000000-0000-4000-8000-000000000006'
+      const original = chain([
+        [headerLine(id, 'D:/work/wm-rewrite')],
+        [env('user/message', 1, 'original before the in-place rewrite')],
+        [env('user/message', 2, 'original second entry')],
+      ])
+      const path = writeSession(root, id, original)
+      const scanner = new SessionScanner()
+      await scanner.scan({ sessionRoot: root })
+
+      // Rewrite in place: a different conversation, padded to the exact
+      // original byte length (one Raw frame of computed size).
+      const rewritePayload = (text: string): Buffer =>
+        rawFrame([headerLine(id, 'D:/work/wm-rewrite'), env('user/message', 1, text)].join('\n') + '\n')
+      const base = rewritePayload('rewritten in place')
+      const pad = original.length - base.length
+      expect(pad).toBeGreaterThanOrEqual(0)
+      const rewrittenText = `rewritten in place${'x'.repeat(pad)}`
+      const rewritten = rewritePayload(rewrittenText)
+      expect(rewritten.length).toBe(original.length)
+      writeFileSync(path, rewritten)
+      // Equal bytes: only the mtime can move the bytes:mtimeMs token.
+      const future = new Date(Date.now() + 5000)
+      utimesSync(path, future, future)
+
+      let decoded = -1
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+          resumed = progress.resumed
+        },
+      })
+      // The boundary proof held but the prefix digest could not: the sweep
+      // must refuse the stale fold and decode the rewrite from zero.
+      expect(resumed).toBe(0)
+      expect(decoded).toBe(rewritten.length)
+      expect(second[0]!.messages.map(m => m.text)).toEqual([rewrittenText])
+      expect(second[0]!.header.cwd).toBe('D:/work/wm-rewrite')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('full-decodes a plain rewrite that keeps the old watermark a line boundary', async () => {
+    // Plain edition of the same hole: an equal-length rewrite still ends in
+    // a newline, so "the byte before the watermark is 0x0a" proves nothing
+    // about the prefix — the digest must refuse the stale fold.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a7000000-0000-4000-8000-000000000007'
+      const path = writeSession(
+        root,
+        id,
+        Buffer.from([headerLine(id, 'D:/work/wm-plain-rw'), env('user/message', 1, 'plain original text')].join('\n') + '\n', 'utf8'),
+        'session.jsonl',
+      )
+      const scanner = new SessionScanner()
+      await scanner.scan({ sessionRoot: root })
+
+      // Pad the message text until the rewrite is byte-exact in length;
+      // the newline layout stays intact, so the old proof still holds.
+      const target = readFileSync(path).length
+      let rewritten: Buffer | undefined
+      let rewrittenText = ''
+      for (let pad = 0; pad <= target; pad++) {
+        rewrittenText = `plain rewritten ${'x'.repeat(pad)}`
+        const candidate = Buffer.from(
+          [headerLine(id, 'D:/work/wm-plain-rw'), env('user/message', 1, rewrittenText)].join('\n') + '\n',
+          'utf8',
+        )
+        if (candidate.length === target) {
+          rewritten = candidate
+          break
+        }
+      }
+      expect(rewritten).toBeDefined()
+      writeFileSync(path, rewritten!)
+      const future = new Date(Date.now() + 5000)
+      utimesSync(path, future, future) // equal bytes: only mtime moves the token
+
+      let decoded = -1
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+          resumed = progress.resumed
+        },
+      })
+      expect(resumed).toBe(0)
+      expect(decoded).toBe(rewritten!.length)
+      expect(second[0]!.messages.map(m => m.text)).toEqual([rewrittenText])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
