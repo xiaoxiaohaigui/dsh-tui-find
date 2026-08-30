@@ -29,6 +29,10 @@ import plugin, {
 import { getLang } from '../dist/i18n.js'
 import type { TuiSettingsSectionsHost } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 
+// These mounts activate the real plugin; keep the watermark journal off so
+// no test ever writes against the real ~/.dsh-tui tree.
+process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
+
 const MANIFEST_TEXT = readFileSync(join(import.meta.dirname, '..', 'dsh-plugin.json'), 'utf8')
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))

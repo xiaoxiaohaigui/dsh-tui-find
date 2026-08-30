@@ -2,11 +2,16 @@
  * Scanner + search tests over the generated fixtures: dual-encoding parity,
  * torn-tail tolerance, mtime-cache reuse, same-repo scope filtering, and
  * query semantics (case folding, CJK substrings, highlight ranges, MRU).
+ * The offset-watermark suite builds its own frame chains (one
+ * `zstdCompressSync` frame per append batch, concatenated — the backend's
+ * append discipline) to pin incremental decode: resume proofs, torn-tail
+ * completion, shrink fallback, and the journal's record-only posture.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { zstdCompressSync } from 'node:zlib'
 import { SessionScanner, enumerateLogs } from '../src/core/scan.js'
 import { compileRegex, matchRanges, searchSessions, sessionCwdMatches } from '../src/core/search.js'
 import type { ScannedSession } from '../src/core/scan.js'
@@ -100,20 +105,30 @@ describe('SessionScanner', () => {
     expect(second).toEqual(first)
   })
 
-  it('re-decodes when the log was touched (mtime token moves)', async () => {
+  it('decodes nothing when the log was only touched (mtime token moves)', async () => {
+    // A same-size touch invalidates the bytes:mtimeMs token, but the file is
+    // byte-identical, so the watermark boundary proof still holds: the sweep
+    // re-verifies the prefix and decodes zero instead of re-reading the log,
+    // and the session stays served with identical searchable content.
     const scanner = new SessionScanner()
-    const sessions = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
-    const target = sessions.find(s => s.id === '22222222-2222-4222-8222-222222222222')!
+    const first = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    const target = first.find(s => s.id === '22222222-2222-4222-8222-222222222222')!
     const future = new Date(Date.now() + 5000)
     utimesSync(target.path, future, future)
-    let decoded = 0
-    await scanner.scan({
+    let decoded = -1
+    let resumed = -1
+    const second = await scanner.scan({
       sessionRoot: FIXTURE_ROOT,
       onProgress: progress => {
         decoded = progress.decodedBytes
+        resumed = progress.resumed
       },
     })
-    expect(decoded).toBeGreaterThan(0)
+    expect(decoded).toBe(0)
+    expect(resumed).toBe(1)
+    const after = second.find(s => s.id === target.id)!
+    expect(after.title).toBe(target.title)
+    expect(after.messages.map(m => m.text)).toEqual(target.messages.map(m => m.text))
   })
 
   it('tolerates a torn final frame: committed frames stay searchable', async () => {
@@ -280,6 +295,255 @@ describe('SessionScanner', () => {
       expect(decoded).toBeGreaterThan(0)
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('offset watermark (incremental decode)', () => {
+  /** One conversation envelope (shapes mirror make-fixtures.mjs). */
+  const env = (type: string, seq: number, text: string): string =>
+    JSON.stringify({
+      type,
+      seq,
+      time: 1_750_000_000_000 + seq * 1000,
+      data:
+        type === 'user/message'
+          ? { content: [{ type: 'text', text }], source: { kind: 'user' } }
+          : { turn: 1, step: seq, message: { role: 'assistant', content: [{ type: 'text', text }] } },
+    })
+
+  const headerLine = (id: string, cwd: string): string =>
+    JSON.stringify({ type: 'session', version: 0, id, createdAt: 1_750_000_000_000, cwd })
+
+  /** One independently decodable zstd frame per batch, concatenated. */
+  const chain = (batches: string[][]): Buffer =>
+    Buffer.concat(batches.map(batch => zstdCompressSync(Buffer.from(batch.join('\n') + '\n', 'utf8'))))
+
+  const writeSession = (root: string, id: string, bytes: Buffer, name = 'session.jsonl.zstd'): string => {
+    const path = join(root, 'ws', id, name)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, bytes)
+    return path
+  }
+
+  it('resumes a grown zstd log and decodes only the appended frame', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a1000000-0000-4000-8000-000000000001'
+      const path = writeSession(root, id, chain([
+        [headerLine(id, 'D:/work/wm-zstd')],
+        [env('user/message', 1, 'first message before the append')],
+      ]))
+      const scanner = new SessionScanner()
+      const first = await scanner.scan({ sessionRoot: root })
+      expect(first).toHaveLength(1)
+      expect(first[0]!.messages.map(m => m.text)).toEqual(['first message before the append'])
+
+      // The backend's durable append: one more frame concatenated on.
+      const appended = zstdCompressSync(
+        Buffer.from(env('user/message', 2, 'appended after the watermark') + '\n', 'utf8'),
+      )
+      writeFileSync(path, Buffer.concat([readFileSync(path), appended]))
+
+      let decoded = -1
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+          resumed = progress.resumed
+        },
+      })
+      // The boundary proof held, so exactly one session resumed and exactly
+      // the new frame's bytes were decoded — the prefix was never re-read.
+      expect(resumed).toBe(1)
+      expect(decoded).toBe(appended.length)
+      expect(second[0]!.messages.map(m => m.text)).toEqual([
+        'first message before the append',
+        'appended after the watermark',
+      ])
+      // The resumed fold is a first-class index citizen: it searches.
+      const hits = searchSessions(second, 'appended after', { scope: 'all' })
+      expect(hits).toHaveLength(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resumes a grown plain log from the line watermark', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a2000000-0000-4000-8000-000000000002'
+      const path = writeSession(
+        root,
+        id,
+        Buffer.from([headerLine(id, 'D:/work/wm-plain'), env('user/message', 1, 'plain first')].join('\n') + '\n', 'utf8'),
+        'session.jsonl',
+      )
+      const scanner = new SessionScanner()
+      await scanner.scan({ sessionRoot: root })
+
+      const appended = Buffer.from(env('user/message', 2, 'plain appended') + '\n', 'utf8')
+      writeFileSync(path, Buffer.concat([readFileSync(path), appended]))
+
+      let decoded = -1
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+          resumed = progress.resumed
+        },
+      })
+      expect(resumed).toBe(1)
+      // The plain path accounts exactly the range past the watermark.
+      expect(decoded).toBe(appended.length)
+      expect(second[0]!.messages.map(m => m.text)).toEqual(['plain first', 'plain appended'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('completes a torn tail after the crash without duplicating messages', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a3000000-0000-4000-8000-000000000003'
+      const full = chain([
+        [headerLine(id, 'D:/work/wm-torn')],
+        [env('user/message', 1, 'committed before the crash')],
+        [env('user/message', 2, 'torn mid-flush, finished later')],
+      ])
+      // Cut INSIDE the final frame: frames 1–2 stay complete and committed.
+      const path = writeSession(root, id, full.subarray(0, full.length - 5))
+      const scanner = new SessionScanner()
+      const first = await scanner.scan({ sessionRoot: root })
+      expect(first[0]!.messages.map(m => m.text)).toEqual(['committed before the crash'])
+
+      // The writer rides out the crash: the same chain, now complete.
+      writeFileSync(path, full)
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          resumed = progress.resumed
+        },
+      })
+      expect(resumed).toBe(1)
+      // The recovered frame is folded exactly once — the watermark sat at
+      // its start, so neither the prefix nor the frame is double-counted.
+      expect(second[0]!.messages.map(m => m.text)).toEqual([
+        'committed before the crash',
+        'torn mid-flush, finished later',
+      ])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('full-decodes when the log shrank (append-only proof fails)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a4000000-0000-4000-8000-000000000004'
+      const path = writeSession(root, id, chain([
+        [headerLine(id, 'D:/work/wm-shrunk')],
+        [env('user/message', 1, 'original one')],
+        [env('user/message', 2, 'original two')],
+      ]))
+      const scanner = new SessionScanner()
+      await scanner.scan({ sessionRoot: root })
+
+      // A rewrite (not an append): smaller, different frames. No frame of
+      // this file ends at the old watermark, so the resume must be refused.
+      writeFileSync(path, chain([
+        [headerLine(id, 'D:/work/wm-shrunk')],
+        [env('user/message', 1, 'rewritten one')],
+      ]))
+      let decoded = -1
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+          resumed = progress.resumed
+        },
+      })
+      expect(resumed).toBe(0)
+      expect(decoded).toBeGreaterThan(0)
+      // Stale folded state must not leak through.
+      expect(second[0]!.messages.map(m => m.text)).toEqual(['rewritten one'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('mirrors watermarks into the journal; a cold scanner still decodes fully', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    const journalDir = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-j-'))
+    try {
+      const id = 'a5000000-0000-4000-8000-000000000005'
+      const path = writeSession(root, id, chain([
+        [headerLine(id, 'D:/work/wm-journal')],
+        [env('user/message', 1, 'journaled first')],
+      ]))
+      const journalPath = join(journalDir, 'watermark.json')
+      const scanner = new SessionScanner({ watermarkPath: journalPath })
+      await scanner.scan({ sessionRoot: root })
+
+      interface JournalEntry {
+        bytes: number
+        mtimeMs: number
+        offset: number
+        optionsKey: string
+        at: number
+      }
+      const readJournal = (): { version: number; entries: Record<string, JournalEntry> } =>
+        JSON.parse(readFileSync(journalPath, 'utf8'))
+
+      const record = readJournal()
+      expect(record.version).toBe(1)
+      const entry = record.entries[path]
+      expect(entry).toBeDefined()
+      // Offsets and stats only — the record carries no conversation text.
+      expect(JSON.stringify(record)).not.toContain('journaled')
+      // The chain ends on a complete frame, so the watermark covers the file.
+      expect(entry!.offset).toBe(entry!.bytes)
+      // Privacy posture: 0700 dir, 0600 file (POSIX); no tmp leftovers.
+      if (process.platform !== 'win32') {
+        expect(statSync(journalDir).mode & 0o777).toBe(0o700)
+        expect(statSync(journalPath).mode & 0o777).toBe(0o600)
+      }
+      expect(readdirSync(journalDir)).toEqual(['watermark.json'])
+
+      // A later sweep updates the record in place.
+      const appended = zstdCompressSync(
+        Buffer.from(env('user/message', 2, 'journaled second') + '\n', 'utf8'),
+      )
+      writeFileSync(path, Buffer.concat([readFileSync(path), appended]))
+      let resumed = -1
+      await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          resumed = progress.resumed
+        },
+      })
+      expect(resumed).toBe(1)
+      expect(readJournal().entries[path]!.bytes).toBe(readFileSync(path).length)
+
+      // A COLD scanner (fresh instance, journal on disk) must still decode
+      // the whole prefix: the in-memory index is the only decoded-text
+      // store, so the journal is a record — never a decode-decision input.
+      let coldDecoded = -1
+      const cold = await new SessionScanner({ watermarkPath: journalPath }).scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          coldDecoded = progress.decodedBytes
+        },
+      })
+      expect(coldDecoded).toBe(readFileSync(path).length)
+      expect(cold[0]!.messages.map(m => m.text)).toEqual(['journaled first', 'journaled second'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(journalDir, { recursive: true, force: true })
     }
   })
 })

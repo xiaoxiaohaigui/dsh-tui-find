@@ -17,11 +17,15 @@
  * Every registration is scoped with `ctx.effect` so deactivation unwinds
  * them all; guarded registrations tolerate the host's cold-boot liveness
  * window with a bounded retry (`src/seam.ts`) instead of failing the
- * activation. Nothing here touches a session log (read-only scanner) and
- * nothing here writes outside the plugin storage namespace.
+ * activation. Nothing here touches a session log (read-only scanner); the
+ * only file written is the watermark journal under
+ * `~/.dsh-tui/dsh-tui-find/` — offsets and file stats only, 0600/0700
+ * (see scan.ts), disabled with `DSH_TUI_FIND_WATERMARK=off`.
  *
  * @module dsh-tui-find
  */
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
@@ -90,6 +94,18 @@ export function isExpectedAdmissionRejection(error: unknown): boolean {
 }
 
 /**
+ * The watermark journal path, or undefined when the operator disabled the
+ * journal via `DSH_TUI_FIND_WATERMARK=off`. It lives under the host data
+ * dir (`~/.dsh-tui/<plugin>/…`, the same root the host's own plugin
+ * storage uses) and carries offsets and file stats only — conversation
+ * text never leaves memory (see scan.ts for the write posture).
+ */
+function watermarkJournalPath(): string | undefined {
+  if (process.env['DSH_TUI_FIND_WATERMARK']?.trim().toLowerCase() === 'off') return undefined
+  return join(homedir(), '.dsh-tui', 'dsh-tui-find', 'watermark.json')
+}
+
+/**
  * Wire the plugin.
  *
  * @param ctx - Cordis context (plugin activation).
@@ -112,9 +128,11 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   if (scenesRuntime !== undefined) {
     // One scanner per plugin activation (scan.ts's lifecycle contract): the
     // per-file decode cache survives scene close/open, so re-opening /find
-    // after a warm sweep pays only per-file stats. A plugin restart rebuilds
-    // it — the optionsKey guard would invalidate every entry anyway.
-    const scanner = new SessionScanner()
+    // after a warm sweep pays only per-file stats — grown logs resume from
+    // their offset watermark and decode only the new frames. A plugin
+    // restart rebuilds the in-memory index (decoded text lives only in
+    // memory), so the journal is a durable record, not a resume source.
+    const scanner = new SessionScanner({ watermarkPath: watermarkJournalPath() })
     const component = (props: TuiSceneProps) => (
       <FindScene
         {...props}

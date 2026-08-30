@@ -23,16 +23,34 @@
  * append growth changes both, and a same-size touch (rename) maps to a new
  * path-level identity the next sweep re-derives anyway.
  *
+ * v0.2 offset watermark: each cache entry records `decodedTo`, the byte
+ * offset just past the last complete frame (or newline-terminated plain
+ * line) its extract state has folded, and keeps that state alive — so when
+ * a log GROWS, the next sweep re-walks the frame chain (structural, no
+ * decode), verifies a frame still ends exactly at the watermark (the
+ * append-only prefix proof), and decodes only the frames beyond it,
+ * continuing the fold. A same-size mtime touch verifies the same way and
+ * decodes nothing. Any mismatch (shrunk file, moved boundary, encoding
+ * flip, options change) falls back to a full decode.
+ *
+ * The watermark also survives process restarts as a durable journal — a
+ * small offsets-only file (no conversation text ever leaves memory) written
+ * atomically with the host store's privacy posture: 0700 directory, 0600
+ * file, tmp+rename. The journal is a record and an assertion surface, not a
+ * data source: a cold process must still decode every prefix, because the
+ * in-memory index is the only place the decoded text lives.
+ *
  * @module dsh-tui-find/core/scan
  */
-import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { decodeFrame, sniffEncoding, walkFrames, type LogLine } from './frames.js'
 import {
   DEFAULT_EXTRACT_OPTIONS,
   extractLine,
   newExtractState,
   type ExtractOptions,
+  type ExtractState,
   type SessionContent,
 } from './events.js'
 import { sessionsRoots } from './roots.js'
@@ -61,8 +79,12 @@ export interface ScanProgress {
   readonly resolved: number
   /** Sessions known to exist when enumeration finished; undefined before. */
   readonly total: number | undefined
-  /** Log bytes decoded so far in this sweep (cache misses only). */
+  /** Log bytes decoded so far in this sweep (cache hits count nothing;
+   *  watermark resumes count only the newly decoded range). */
   readonly decodedBytes: number
+  /** Sessions whose decode resumed from a watermark this sweep — the
+   *  assertion surface for "only the new frames were decoded". */
+  readonly resumed: number
 }
 
 /** Physical facts of one log file, read once per sweep. */
@@ -78,7 +100,30 @@ interface CacheEntry {
   /** Signature of the extraction options the content was built with — a
    *  switch flip (indexTools/indexThinking/char cap) must invalidate. */
   readonly optionsKey: string
+  /**
+   * Byte offset just past the last complete frame (zstd) or newline-
+   * terminated line (plain) that {@link state} has folded — the resume
+   * watermark. Always ≤ `bytes`; the gap (when any) is an undecodable torn
+   * tail, and both values move together on every commit, so a token match
+   * implies the snapshot covers everything decodable in that file version.
+   */
+  readonly decodedTo: number
+  /** Encoding the watermark was taken under; an encoding flip is a rewrite
+   *  and forces a full decode. */
+  readonly isZstd: boolean
+  /** The live extract fold, continuable on the next append. */
+  readonly state: ExtractState
+  /** Frozen snapshot served to searches (stable message identities). */
   readonly session: ScannedSession
+}
+
+/** What {@link SessionScanner.decodeLog} hands back: the cache-ready
+ *  snapshot plus the watermark facts the entry is committed with. */
+interface DecodedLog {
+  readonly session: ScannedSession
+  readonly state: ExtractState
+  readonly decodedTo: number
+  readonly isZstd: boolean
 }
 
 /** Upper bound on a single log we will read whole; beyond it the session is
@@ -183,27 +228,32 @@ function readWholeFile(path: string): Buffer | undefined {
 /**
  * Plain-JSONL line reader over a whole-file buffer, byte-split (no
  * per-line string copying): UTF-8 multi-byte sequences never contain the
- * 0x0A byte, so byte-level splitting is encoding-safe. An unterminated
- * final line is a torn write — dropped, not parsed, matching the host's
- * own reader.
+ * 0x0A byte, so byte-level splitting is encoding-safe. Each yielded line
+ * carries the offset just past its newline — the plain path's watermark —
+ * and an unterminated final line is a torn write: dropped, not parsed,
+ * matching the host's own reader. Lines that parse to nothing usable
+ * (empty, malformed, non-object) yield with `line: undefined` so the
+ * caller's watermark still advances past them.
  */
-function* plainLines(buffer: Buffer): Generator<LogLine> {
-  let start = 0
+function* plainLines(buffer: Buffer, from = 0): Generator<{ line: LogLine | undefined; end: number }> {
+  let start = from
   while (start < buffer.length) {
     const newline = buffer.indexOf(0x0a, start)
     if (newline === -1) return // torn tail — uncommitted, dropped
-    const end = newline
-    if (end > start) {
+    const end = newline + 1
+    let line: LogLine | undefined
+    if (newline > start) {
       try {
-        const parsed: unknown = JSON.parse(buffer.toString('utf8', start, end))
+        const parsed: unknown = JSON.parse(buffer.toString('utf8', start, newline))
         if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          yield parsed as LogLine
+          line = parsed as LogLine
         }
       } catch {
         // One malformed line costs itself only.
       }
     }
-    start = newline + 1
+    yield { line, end }
+    start = end
   }
 }
 
@@ -212,16 +262,142 @@ function yieldToLoop(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve))
 }
 
+/** The extract fold cloned before an incremental resume folds into it: an
+ *  aborted resume must leave the cached state untouched, and the clone's
+ *  copied references keep every old message object (and its search-side
+ *  fold cache entry) alive. */
+function cloneState(state: ExtractState): ExtractState {
+  return { title: state.title, header: { ...state.header }, messages: [...state.messages] }
+}
+
+/** One log's durable watermark: the offset past the last decodable unit at
+ *  the moment of its last decode, plus the file facts it was taken under.
+ *  Offsets and stats only — conversation text never leaves memory. */
+interface WatermarkFacts {
+  readonly bytes: number
+  readonly mtimeMs: number
+  readonly offset: number
+  readonly optionsKey: string
+  readonly at: number
+}
+
+/** path → watermark, as loaded from and mirrored to the journal file. */
+type WatermarkJournal = Record<string, WatermarkFacts>
+
+/** Entries the journal keeps before the oldest (by `at`) are dropped: a
+ *  watermark is ~150 bytes of JSON, so this bounds the file well under half
+ *  a megabyte even for giant libraries. */
+const JOURNAL_MAX_ENTRIES = 1024
+
 /**
- * The scanner. One instance per plugin activation; the cache lives for the
- * process lifetime in memory only (no on-disk index in v0.1 — the spec's
- * privacy posture keeps conversation text out of new files).
+ * The scanner. One instance per plugin activation; the index lives for the
+ * process lifetime in memory only (the spec's privacy posture keeps
+ * conversation text out of new files). When constructed with a
+ * `watermarkPath`, each sweep also mirrors the per-log offset watermarks
+ * into that one journal file (atomic, 0600/0700) so the record survives
+ * restarts — the resume itself still requires the in-memory state, so a
+ * cold process decodes every prefix exactly once.
  */
 export class SessionScanner {
   private readonly cache = new Map<string, CacheEntry>()
+  private readonly watermarkPath: string | undefined
+  private journal: WatermarkJournal | undefined
+  private journalSaved: string | undefined
+
+  constructor(options: { watermarkPath?: string | undefined } = {}) {
+    this.watermarkPath = options.watermarkPath
+  }
+
+  /** The journal, loaded once and tolerated missing/corrupt (it is a
+   *  record, not a data source — any failure just means an empty start). */
+  private loadJournal(): WatermarkJournal {
+    if (this.watermarkPath === undefined) return {}
+    if (this.journal !== undefined) return this.journal
+    const loaded: WatermarkJournal = {}
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(this.watermarkPath, 'utf8'))
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const entries = (parsed as { entries?: unknown })['entries']
+        if (entries !== null && typeof entries === 'object' && !Array.isArray(entries)) {
+          for (const [path, value] of Object.entries(entries as Record<string, unknown>)) {
+            const record = value as Partial<WatermarkFacts> | null
+            if (
+              record !== null &&
+              typeof record === 'object' &&
+              typeof record['bytes'] === 'number' && Number.isFinite(record['bytes']) &&
+              typeof record['mtimeMs'] === 'number' && Number.isFinite(record['mtimeMs']) &&
+              typeof record['offset'] === 'number' && Number.isFinite(record['offset']) &&
+              typeof record['optionsKey'] === 'string' &&
+              typeof record['at'] === 'number' && Number.isFinite(record['at'])
+            ) {
+              loaded[path] = {
+                bytes: record['bytes']!,
+                mtimeMs: record['mtimeMs']!,
+                offset: record['offset']!,
+                optionsKey: record['optionsKey']!,
+                at: record['at']!,
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Missing or unreadable journal: start empty; the next save rewrites it.
+    }
+    this.journal = loaded
+    return loaded
+  }
+
+  /** Mirror the cache's watermarks into the journal, drop entries for logs
+   *  that left the enumeration, and persist when the content changed. */
+  private syncJournal(): void {
+    if (this.watermarkPath === undefined) return
+    const journal = this.loadJournal()
+    const seen = new Set<string>()
+    for (const [path, entry] of this.cache) {
+      seen.add(path)
+      const existing = journal[path]
+      if (
+        existing === undefined ||
+        existing.bytes !== entry.bytes ||
+        existing.mtimeMs !== entry.mtimeMs ||
+        existing.offset !== entry.decodedTo ||
+        existing.optionsKey !== entry.optionsKey
+      ) {
+        journal[path] = {
+          bytes: entry.bytes,
+          mtimeMs: entry.mtimeMs,
+          offset: entry.decodedTo,
+          optionsKey: entry.optionsKey,
+          at: Date.now(),
+        }
+      }
+    }
+    for (const path of Object.keys(journal)) {
+      if (!seen.has(path)) delete journal[path]
+    }
+    // Persist atomically with the host store's privacy posture: 0700
+    // directory, 0600 file, tmp+rename. Best effort — an unwritable home
+    // loses only the record, never data, and a failure is not fatal.
+    const capped = Object.entries(journal)
+      .sort(([, a], [, b]) => b.at - a.at)
+      .slice(0, JOURNAL_MAX_ENTRIES)
+    const serialized = JSON.stringify({ version: 1, entries: Object.fromEntries(capped) })
+    if (serialized === this.journalSaved) return
+    try {
+      mkdirSync(dirname(this.watermarkPath), { recursive: true, mode: 0o700 })
+      const temporary = `${this.watermarkPath}.tmp`
+      writeFileSync(temporary, serialized, { mode: 0o600, flag: 'w' })
+      renameSync(temporary, this.watermarkPath)
+      this.journalSaved = serialized
+    } catch {
+      // Leave the in-memory journal live; a later sweep retries the write.
+      this.journalSaved = undefined
+    }
+  }
 
   /** Cached sessions whose log still matches the cache token. */
-  private cached(id: string, facts: LogFacts, optionsKey: string): ScannedSession | undefined {
+  private cached(facts: LogFacts, optionsKey: string): ScannedSession | undefined {
     const entry = this.cache.get(facts.path)
     if (entry === undefined) return undefined
     if (entry.bytes !== facts.bytes || entry.mtimeMs !== facts.mtimeMs) return undefined
@@ -230,33 +406,60 @@ export class SessionScanner {
   }
 
   /**
-   * Decode one log into a ScannedSession. Frames are decoded one at a time;
-   * after every `YIELD_EVERY_FRAMES` frames (and before returning) the event
-   * loop gets a turn and the abort signal is honored. A frame that fails to
-   * decode is skipped; the scan never throws.
+   * Decode one log into its cache content.
+   *
+   * With a resumable cache entry (same options, matching encoding, and a
+   * watermark that is still a frame/line boundary of the current file), only
+   * the frames or lines BEYOND the watermark are decoded, folded into a
+   * clone of the cached state; every other case decodes from zero. Frames
+   * are decoded one at a time; after every 64 frames (and inside very large
+   * plain logs) the event loop gets a turn and the abort signal is honored.
+   * A frame that fails to decode is skipped; the scan never throws. On
+   * abort the clone is discarded and the cached state stays untouched.
    */
   private async decodeLog(
     id: string,
     facts: LogFacts,
     options: ExtractOptions,
     signal: AbortSignal | undefined,
-    progress: { resolved: number; total: number | undefined; decodedBytes: number },
-  ): Promise<ScannedSession | undefined> {
+    progress: { resolved: number; total: number | undefined; decodedBytes: number; resumed: number },
+    resume: CacheEntry | undefined,
+  ): Promise<DecodedLog | undefined> {
     if (facts.bytes > MAX_LOG_BYTES) return undefined
     const buffer = readWholeFile(facts.path)
     if (buffer === undefined) return undefined
 
-    const state = newExtractState()
     const isZstd = sniffEncoding(buffer.subarray(0, 4), Math.min(4, buffer.length)) === 'zstd'
+    let state = newExtractState()
+    let decodedTo = 0
+
     if (isZstd) {
+      // The walk is structural, not a decode — cheap even over the whole
+      // file, and it doubles as the watermark's boundary proof: the
+      // append-only prefix is still the one already folded into the cached
+      // state exactly when some complete frame ends at the watermark.
       const frames = walkFrames(buffer)
+      let startIndex = 0
+      if (
+        resume !== undefined &&
+        resume.isZstd &&
+        facts.bytes >= resume.decodedTo &&
+        frames.some(frame => frame.end === resume.decodedTo)
+      ) {
+        startIndex = frames.findIndex(frame => frame.end === resume.decodedTo) + 1
+        decodedTo = resume.decodedTo
+        state = cloneState(resume.state)
+        progress.resumed += 1
+      }
       let sinceYield = 0
-      for (const frame of frames) {
+      for (let index = startIndex; index < frames.length; index++) {
         if (signal?.aborted) return undefined
+        const frame = frames[index]!
         const lines = decodeFrame(buffer, frame)
         if (lines !== undefined) {
           for (const line of lines) extractLine(state, line, options)
         }
+        decodedTo = frame.end
         progress.decodedBytes += frame.end - frame.start
         if (++sinceYield >= 64) {
           sinceYield = 0
@@ -264,21 +467,37 @@ export class SessionScanner {
         }
       }
     } else {
+      // Plain resume boundary: the watermark must sit right after a
+      // newline of the current file (decodedTo 0 is the trivial one).
+      let startOffset = 0
+      if (
+        resume !== undefined &&
+        !resume.isZstd &&
+        buffer.length >= resume.decodedTo &&
+        (resume.decodedTo === 0 || buffer[resume.decodedTo - 1] === 0x0a)
+      ) {
+        startOffset = resume.decodedTo
+        decodedTo = startOffset
+        state = cloneState(resume.state)
+        if (startOffset > 0) progress.resumed += 1
+      }
+      const firstOffset = decodedTo
       let sinceYield = 0
-      for (const line of plainLines(buffer)) {
+      for (const { line, end } of plainLines(buffer, startOffset)) {
         if (signal?.aborted) return undefined
-        extractLine(state, line, options)
+        decodedTo = end
+        if (line !== undefined) extractLine(state, line, options)
         if (++sinceYield >= PLAIN_YIELD_EVERY_LINES) {
           sinceYield = 0
           await yieldToLoop()
         }
       }
-      // Aborted reads report nothing; a completed one accounts the whole
-      // buffer, matching the zstd path's per-frame accounting.
-      progress.decodedBytes += buffer.length
+      // Account only the range this sweep actually read lines over (the
+      // zstd path accounts per decoded frame the same way).
+      progress.decodedBytes += buffer.length - firstOffset
     }
 
-    return {
+    const session: ScannedSession = {
       id,
       path: facts.path,
       bytes: facts.bytes,
@@ -287,18 +506,23 @@ export class SessionScanner {
       header: state.header,
       messages: state.messages,
     }
+    return { session, state, decodedTo, isZstd }
   }
 
   /**
    * Sweep every root and resolve each session to its searchable content.
    *
    * Cache hits are verified against the live stat (one per session per
-   * sweep) and returned without any log read. Cold entries are decoded one
-   * file at a time with the event loop yielded between them, and the cache
-   * is filled incrementally — an aborted sweep keeps everything it already
-   * resolved and leaves the warm entries it never reached for the next
-   * sweep to re-verify. Sessions whose log vanished between enumeration and
-   * read are simply absent from the result.
+   * sweep) and returned without any log read. A log that grew (or was
+   * touched) since its cached version resumes from the entry's offset
+   * watermark and decodes only the new frames or lines — see decodeLog —
+   * and anything that cannot prove the append-only prefix falls back to a
+   * full decode. Cold entries are decoded one file at a time with the event
+   * loop yielded between them, and the cache is filled incrementally — an
+   * aborted sweep keeps everything it already resolved and leaves the warm
+   * entries it never reached for the next sweep to re-verify. Sessions
+   * whose log vanished between enumeration and read are simply absent from
+   * the result.
    *
    * @returns Sessions ordered most-recently-modified first.
    */
@@ -311,10 +535,11 @@ export class SessionScanner {
     }
     const enumerated = enumerateLogs(options.sessionRoot)
     // Mutable accumulation; only frozen snapshots cross the callback.
-    const progress: { resolved: number; total: number | undefined; decodedBytes: number } = {
+    const progress: { resolved: number; total: number | undefined; decodedBytes: number; resumed: number } = {
       resolved: 0,
       total: undefined,
       decodedBytes: 0,
+      resumed: 0,
     }
 
     const results: ScannedSession[] = []
@@ -323,15 +548,32 @@ export class SessionScanner {
     for (const [id, facts] of enumerated) {
       if (signal?.aborted) break
       progress.total = enumerated.size
-      const cachedSession = this.cached(id, facts, optionsKey)
-      const session = cachedSession ?? (await this.decodeLog(id, facts, extract, signal, progress))
+      const cachedSession = this.cached(facts, optionsKey)
+      let session = cachedSession
+      if (session === undefined) {
+        // The old entry (if any) is the resume candidate only when the
+        // extraction options still match — a switch flip rebuilds from zero.
+        const resumeEntry = this.cache.get(facts.path)
+        const resume =
+          resumeEntry !== undefined && resumeEntry.optionsKey === optionsKey ? resumeEntry : undefined
+        const decoded = await this.decodeLog(id, facts, extract, signal, progress, resume)
+        if (decoded !== undefined) {
+          this.cache.set(facts.path, {
+            bytes: facts.bytes,
+            mtimeMs: facts.mtimeMs,
+            optionsKey,
+            decodedTo: decoded.decodedTo,
+            isZstd: decoded.isZstd,
+            state: decoded.state,
+            session: decoded.session,
+          })
+          session = decoded.session
+        }
+      }
       index += 1
       if (session === undefined) {
         options.onProgress?.({ ...progress, resolved: progress.resolved })
         continue
-      }
-      if (cachedSession === undefined) {
-        this.cache.set(facts.path, { bytes: facts.bytes, mtimeMs: facts.mtimeMs, optionsKey, session })
       }
       results.push(session)
       progress.resolved += 1
@@ -352,6 +594,10 @@ export class SessionScanner {
     for (const path of [...this.cache.keys()]) {
       if (!enumeratedPaths.has(path)) this.cache.delete(path)
     }
+
+    // The watermark journal mirrors the committed cache entries; failures
+    // are contained inside and never fail the sweep.
+    this.syncJournal()
 
     return results.sort(
       (left, right) =>

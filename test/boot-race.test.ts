@@ -17,6 +17,10 @@ import { Context, type Context as Ctx } from '@deepseek-ai/cordis'
 import TuiSceneRuntime from '@deepseek-harness-tui/dsh-tui/scenes'
 import plugin, { SCENE_ID } from '../dist/main.js'
 
+// The plugin mounts for real here; keep the watermark journal off so no
+// test ever writes against the real ~/.dsh-tui tree.
+process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
+
 const LIVENESS_FRAGMENT = 'requires a live Cordis activation context'
 
 /** The plugin row as the host loader mounts it: module namespace with
