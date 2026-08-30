@@ -28,8 +28,8 @@ import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { copyToClipboard } from './clipboard.js'
 import type { ResolvedConfig } from './config.js'
-import { getLang, t } from './i18n.js'
-import { SessionScanner, type ScanProgress, type ScannedSession } from './core/scan.js'
+import { t } from './i18n.js'
+import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
 import { searchSessions, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
 import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
@@ -227,12 +227,16 @@ function HighlightedText(props: {
 }
 
 /** The main scene component, registered under `dsh-tui-find-scene`. */
-export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initialQuery: () => string }): React.ReactElement {
-  const { React, ui, channel, close, config } = props
+export function FindScene(props: TuiSceneProps & {
+  config: ResolvedConfig
+  /** Plugin-scoped scanner (created in main.tsx): its decode cache outlives the scene. */
+  scanner: SessionScanner
+  initialQuery: () => string
+}): React.ReactElement {
+  const { React, ui, channel, close, config, scanner } = props
   const { Box, Text, useInput, useTerminalSize } = ui
   const { useState, useEffect, useMemo, useRef, useCallback } = React
 
-  const lang = getLang()
   const [query, setQuery] = useState(() => props.initialQuery())
   const [scope, setScope] = useState<SearchScope>(config.defaultScope)
   const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
@@ -257,9 +261,10 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
   // async operation twice before the mode change renders.
   const actionPendingRef = useRef(false)
 
-  // One scanner per scene; the sweep aborts when the scene unmounts.
+  // One sweep per mount: a fresh abort controller, aborted when the scene
+  // unmounts. The scanner itself is plugin-scoped (main.tsx) — its per-file
+  // decode cache survives close/open, so a re-open pays only per-file stats.
   useEffect(() => {
-    const scanner = new SessionScanner()
     const signal = new AbortController()
     const scanOptions = {
       indexTools: config.indexTools,
@@ -361,7 +366,7 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
     if (hit === undefined) return
     const when = hit.at === undefined ? '' : ` ${new Date(hit.at).toISOString()}`
     const role = hit.role === 'user' ? t('role-user') : hit.role === 'assistant' ? t('role-assistant') : t('role-tool')
-    const body = hit.kind === 'title' ? hit.text : `[${role}${when}]\n${hit.text}`
+    const body = `[${role}${when}]\n${hit.text}`
     try {
       copyToClipboard(body, process.stdout)
       setStatus({ text: t('copied', { chars: body.length }), tone: 'info' })
@@ -715,7 +720,6 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
             height={listHeight}
             titleWidth={titleWidth}
             hitWidth={hitWidth}
-            lang={lang}
           />
         )}
       </Box>
@@ -756,9 +760,8 @@ function ListView(props: {
   height: number
   titleWidth: number
   hitWidth: number
-  lang: 'zh' | 'en'
 }): React.ReactElement {
-  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, lang } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth } = props
   const { Box, Text } = ui
   const { useState, useMemo } = R
 

@@ -193,6 +193,42 @@ describe('SessionScanner', () => {
     expect(scanner.size).toBe(0)
   })
 
+  it('keeps warm cache entries when a sweep aborts mid-list', async () => {
+    const scanner = new SessionScanner()
+    await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    const warm = scanner.size
+    expect(warm).toBeGreaterThan(1)
+
+    // Abort on the first progress tick: the abort check sits at the top of
+    // the per-file loop with no yield between the first tick and the check,
+    // so the sweep stops after its very first file.
+    const controller = new AbortController()
+    let ticks = 0
+    const partial = await scanner.scan({
+      sessionRoot: FIXTURE_ROOT,
+      signal: controller.signal,
+      onProgress: () => {
+        ticks += 1
+        if (ticks === 1) controller.abort()
+      },
+    })
+    expect(partial.length).toBeLessThan(warm)
+    // Unreached logs are not gone logs: their entries must survive so an
+    // aborted sweep cannot throw the warm cache away.
+    expect(scanner.size).toBe(warm)
+
+    // The next sweep is then fully warm: zero decode work, full result.
+    let decoded = 0
+    const full = await scanner.scan({
+      sessionRoot: FIXTURE_ROOT,
+      onProgress: progress => {
+        decoded = progress.decodedBytes
+      },
+    })
+    expect(decoded).toBe(0)
+    expect(full).toHaveLength(warm)
+  })
+
   it('decodes a large plain log across event-loop yields and accounts its bytes', async () => {
     // The plain branch yields every PLAIN_YIELD_EVERY_LINES (2048) lines;
     // 6000 lines force at least two yields, and a completed read must

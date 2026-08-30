@@ -283,8 +283,9 @@ export class SessionScanner {
    * sweep) and returned without any log read. Cold entries are decoded one
    * file at a time with the event loop yielded between them, and the cache
    * is filled incrementally — an aborted sweep keeps everything it already
-   * resolved. Sessions whose log vanished between enumeration and read are
-   * simply absent from the result.
+   * resolved and leaves the warm entries it never reached for the next
+   * sweep to re-verify. Sessions whose log vanished between enumeration and
+   * read are simply absent from the result.
    *
    * @returns Sessions ordered most-recently-modified first.
    */
@@ -305,7 +306,6 @@ export class SessionScanner {
 
     const results: ScannedSession[] = []
     const optionsKey = JSON.stringify(extract)
-    const livePaths = new Set<string>()
     let index = 0
     for (const [id, facts] of enumerated) {
       if (signal?.aborted) break
@@ -320,7 +320,6 @@ export class SessionScanner {
       if (cachedSession === undefined) {
         this.cache.set(facts.path, { bytes: facts.bytes, mtimeMs: facts.mtimeMs, optionsKey, session })
       }
-      livePaths.add(facts.path)
       results.push(session)
       progress.resolved += 1
       options.onProgress?.({ ...progress })
@@ -328,10 +327,17 @@ export class SessionScanner {
     }
     options.onProgress?.({ ...progress, total: progress.total ?? results.length })
 
-    // Garbage-collect entries for logs that vanished (or failed to decode)
-    // this sweep — the cache must not outlive the sessions it mirrors.
+    // Garbage-collect entries for logs this sweep no longer enumerates —
+    // the cache must not outlive the sessions it mirrors. Entries for logs
+    // still enumerated are kept even when this sweep aborted before
+    // reaching them or their read failed transiently: an entry is only ever
+    // served after a live stat re-verified its bytes:mtimeMs:optionsKey
+    // token, so an unreached entry is warm cache, not stale data, and an
+    // aborted sweep must not discard the previous sweep's work.
+    const enumeratedPaths = new Set<string>()
+    for (const facts of enumerated.values()) enumeratedPaths.add(facts.path)
     for (const path of [...this.cache.keys()]) {
-      if (!livePaths.has(path)) this.cache.delete(path)
+      if (!enumeratedPaths.has(path)) this.cache.delete(path)
     }
 
     return results.sort(

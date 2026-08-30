@@ -24,6 +24,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { Config, resolveConfig, type Config as PluginConfig, type ResolvedConfig } from './config.js'
+import { SessionScanner } from './core/scan.js'
 import { setLangOverride } from './i18n.js'
 import { FindScene } from './scene.js'
 import { registerSettingsSection } from './settings.js'
@@ -81,10 +82,16 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // The search scene itself.
   const scenesRuntime = ctx.get('tuiScenes', false)
   if (scenesRuntime !== undefined) {
+    // One scanner per plugin activation (scan.ts's lifecycle contract): the
+    // per-file decode cache survives scene close/open, so re-opening /find
+    // after a warm sweep pays only per-file stats. A plugin restart rebuilds
+    // it — the optionsKey guard would invalidate every entry anyway.
+    const scanner = new SessionScanner()
     const component = (props: TuiSceneProps) => (
       <FindScene
         {...props}
         config={resolved}
+        scanner={scanner}
         initialQuery={() => {
           const value = pendingQuery
           pendingQuery = ''
@@ -114,16 +121,19 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     // the raw input out of the session log.
     recordInput: false,
     handler: invocation => {
-      pendingQuery = invocation.rawInput.trim()
       const scenes = ctx.get('tuiScenes', false)
       if (scenes === undefined) {
         return { kind: 'error', text: 'dsh-tui-find: TUI scenes seam unavailable' }
       }
+      pendingQuery = invocation.rawInput.trim()
       // An already-open scene does not remount on re-open, so a new
       // `/find <words>` while the scene is up would silently drop the
       // query — cycle the scene to force a remount that consumes it.
       if (scenes.active?.id === SCENE_ID) scenes.close()
       const opened = scenes.open(SCENE_ID)
+      // A failed open leaves no scene to consume the seed; keeping it
+      // would leak these words into a later shortcut-opened scene.
+      if (!opened) pendingQuery = ''
       return opened
         ? { kind: 'success' }
         : { kind: 'error', text: 'dsh-tui-find: failed to open the find scene' }
