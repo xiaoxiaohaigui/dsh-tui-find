@@ -66,7 +66,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 
 > Manual mounts (a row inserted into the profile's `cordis.patch.yml` by hand): remove the package as in step 1 first, then delete the inserted row.
 
-Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.dsh-tui`, the plugin was strictly read-only with no on-disk index, and removing it leaves your sessions untouched.
+Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.dsh-tui`, the plugin is strictly read-only, and your search history disappears with it — sessions themselves are untouched. The only file it writes is the watermark journal (`~/.dsh-tui/dsh-tui-find/watermark.json`, statistics only, see the next section); delete the whole `~/.dsh-tui/dsh-tui-find/` directory for a fully clean slate.
 
 ## Usage
 
@@ -82,6 +82,8 @@ Keys inside the scene:
 |---|---|
 | any character | Instant filtering (fzf-style, purely in-memory, zero I/O); with an empty query, recent sessions are listed |
 | `Tab` | Toggle scope: this repo ⇄ all sessions |
+| `Alt+R` | Toggle regex matching (JS syntax; an invalid pattern shows a notice and matches nothing) |
+| `Alt+T` | Cycle the time window: all ⇄ last 7 days ⇄ last 30 days (by session modification time) |
 | `↑` `↓` / `PgUp` `PgDn` | Move between entries / page |
 | `Alt+P` | Read-only preview (2 context messages each side + session header) |
 | `Alt+C` | Copy the hit's original text (role + timestamp included) |
@@ -97,7 +99,8 @@ Results are grouped per session, hits are highlighted, each session shows its fi
 
 - **Indexed**: user messages, assistant text, session titles, tool-call summaries (`[name] arguments`).
 - **Not indexed by default**: thinking text (opt-in via config).
-- **Matching**: case-insensitive substring (CJK-correct by construction, no segmenter).
+- **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); `Alt+R` switches to JS regex mode (case sensitivity follows the case-sensitive switch; an invalid pattern matches nothing and shows a notice).
+- **Time window**: `Alt+T` filters by session modification time, applying to both search results and the empty-query recent list.
 - **Default scope**: current repo (session cwd matched against the live channel cwd — the same semantics as the resume browser, subdirectory sessions included).
 
 ## Configuration
@@ -110,6 +113,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       name: 'dsh-tui-find'
       defaultScope: 'all'        # initial scope: repo (default) | all
       caseSensitive: false       # case-sensitive matching (default off)
+      regex: false               # start with regex matching on (default off; Alt+R toggles it live)
       indexTools: true           # index tool-call summaries (default on)
       indexThinking: false       # index thinking text (default off)
       sessionRoot: ''            # manual session root override
@@ -127,6 +131,7 @@ Every option above except `lang` can also be changed inside the TUI: open `/sett
 |---|---|
 | Default scope | This repo (default) ⇄ All sessions |
 | Case-sensitive | on / off (default off) |
+| Regex matching | on / off (default off; `Alt+R` toggles it live in the scene) |
 | Index tool calls | on / off (default on) |
 | Index thinking | on / off (default off) |
 | Session root override | text; blank falls back to the resolution chain below |
@@ -146,8 +151,9 @@ Probed in this order (first hit wins):
 ## Privacy & safety
 
 - **Read-only end to end**: session logs are opened 'r' only; the history lock is never touched and history is never rewritten.
-- **No on-disk index**: scan results live in memory behind an mtime+size cache; no new copies of your conversations are written anywhere.
-- **Tolerant**: a torn final frame (crash mid-flush) is recognized structurally per RFC 8878 and skipped — never fatal, never leaves residue.
+- **Minimal disk footprint**: conversation content lives only in memory (behind an mtime+size cache); no copies of your conversations are ever written. The single exception is the watermark journal `~/.dsh-tui/dsh-tui-find/watermark.json` — byte counts, mtimes and offsets only, **never conversation text**; 0700 directory / 0600 file, tmp+rename atomic write, and `DSH_TUI_FIND_WATERMARK=off` disables it entirely. It is an observation record for incremental decoding: a cold start still decodes every prefix, and the journal never drives decode decisions.
+- **Incremental decode**: after a session log grows, only the new frames are decoded (offset watermark + append-only boundary proof); a same-size touch decodes nothing, while shrunk/rewritten/encoding-flipped files fall back to a full decode.
+- **Tolerant**: a torn final frame (crash mid-flush) is recognized structurally per RFC 8878 and skipped — never fatal, never leaves residue; frames the writer completes after the crash are picked up by the incremental path, neither duplicated nor lost.
 - **Resume needs confirmation**: resuming discards the current context, so `↵` asks twice, with a loud warning while the live session is still working.
 
 ## Development
@@ -159,11 +165,11 @@ npm test           # vitest: frames / scanner / search / event sanitization / di
 npm run fixtures   # synthesize session fixtures (zstd chains + plain + corruption cases)
 ```
 
-Test coverage (82 tests):
+Test coverage (92 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
-- **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), incremental re-decode after append, corruption tolerance, the indexTools switch, AbortSignal.
-- **Search**: case folding + highlight ranges, CJK substrings, tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included).
+- **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), zero decode on a same-size touch (boundary-verified), the offset-watermark suite (zstd/plain appends decode only the new frames, torn-tail completion without duplication, shrink fallback to a full decode, journal 0600/0700 posture and cold-start full decode), corruption tolerance, the indexTools/indexThinking switches, AbortSignal.
+- **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid patterns match nothing, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence.
 - **Event sanitization**: terminal control-byte and C1/DEL stripping, CR/tab folding, control-only message drops, header cwd and session-title sanitization.
 - **Display width**: CJK/emoji double-width, head/tail truncation, spread rows, physical-line scroll windows (two-line card budget), hit-line flattening/windowing/range mapping.
 - **Admission**: the manifest parses and projects under the host's own `@dsh-std/manifest` v0.15 parser with exact contract declarations; real cordis fibers mount the plugin (scene register/open/close, settings card, mediated-command degradation path) and the language pin reverts on deactivation.
