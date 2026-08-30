@@ -76,13 +76,16 @@ Keys inside the scene:
 
 | Key | Action |
 |---|---|
-| any character | Instant filtering (fzf-style, purely in-memory, zero I/O) |
+| any character | Instant filtering (fzf-style, purely in-memory, zero I/O); with an empty query, recent sessions are listed |
 | `Tab` | Toggle scope: this repo ⇄ all sessions |
-| `↑` `↓` / `PgUp` `PgDn` | Move between hits / page |
-| `p` | Read-only preview (2 context messages each side + session header) |
-| `c` | Copy the hit's original text (role + timestamp included) |
+| `↑` `↓` / `PgUp` `PgDn` | Move between entries / page |
+| `Alt+P` | Read-only preview (2 context messages each side + session header) |
+| `Alt+C` | Copy the hit's original text (role + timestamp included) |
+| `Alt+E` | Expand / collapse all hits of the selected session |
 | `↵` | Resume session (**double confirmation**; loud warning while the live session is working) |
 | `Esc` | Clear query / go back / close the scene |
+
+> Preview and copy live on `Alt+` chords only: bare letters always type into the query and never trigger shortcuts.
 
 Results are grouped per session, hits are highlighted, each session shows its first 3 hits (`(+N)` hint), most-recent-first.
 

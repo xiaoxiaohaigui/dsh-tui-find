@@ -63,47 +63,55 @@ export function getLang(): Lang {
 }
 
 export const dict = {
-  // ── scene chrome ─────────────────────────────────────────────────────
+  // ── scene chrome (mirrors the /resume browser's regions) ────────────
   'scene-title': { zh: '查找历史会话', en: 'Find in sessions' },
-  'search-placeholder': { zh: '输入关键词…', en: 'Type to search…' },
+  'search-placeholder': { zh: '输入以搜索 · {{scope}}', en: 'Type to search · {{scope}}' },
   'scope-repo': { zh: '本仓库', en: 'This repo' },
   'scope-all': { zh: '全部会话', en: 'All sessions' },
-  'scope-label': { zh: '范围', en: 'Scope' },
+  'scope-switched': { zh: '范围已切换为「{{scope}}」', en: 'Scope switched to "{{scope}}"' },
   'scanning': { zh: '扫描中 {{resolved}}/{{total}}…', en: 'Scanning {{resolved}}/{{total}}…' },
   'scanning-initial': { zh: '扫描中…', en: 'Scanning…' },
-  'no-query-hint': {
-    zh: '输入关键词搜索全部会话内容；↑↓选择，↵恢复，p预览，c复制',
-    en: 'Type to search across all sessions; ↑↓ navigate, ↵ resume, p preview, c copy',
-  },
-  'no-results': { zh: '没有匹配的会话', en: 'No matching sessions' },
+  'reading-sessions': { zh: '正在读取会话…', en: 'Reading sessions…' },
+  'session-count': { zh: '{{n}} 个会话', en: '{{n}} sessions' },
+  'no-results': { zh: ' 没有匹配的会话', en: ' No matching sessions' },
   'no-results-scope-hint': {
-    zh: '当前范围是「{{scope}}」——按 Tab 切换范围试试',
-    en: 'Scope is "{{scope}}" — press Tab to try all sessions',
+    zh: ' 当前范围是「{{scope}}」——按 Tab 切换范围试试',
+    en: ' Scope is "{{scope}}" — press Tab to try all sessions',
   },
+  'no-sessions': { zh: ' 没有可搜索的会话内容', en: ' No searchable session content' },
+
+  // ── relative time (mirrors the host's session-when-* strings) ───────
+  'when-now': { zh: '刚刚', en: 'just now' },
+  'when-minutes': { zh: '{{n}} 分钟前', en: '{{n}}m ago' },
+  'when-hours': { zh: '{{n}} 小时前', en: '{{n}}h ago' },
+  'when-days': { zh: '{{n}} 天前', en: '{{n}}d ago' },
+  'when-date': { zh: '{{m}}月{{d}}日', en: '{{m}}/{{d}}' },
+  'msgs-count': { zh: '{{n}} 条', en: '{{n}} msgs' },
 
   // ── result rows ──────────────────────────────────────────────────────
   'role-user': { zh: '你', en: 'You' },
   'role-assistant': { zh: 'AI', en: 'AI' },
   'role-tool': { zh: '工具', en: 'Tool' },
-  'more-hits': { zh: '(+{{count}})', en: '(+{{count}})' },
+  'role-title': { zh: '标题', en: 'Title' },
+  'more-hits': { zh: ' (+{{count}})', en: ' (+{{count}})' },
   'hit-count': { zh: '{{sessions}} 个会话 · {{hits}} 处命中', en: '{{sessions}} sessions · {{hits}} hits' },
 
-  // ── footer ───────────────────────────────────────────────────────────
-  'footer-main': {
-    zh: '↵恢复会话  p预览  c复制  Tab切换范围  ↑↓导航  Esc退出',
-    en: '↵ resume  p preview  c copy  Tab scope  ↑↓ navigate  Esc close',
+  // ── hint lines (HintLine style: **key** renders bold) ───────────────
+  'hint-list': {
+    zh: '**Enter** 恢复 · Tab 范围 · Alt+P 预览 · Alt+C 复制 · Alt+E 展开 · ↑↓ 选择 · Esc 清空/退出',
+    en: '**Enter** resume · Tab scope · Alt+P preview · Alt+C copy · Alt+E expand · ↑↓ select · Esc clear/exit',
   },
-  'footer-main-typing': {
-    zh: '↵恢复会话  alt+p预览  alt+c复制  Tab切换范围  Esc清空',
-    en: '↵ resume  alt+p preview  alt+c copy  Tab scope  Esc clear',
+  'hint-list-short': {
+    zh: '**Enter** 恢复 · Alt+P 预览 · Alt+C 复制 · Esc 退出',
+    en: '**Enter** resume · Alt+P preview · Alt+C copy · Esc exit',
   },
-  'footer-preview': {
-    zh: 'c复制选中  ↵恢复此会话  Esc返回列表',
-    en: 'c copy selected  ↵ resume session  Esc back',
+  'hint-preview': {
+    zh: '**Enter** 恢复 · C 复制 · Esc 返回',
+    en: '**Enter** resume · C copy · Esc back',
   },
-  'footer-confirm': {
-    zh: '↵确认恢复  Esc取消',
-    en: '↵ confirm resume  Esc cancel',
+  'hint-confirm': {
+    zh: '**Enter** 确认恢复 · Esc 取消',
+    en: '**Enter** confirm resume · Esc cancel',
   },
 
   // ── preview pane ─────────────────────────────────────────────────────
