@@ -369,6 +369,29 @@ describe('searchSessions', () => {
     expect(searchSessions(sessions, '   ', { scope: 'all' })).toEqual([])
   })
 
+  it('honors the sinceMs time window inclusively', () => {
+    const now = Date.now()
+    const day = 86_400_000
+    const make = (modifiedAt: number, text: string): ScannedSession => ({
+      id: text,
+      path: `P:\\fixture\\${text}`,
+      bytes: 1,
+      modifiedAt,
+      title: undefined,
+      header: { cwd: undefined, createdAt: undefined },
+      messages: [{ seq: 1, role: 'user', text, at: undefined }],
+    })
+    const pool = [make(now - day, 'fresh auth note'), make(now - 40 * day, 'old auth note')]
+    expect(searchSessions(pool, 'auth', { scope: 'all' })).toHaveLength(2)
+    const week = searchSessions(pool, 'auth', { scope: 'all', sinceMs: now - 7 * day })
+    expect(week).toHaveLength(1)
+    expect(week[0]!.hits[0]!.text).toBe('fresh auth note')
+    // A session modified exactly at the cutoff still passes (inclusive).
+    const cutoff = now - 30 * day
+    expect(searchSessions([make(cutoff, 'edge auth')], 'auth', { scope: 'all', sinceMs: cutoff })).toHaveLength(1)
+    expect(searchSessions([make(cutoff - 1, 'edge auth')], 'auth', { scope: 'all', sinceMs: cutoff })).toEqual([])
+  })
+
   it('is idempotent across repeated searches (cached folds do not shift ranges)', () => {
     // The per-object fold cache must not change results between the first
     // (fold built) and subsequent (cache hit) evaluations. Fresh object

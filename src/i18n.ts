@@ -79,6 +79,10 @@ export const dict = {
   'scope-repo': { zh: '本仓库', en: 'This repo' },
   'scope-all': { zh: '全部会话', en: 'All sessions' },
   'scope-switched': { zh: '范围已切换为「{{scope}}」', en: 'Scope switched to "{{scope}}"' },
+  'time-all': { zh: '全部时间', en: 'All time' },
+  'time-7d': { zh: '近 7 天', en: 'Last 7 days' },
+  'time-30d': { zh: '近 30 天', en: 'Last 30 days' },
+  'time-switched': { zh: '时间范围：{{range}}', en: 'Time range: {{range}}' },
   'scanning': { zh: '扫描中 {{resolved}}/{{total}}…', en: 'Scanning {{resolved}}/{{total}}…' },
   'scanning-initial': { zh: '扫描中…', en: 'Scanning…' },
   'reading-sessions': { zh: '正在读取会话…', en: 'Reading sessions…' },
@@ -106,15 +110,18 @@ export const dict = {
   'more-hits': { zh: ' (+{{count}})', en: ' (+{{count}})' },
   'hit-count': { zh: '{{sessions}} 个会话 · {{hits}} 处命中', en: '{{sessions}} sessions · {{hits}} hits' },
 
-  // ── hint lines (HintLine style: **key** renders bold) ───────────────
-  'hint-list': {
-    zh: '**Enter** 恢复 · Tab 范围 · Alt+P 预览 · Alt+C 复制 · Alt+E 展开 · ↑↓ 选择 · Esc 清空/退出',
-    en: '**Enter** resume · Tab scope · Alt+P preview · Alt+C copy · Alt+E expand · ↑↓ select · Esc clear/exit',
-  },
-  'hint-list-short': {
-    zh: '**Enter** 恢复 · Alt+P 预览 · Alt+C 复制 · Esc 退出',
-    en: '**Enter** resume · Alt+P preview · Alt+C copy · Esc exit',
-  },
+  // ── hint lines (HintLine style: **key** spans render bold) ─────────────
+  // The list hint is composed per width from these segments (scene.tsx):
+  // leading/trailing segments always render, middle ones drop when the
+  // viewport is too narrow for the full line.
+  'hint-seg-resume': { zh: '**Enter** 恢复', en: '**Enter** resume' },
+  'hint-seg-scope': { zh: 'Tab 范围', en: 'Tab scope' },
+  'hint-seg-preview': { zh: 'Alt+P 预览', en: 'Alt+P preview' },
+  'hint-seg-copy': { zh: 'Alt+C 复制', en: 'Alt+C copy' },
+  'hint-seg-expand': { zh: 'Alt+E 展开', en: 'Alt+E expand' },
+  'hint-seg-time': { zh: 'Alt+T 时间', en: 'Alt+T time' },
+  'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
+  'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
   'hint-preview': {
     zh: '**Enter** 恢复 · C 复制 · Esc 返回',
     en: '**Enter** resume · C copy · Esc back',

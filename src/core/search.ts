@@ -56,6 +56,13 @@ export interface SearchOptions {
   readonly repoCwd?: string
   /** Case-sensitive matching. Default OFF (spec §6 freeze). */
   readonly caseSensitive?: boolean
+  /**
+   * Time window: only sessions whose log was modified at or after this
+   * epoch-ms participate (the scene's time filter). The comparison is
+   * inclusive — a session modified exactly at the cutoff passes. Undefined
+   * disables the filter.
+   */
+  readonly sinceMs?: number
 }
 
 /** Normalize a cwd for comparison: forward slashes, no trailing slash; case
@@ -225,7 +232,7 @@ export function matchRanges(
  *
  * @param sessions - The scanned index (order preserved by the caller).
  * @param query - Raw user input (trimmed here).
- * @param options - Scope and sensitivity configuration.
+ * @param options - Scope, sensitivity and time-window configuration.
  */
 export function searchSessions(
   sessions: readonly ScannedSession[],
@@ -247,6 +254,9 @@ export function searchSessions(
   const hits: SessionHit[] = []
   for (const session of sessions) {
     if (options.scope === 'repo' && !sessionCwdMatches(repoCwd, session.header.cwd ?? '')) {
+      continue
+    }
+    if (options.sinceMs !== undefined && session.modifiedAt < options.sinceMs) {
       continue
     }
 

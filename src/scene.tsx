@@ -11,11 +11,11 @@
  * intercepted (v0.1.2: bare `p`/`c` fought the first keystroke of every
  * query). Preview/copy/expand moved to Alt+P / Alt+C / Alt+E exclusively;
  * the host reports Alt as `key.meta`. Enter opens the resume confirm, Tab
- * toggles the scope, ↑↓/PgUp/PgDn move, Esc backs out one layer (query,
- * then screen). With an empty query the scene lists recent sessions
- * (most-recent-first, sessions with no conversation excluded, like the
- * browser's empty-session discipline) so /find opens as a live browser,
- * not a dead prompt.
+ * toggles the scope, Alt+T cycles the time window, ↑↓/PgUp/PgDn move, Esc
+ * backs out one layer (query, then screen). With an empty query the scene
+ * lists recent sessions (most-recent-first, sessions with no conversation
+ * excluded, like the browser's empty-session discipline) so /find opens as
+ * a live browser, not a dead prompt.
  *
  * All React usage goes through the HOST-injected `React` and `ui` kit —
  * the plugin never imports its own React copy (see scenes.ts discipline).
@@ -42,6 +42,9 @@ type InputKey = Parameters<Parameters<Ui['useInput']>[0]>[1]
 type TextColor = NonNullable<React.ComponentProps<Ui['Text']>['color']>
 
 type Mode = 'list' | 'preview' | 'confirm'
+
+/** The time window the list and search filter sessions by. */
+type TimeFilter = 'all' | '7d' | '30d'
 
 /** A row of the flattened list. Every row is selectable — a session card
  *  resumes its session, a hit row resumes the session it hit. A card's
@@ -122,6 +125,35 @@ function HintLine(props: { React: TuiSceneProps['React']; ui: Ui; text: string }
 }
 
 /**
+ * The list hint line: key segments joined by ` · `, fitted to the viewport.
+ * A static wide/narrow pair cannot track the actual rendered width (CJK
+ * labels, per-language lengths), so the line is composed here: the first and
+ * last segments always render, middle segments drop in reverse priority
+ * order when the full line would exceed the columns budget.
+ */
+function composeListHint(columns: number): string {
+  const segments = [
+    t('hint-seg-resume'),
+    t('hint-seg-scope'),
+    t('hint-seg-preview'),
+    t('hint-seg-copy'),
+    t('hint-seg-expand'),
+    t('hint-seg-time'),
+    t('hint-seg-navigate'),
+  ]
+  const last = t('hint-seg-esc')
+  const separator = ' · '
+  const budget = Math.max(20, columns - 2)
+  let line = segments[0]!
+  for (let index = 1; index < segments.length; index++) {
+    const candidate = `${line}${separator}${segments[index]!}`
+    if (displayWidth(candidate) + separator.length + displayWidth(last) > budget) break
+    line = candidate
+  }
+  return `${line}${separator}${last}`
+}
+
+/**
  * The bordered search card: `⌕ ` prefix, inverse block caret at the query's
  * end (the caret is append-only — the scene never moves it), and a
  * right-aligned dimmed placeholder carrying the scope while empty, so the
@@ -137,9 +169,11 @@ function SearchCard(props: {
   ui: Ui
   query: string
   scope: SearchScope
+  /** Active non-default filters, precomposed ('近 7 天 · 正则'); '' when none. */
+  filters: string
   columns: number
 }): React.ReactElement {
-  const { React: R, ui, query, scope, columns } = props
+  const { React: R, ui, query, scope, filters, columns } = props
   const { Box, Text } = ui
   const placeholder = t('search-placeholder', {
     scope: scope === 'repo' ? t('scope-repo') : t('scope-all'),
@@ -169,15 +203,25 @@ function SearchCard(props: {
           <Text inverse>{' '}</Text>
           <Box flexGrow={1} />
           <Text dimColor wrap="truncate">
-            {placeholder}
+            {filters === '' ? placeholder : `${placeholder} · ${filters}`}
           </Text>
         </Box>
       ) : (
-        <Text wrap="truncate-end">
-          {'⌕ '}
-          {tail}
-          <Text inverse>{' '}</Text>
-        </Text>
+        <Box flexDirection="row" width="100%">
+          <Text wrap="truncate-end">
+            {'⌕ '}
+            {tail}
+            <Text inverse>{' '}</Text>
+          </Text>
+          {filters === '' ? null : (
+            <>
+              <Box flexGrow={1} />
+              <Text dimColor wrap="truncate">
+                {filters}
+              </Text>
+            </>
+          )}
+        </Box>
       )}
     </Box>
   )
@@ -239,6 +283,7 @@ export function FindScene(props: TuiSceneProps & {
 
   const [query, setQuery] = useState(() => props.initialQuery())
   const [scope, setScope] = useState<SearchScope>(config.defaultScope)
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('all')
   const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
   const [progress, setProgress] = useState<ScanProgress | undefined>(undefined)
   const [mode, setMode] = useState<Mode>('list')
@@ -257,6 +302,8 @@ export function FindScene(props: TuiSceneProps & {
   queryRef.current = query
   const scopeRef = useRef(scope)
   scopeRef.current = scope
+  const timeFilterRef = useRef(timeFilter)
+  timeFilterRef.current = timeFilter
   // Locks the resume pipeline so a repeated Enter cannot start the same
   // async operation twice before the mode change renders.
   const actionPendingRef = useRef(false)
@@ -298,19 +345,31 @@ export function FindScene(props: TuiSceneProps & {
   }, [])
 
   const recentMode = query.trim().length === 0
+  // The time window's cutoff, recomputed per render (a mounted scene that
+  // sits open crosses its own window boundary naturally on the next render).
+  const sinceMs =
+    timeFilter === 'all' ? undefined : Date.now() - (timeFilter === '7d' ? 7 : 30) * 86_400_000
   const hits = useMemo(
-    () => searchSessions(sessions, query, { scope, repoCwd: channel.cwd }),
-    [sessions, query, scope, channel],
+    () =>
+      searchSessions(sessions, query, {
+        scope,
+        repoCwd: channel.cwd,
+        ...(sinceMs === undefined ? {} : { sinceMs }),
+      }),
+    [sessions, query, scope, channel, sinceMs],
   )
 
   // Flatten to rows. Recent mode lists every session that holds conversation
-  // content (the scanner's MRU order); results mode groups hits per session —
-  // the title hit (if any) rides the card's title line, message hits render
-  // under the card.
+  // content (the scanner's MRU order), narrowed by the time window; results
+  // mode groups hits per session — the title hit (if any) rides the card's
+  // title line, message hits render under the card.
   const flat = useMemo<FlatRow[]>(() => {
     if (recentMode) {
       return sessions
-        .filter(session => session.messages.length > 0)
+        .filter(
+          session =>
+            session.messages.length > 0 && (sinceMs === undefined || session.modifiedAt >= sinceMs),
+        )
         .map(session => ({ kind: 'session' as const, session, titleHit: undefined }))
     }
     const rows: FlatRow[] = []
@@ -331,7 +390,7 @@ export function FindScene(props: TuiSceneProps & {
       }
     }
     return rows
-  }, [recentMode, sessions, hits, expanded])
+  }, [recentMode, sessions, hits, expanded, sinceMs])
 
   // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
   // from the top), hit rows answer the full hit vocabulary. The selection is
@@ -344,10 +403,10 @@ export function FindScene(props: TuiSceneProps & {
 
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
-  // Reset selection when the query or scope changes shape.
+  // Reset selection when the query, scope or time window changes shape.
   useEffect(() => {
     setSelected(0)
-  }, [query, scope])
+  }, [query, scope, timeFilter])
 
   /** The session a resume would target, whatever kind of row is selected. */
   const resumeTarget = useMemo<ScannedSession | undefined>(() => {
@@ -460,6 +519,20 @@ export function FindScene(props: TuiSceneProps & {
         })
         return
       }
+      if (altOnly && lower === 't') {
+        // Cycle the time window: 全部 → 近 7 天 → 近 30 天 → 全部.
+        const current = timeFilterRef.current
+        const next: TimeFilter = current === 'all' ? '7d' : current === '7d' ? '30d' : 'all'
+        timeFilterRef.current = next
+        setTimeFilter(next)
+        setStatus({
+          text: t('time-switched', {
+            range: t(next === 'all' ? 'time-all' : next === '7d' ? 'time-7d' : 'time-30d'),
+          }),
+          tone: 'info',
+        })
+        return
+      }
       if (isPlainReturn(key)) {
         beginResume()
         return
@@ -543,6 +616,10 @@ export function FindScene(props: TuiSceneProps & {
   // crushed out of the layout (the on-device bug).
   const hitWidth = Math.max(20, columns - 22)
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
+  // Active non-default filters, shown in the search card (placeholder row
+  // when the query is empty, right-aligned badges otherwise).
+  const activeFilters =
+    timeFilter === 'all' ? '' : t(timeFilter === '7d' ? 'time-7d' : 'time-30d')
 
   // Header right side: scan progress while sweeping, then hit counts in
   // results mode and the session total in recent mode.
@@ -556,7 +633,7 @@ export function FindScene(props: TuiSceneProps & {
         : t('hit-count', { sessions: hits.length, hits: totalHits })
   const header = spreadRow(` ${t('scene-title')}`, headerRight, Math.max(0, columns - 1))
 
-  const listHint = columns >= 84 ? t('hint-list') : t('hint-list-short')
+  const listHint = composeListHint(columns)
 
   if (mode === 'confirm' && resumeTarget !== undefined) {
     const session = resumeTarget
@@ -693,7 +770,7 @@ export function FindScene(props: TuiSceneProps & {
           {header.right}
         </Text>
       </Box>
-      <SearchCard React={React} ui={ui} query={query} scope={scope} columns={columns} />
+      <SearchCard React={React} ui={ui} query={query} scope={scope} filters={activeFilters} columns={columns} />
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         {recentMode && progress !== undefined && sessions.length === 0 ? (
           <Text dimColor italic>
