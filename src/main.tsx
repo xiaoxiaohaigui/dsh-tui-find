@@ -15,7 +15,9 @@
  *   the row config onto the host settings service namespace).
  *
  * Every registration is scoped with `ctx.effect` so deactivation unwinds
- * them all; nothing here touches a session log (read-only scanner) and
+ * them all; guarded registrations tolerate the host's cold-boot liveness
+ * window with a bounded retry (`src/seam.ts`) instead of failing the
+ * activation. Nothing here touches a session log (read-only scanner) and
  * nothing here writes outside the plugin storage namespace.
  *
  * @module dsh-tui-find
@@ -27,6 +29,7 @@ import { Config, resolveConfig, type Config as PluginConfig, type ResolvedConfig
 import { SessionScanner } from './core/scan.js'
 import { setLangOverride } from './i18n.js'
 import { FindScene } from './scene.js'
+import { registerSeamWithRetry } from './seam.js'
 import { registerSettingsSection } from './settings.js'
 
 export const name = 'dsh-tui-find'
@@ -107,8 +110,23 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         }}
       />
     )
-    const dispose = scenesRuntime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx)
-    ctx.effect(() => dispose)
+    try {
+      const dispose = scenesRuntime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx)
+      ctx.effect(() => dispose)
+    } catch (error) {
+      // The host's liveness gate can reject registrations made during the
+      // cold-boot window (runtime listeners installed between this fiber's
+      // LOADING transition and its apply). A throw here would fail the whole
+      // activation and, via the fail-closed plugin loader, the TUI boot —
+      // that was the 0.1.5 startup breakage. Retry instead; see seam.ts.
+      registerSeamWithRetry(
+        ctx,
+        'scene',
+        () => scenesRuntime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx),
+        dispose => ctx.effect(() => dispose),
+        error,
+      )
+    }
   }
 
   // /find — declared as contribution `dsh-tui-find.find` in the manifest.
@@ -182,8 +200,8 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // binding degrades to command-only access.
   const shortcutsRuntime = ctx.get('tuiShortcuts', false)
   if (shortcutsRuntime !== undefined) {
-    try {
-      const dispose = shortcutsRuntime.register(
+    const registerShortcut = () =>
+      shortcutsRuntime.register(
         SHORTCUT_COMBO,
         {
           description: 'Find in all sessions (dsh-tui-find)',
@@ -197,11 +215,13 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         },
         ctx,
       )
+    try {
+      const dispose = registerShortcut()
       ctx.effect(() => dispose)
     } catch (error) {
-      ctx.logger.warn(
-        `dsh-tui-find: ${SHORTCUT_COMBO} registration failed (${error instanceof Error ? error.message : String(error)})`,
-      )
+      // Same boot-window race as the scene registration above; a plain warn
+      // would silently drop the shortcut for the whole session.
+      registerSeamWithRetry(ctx, SHORTCUT_COMBO, registerShortcut, dispose => ctx.effect(() => dispose), error)
     }
   }
 

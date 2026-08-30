@@ -159,7 +159,7 @@ npm test           # vitest: frames / scanner / search / event sanitization / di
 npm run fixtures   # synthesize session fixtures (zstd chains + plain + corruption cases)
 ```
 
-Test coverage (75 tests):
+Test coverage (80 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), incremental re-decode after append, corruption tolerance, the indexTools switch, AbortSignal.
@@ -167,6 +167,7 @@ Test coverage (75 tests):
 - **Event sanitization**: terminal control-byte and C1/DEL stripping, CR/tab folding, control-only message drops, header cwd and session-title sanitization.
 - **Display width**: CJK/emoji double-width, head/tail truncation, spread rows, physical-line scroll windows (two-line card budget), hit-line flattening/windowing/range mapping.
 - **Admission**: the manifest parses and projects under the host's own `@dsh-std/manifest` v0.15 parser with exact contract declarations; real cordis fibers mount the plugin (scene register/open/close, settings card, mediated-command degradation path) and the language pin reverts on deactivation.
+- **Boot-race hardening**: the guarded-seam retry helper (retry landing, bounded give-up, timer cleanup on deactivation); a forced cold-start interleaving against the real host `TuiSceneRuntime` where a bare register is rejected by the liveness gate (canary assertion pins the race) while the plugin lands its scene via the retry, and the healthy interleaving keeps registering synchronously.
 
 ## Requirements
 

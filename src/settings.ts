@@ -18,6 +18,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { TuiSettingsSection } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 import type { ResolvedConfig } from './config.js'
+import { registerSeamWithRetry } from './seam.js'
 
 /** Settings namespace owned by this plugin. */
 export const SETTINGS_NS = 'dsh-tui-find'
@@ -105,10 +106,17 @@ export function registerSettingsSection(ctx: Context, resolved: ResolvedConfig):
     const dispose = sectionsRuntime.register(section())
     ctx.effect(() => dispose)
   } catch (error) {
-    ctx.logger.warn(
-      `dsh-tui-find: settings section registration failed (${error instanceof Error ? error.message : String(error)})`,
+    // A boot-window liveness rejection must retry, not degrade: a plain warn
+    // would silently drop the settings card for the whole session (see
+    // seam.ts for the mechanism). Permanent failures (e.g. a duplicate ns)
+    // burn the bounded budget and warn once — acceptable for a card.
+    registerSeamWithRetry(
+      ctx,
+      'settings section',
+      () => sectionsRuntime.register(section()),
+      dispose => ctx.effect(() => dispose),
+      error,
     )
-    return
   }
 
   // Namespace registration is best-effort: without it the card renders
