@@ -6,9 +6,12 @@
  * frames, one per durable append batch, each holding newline-delimited JSON
  * envelopes — or plain JSONL for a `compression:"none"` backend. `node:zlib`'s
  * `zstdCompressSync` produces exactly one RFC 8878 frame per call, so a frame
- * chain is simply their concatenation. Shapes mirror the real backend:
+ * chain is simply their concatenation. Shapes mirror the real backend
+ * (verified against live `~/.dsh/sessions` logs):
  *
- *   line 1: the bare SessionHeader (no `type`, no `seq`)
+ *   line 1: the SessionHeader — `{type:'session', version, id, createdAt,
+ *           cwd, …}` with the facts at the TOP LEVEL (a legacy type-less
+ *           shape is emitted for one session to pin tolerance for it)
  *   then  : `{ type, seq, time, data, ignorable? }` envelopes
  *
  * Output (default test/fixtures/generated/):
@@ -49,9 +52,21 @@ const env = (type, seq, data, extra = {}) =>
   JSON.stringify({ type, seq, time: 1_750_000_000_000 + seq * 1000, data, ...extra })
 
 /** A header row + conversation, batched the way the backend flushes. */
-function conversation({ header, userTexts, assistantTexts, toolTexts = [], splicedFirst = undefined }) {
+function conversation({ header, userTexts, assistantTexts, toolTexts = [], splicedFirst = undefined, legacyHeader = false, reasoningText = undefined }) {
   const batches = []
-  batches.push([JSON.stringify({ version: 0, id: header.id, createdAt: header.createdAt, cwd: header.cwd })])
+  batches.push([
+    legacyHeader
+      ? JSON.stringify({ version: 0, id: header.id, createdAt: header.createdAt, cwd: header.cwd })
+      : JSON.stringify({
+          type: 'session',
+          version: 0,
+          id: header.id,
+          createdAt: header.createdAt,
+          cwd: header.cwd,
+          delegationDepth: 0,
+          agentPreset: 'standard',
+        }),
+  ])
   const events = []
   let seq = 0
   if (splicedFirst !== undefined) {
@@ -73,7 +88,14 @@ function conversation({ header, userTexts, assistantTexts, toolTexts = [], splic
   }
   for (const text of assistantTexts) {
     seq += 1
-    events.push(env('assistant/message', seq, { turn: 1, step: seq, message: { role: 'assistant', content: [{ type: 'text', text }] } }))
+    // Real harness logs put model reasoning in a `reasoning` block (earlier
+    // shapes said `thinking`) ahead of the text blocks; one session carries
+    // one so the indexThinking switch has something to chew on.
+    const content =
+      reasoningText === undefined
+        ? [{ type: 'text', text }]
+        : [{ type: 'reasoning', text: reasoningText }, { type: 'text', text }]
+    events.push(env('assistant/message', seq, { turn: 1, step: seq, message: { role: 'assistant', content } }))
   }
   for (const { name, args } of toolTexts) {
     seq += 1
@@ -103,8 +125,10 @@ const SESSIONS = [
     user: ['调研一下支付渠道抽象的取舍'],
     assistant: ['在 payments/gateway 里注入 trace id，结论是适配器模式'],
     tools: [],
+    reasoning: '先想清楚渠道抽象的边界，再决定注入点',
   },
   {
+    // The legacy type-less header shape, pinned so tolerance for it survives.
     id: '33333333-3333-4333-8333-333333333333',
     workspace: 'd____repo-auth',
     cwd: 'D:/work/repo-auth/submodule',
@@ -112,6 +136,7 @@ const SESSIONS = [
     user: ['子目录会话：auth 子包的依赖怎么收敛'],
     assistant: ['用 workspace 协议收敛依赖'],
     tools: [],
+    legacyHeader: true,
   },
 ]
 
@@ -127,6 +152,8 @@ for (const session of SESSIONS) {
     // Session 1 delivers its first prompt through the inbox, exercising the
     // splice-before-durable double-write the index must de-duplicate.
     splicedFirst: session.spliced,
+    legacyHeader: session.legacyHeader === true,
+    reasoningText: session.reasoning,
   })
   if (session.title !== undefined) {
     batches.push([env('session/title', 900, session.title)])
@@ -144,6 +171,8 @@ for (const session of SESSIONS) {
     userTexts: session.user,
     assistantTexts: session.assistant,
     toolTexts: session.tools,
+    legacyHeader: session.legacyHeader === true,
+    reasoningText: session.reasoning,
   })
   if (session.title !== undefined) {
     plainBatches.push([env('session/title', 900, session.title)])

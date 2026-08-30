@@ -153,6 +153,33 @@ describe('SessionScanner', () => {
     expect(hasTool(withoutTools)).toBe(false)
   })
 
+  it('extracts header cwd/createdAt from both header-row shapes', async () => {
+    const scanner = new SessionScanner()
+    const sessions = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    // The real harness writes the header as {type:'session', …} with the
+    // facts at top level (session 1); the legacy type-less first row (session
+    // 3) must keep working. Before the fix, repo-scope search matched nothing
+    // on real logs because cwd was never read off the real shape.
+    const real = sessions.find(s => s.id === '22222222-2222-4222-8222-222222222222')!
+    expect(real.header.cwd).toBe('D:/work/repo-payments')
+    expect(real.header.createdAt).toBe(1_750_000_000_000)
+    const legacy = sessions.find(s => s.id === '33333333-3333-4333-8333-333333333333')!
+    expect(legacy.header.cwd).toBe('D:/work/repo-auth/submodule')
+    expect(legacy.header.createdAt).toBe(1_750_000_000_000)
+  })
+
+  it('respects the indexThinking switch across reasoning/thinking block names', async () => {
+    const scanner = new SessionScanner()
+    const without = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    const reasoningIndexed = (list: ScannedSession[]): boolean =>
+      list.some(s => s.messages.some(m => m.text.includes('渠道抽象的边界')))
+    expect(reasoningIndexed(without)).toBe(false)
+    const withThinking = await scanner.scan({ sessionRoot: FIXTURE_ROOT, indexThinking: true })
+    // The fixture writes the block as `reasoning` (the real logs' name); the
+    // switch must honor it — and the legacy `thinking` name with it.
+    expect(reasoningIndexed(withThinking)).toBe(true)
+  })
+
   it('garbage-collects cache entries for logs that left the sweep', async () => {
     const scanner = new SessionScanner()
     await scanner.scan({ sessionRoot: FIXTURE_ROOT })

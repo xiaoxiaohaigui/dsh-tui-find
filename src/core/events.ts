@@ -17,8 +17,9 @@
  * Every text is truncated to a per-message char budget so one giant paste or
  * one enormous tool result cannot dominate the index. Envelopes with
  * `ignorable: true` are skipped (the read path's own skip signal), and the
- * seq-less first line — the bare SessionHeader row — carries `cwd`/`createdAt`
- * for the same-repo filter, which the log is the authority for.
+ * header row (`type:'session'`, or a type-less first line in the legacy
+ * shape) carries `cwd`/`createdAt` for the same-repo filter, which the log is
+ * the authority for.
  *
  * @module dsh-tui-find/core/events
  */
@@ -68,8 +69,11 @@ function text(value: unknown): string | undefined {
 
 /**
  * The concatenated text of every block the index cares about. Content is
- * normally a block array (`{type:'text'|'thinking'|…}`, each with its payload
+ * normally a block array (`{type:'text'|'reasoning'|…}`, each with its payload
  * field); a bare string is accepted defensively, matching the TUI's readers.
+ * Thinking blocks have been observed under both names — `reasoning` in the
+ * current harness logs, `thinking` in earlier shapes — so when thinking
+ * indexing is enabled both block types are honored.
  */
 function textOfBlocks(content: unknown, thinking: boolean): string | undefined {
   if (typeof content === 'string') return content.trim() || undefined
@@ -83,8 +87,8 @@ function textOfBlocks(content: unknown, thinking: boolean): string | undefined {
       if (typeof value === 'string' && value.trim().length > 0) parts.push(value.trim())
       continue
     }
-    if (thinking && record['type'] === 'thinking') {
-      const value = record['thinking']
+    if (thinking && (record['type'] === 'reasoning' || record['type'] === 'thinking')) {
+      const value = record['text'] ?? record['thinking']
       if (typeof value === 'string' && value.trim().length > 0) parts.push(value.trim())
     }
   }
@@ -176,15 +180,17 @@ export function extractLine(state: ExtractState, line: LogLine, options: Extract
   const at = finiteNumber(line['time'])
   const type = line['type']
 
-  // The seq-less first row is the bare SessionHeader (no type field).
-  if (type === undefined) {
+  // The header row. The real harness writes it as `{type:'session', …}` with
+  // `cwd`/`createdAt` at the TOP LEVEL (no `seq`, no `data`); a type-less
+  // first row is accepted as the legacy shape. Either way the row carries no
+  // conversation text, and its `id` is not searchable.
+  if (type === 'session' || type === undefined) {
     const cwd = text(line['cwd'])
     if (cwd !== undefined && state.header.cwd === undefined) state.header.cwd = cwd
     const createdAt = finiteNumber(line['createdAt'])
     if (createdAt !== undefined && state.header.createdAt === undefined) {
       state.header.createdAt = createdAt
     }
-    // A header row carries no conversation text; its `id` is not searchable.
     return
   }
 
