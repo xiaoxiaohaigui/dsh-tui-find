@@ -44,6 +44,7 @@
     "pretest": "npm run build",
     "test": "vitest run",
     "fixtures": "node scripts/make-fixtures.mjs",
+    "prepack": "npm run build && npm test",
     "prepublishOnly": "npm run build && npm test"
   },
   "engines": {

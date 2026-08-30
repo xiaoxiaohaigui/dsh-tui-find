@@ -31,7 +31,11 @@ import { registerSettingsSection } from './settings.js'
 
 export const name = 'dsh-tui-find'
 
-/** Cordis injection requirements: the agent loop (commands ride on it). */
+/** Cordis injection requirements: the agent loop (commands ride on it).
+ *  Required, not soft-probed: a composition without `agents` keeps the
+ *  plugin pending (cordis never applies it there — no degraded half-state).
+ *  Compositions that DO have `agents` but lack TUI runtimes are handled at
+ *  apply time, where every seam below is optional. */
 export const inject = ['agents']
 
 export { Config }
@@ -73,10 +77,14 @@ function resolveActivationConfig(config: PluginConfig | undefined): ResolvedConf
  */
 export function apply(ctx: Context, config: PluginConfig = {}): void {
   const resolved = resolveActivationConfig(config)
-  // Soft-probe (never inject) the TUI plugin-host row per the host's own
-  // skew guidance; every seam below is optional — the plugin must mount
-  // cleanly on a composition without the TUI (bare cordis.yml) and simply
-  // do nothing there.
+  // setLangOverride pins module-level state; the disposer reverts it on
+  // deactivation so a removed/reloaded row cannot leave a stale pin behind
+  // (the next apply re-pins unconditionally — this matters while inactive).
+  ctx.effect(() => () => setLangOverride(undefined))
+  // Soft-probe (never inject) the TUI seams per the host's own skew
+  // guidance; every seam below is optional — on a composition that has
+  // `agents` but no TUI runtimes the plugin activates and simply does
+  // nothing (compositions without `agents` stay pending; see `inject`).
   const host = ctx.get('tuiPluginHost', false)
 
   // The search scene itself.

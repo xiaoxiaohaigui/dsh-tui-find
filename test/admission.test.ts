@@ -21,6 +21,7 @@ import * as pluginHostRow from '@deepseek-harness-tui/dsh-tui/plugin-host'
 import TuiSceneRuntime from '@deepseek-harness-tui/dsh-tui/scenes'
 import TuiSettingsSectionsRuntime from '@deepseek-harness-tui/dsh-tui/settings-sections'
 import plugin, { COMMAND_CONTRIBUTION_ID, SCENE_ID, apply } from '../dist/main.js'
+import { getLang } from '../dist/i18n.js'
 import type { TuiSettingsSectionsHost } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 
 const MANIFEST_TEXT = readFileSync(join(import.meta.dirname, '..', 'dsh-plugin.json'), 'utf8')
@@ -154,5 +155,27 @@ describe('mount integration (headless harness)', () => {
     })
     await waitForActivation(observed)
     expect(observed).toContain('open=true')
+  })
+
+  it('reverts the language pin when the plugin deactivates', async () => {
+    // The env var anchors the auto chain deterministically: after disposal
+    // getLang() must fall back to it, proving the module-level pin did not
+    // outlive the activation.
+    const previous = process.env['DSH_TUI_LANG']
+    process.env['DSH_TUI_LANG'] = 'zh'
+    try {
+      const root = new Context()
+      const fiber = root.plugin({
+        name: plugin.name,
+        apply: (ctx: Context) => apply(ctx, { lang: 'en' }),
+      })
+      await sleep(30)
+      expect(getLang()).toBe('en')
+      await fiber.dispose()
+      expect(getLang()).toBe('zh')
+    } finally {
+      if (previous === undefined) delete process.env['DSH_TUI_LANG']
+      else process.env['DSH_TUI_LANG'] = previous
+    }
   })
 })
