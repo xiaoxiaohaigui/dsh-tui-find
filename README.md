@@ -29,8 +29,8 @@ dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 
 ```bash
 cd /path/to/dsh-tui-find
-npm run build
-npm pack
+npm install        # 仅首次
+npm pack           # prepack 钩子自动构建并跑全量测试
 dsh plugin --profile dsh-tui add -w ./dsh-tui-find-<版本号>.tgz
 ```
 
@@ -38,7 +38,7 @@ dsh plugin --profile dsh-tui add -w ./dsh-tui-find-<版本号>.tgz
 
 ### 挂载机制
 
-`dsh plugin ... add` 完成后 CLI 会把本包收录进 profile 的 `package.json → dsh.profile.bundles` 列表；本包自带的 `cordis.patch.yml` 作为组合层随 bundle 顺序自动应用，启动顺序为：`dsh-base → 其他 bundle → dsh-tui-find patch → 用户 profile patch`。正常情况下无需手动编辑任何配置。
+`dsh plugin ... add` 完成后 CLI 会把本包收录进 profile 的 `package.json → dsh.profile.bundles` 列表；本包自带的 `cordis.patch.yml` 作为组合层随 bundle 顺序自动应用，启动顺序为：`dsh-base → 其他 bundle → dsh-tui-find patch → 用户 profile patch`。正常情况下无需手动编辑任何配置。安装 / 升级 / 卸载改变的是 profile 的组合树，需要重启 dsh-TUI（或执行 `/restart`）后新代码才会加载或移除——宿主的 `/reload` 只重读偏好文件，不会重载插件代码。
 
 ## 升级
 
@@ -48,11 +48,11 @@ dsh plugin --profile dsh-tui add -w ./dsh-tui-find-<版本号>.tgz
 dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 ```
 
-若 profile 内没有出现新版本，先刷新 npm 缓存再重试：`npm cache clean --force`。验证版本：TUI 内执行 `/plugins`（或 `/plugins check`）查看已挂载插件及其版本。
+若 profile 内没有出现新版本，先刷新 npm 缓存再重试：`npm cache clean --force`。重启 dsh-TUI（或执行 `/restart`）加载新版本后，TUI 内执行 `/plugins`（或 `/plugins check`）验证已挂载插件及其版本。
 
 ## 卸载
 
-两步，均可逆、不动宿主核心：
+三步，均可逆、不动宿主核心；操作后重启 dsh-TUI（或 `/restart`）生效：
 
 1. **移除包本体**（同时会把 bundle 从解析树摘掉）：
 
@@ -61,6 +61,10 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 ```
 
 2. **确认 bundle 列表已清理**：若 `$DSH_HOME/profiles/dsh-tui/package.json` 的 `dsh.profile.bundles` 数组里仍残留 `dsh-tui-find` 条目（CLI 版本行为差异），手动删除该条目即可。
+
+3. **（可选）清理设置残留**：在 `/settings` 里保存过的插件设置落在宿主 settings 服务的用户层（settings.yaml），卸载后键值仍保留、重装后继续生效（层级覆盖规则不变）。想让状态完全归零，删除其中 `dsh-tui-find` 命名空间的键即可。
+
+> 手动挂载的用户（直接向 profile 的 `cordis.patch.yml` 插入行）：先按第 1 步移除包本体，再删掉对应的 insert 行。
 
 卸载只影响本插件：会话数据在 `~/.dsh` / `~/.dsh-tui` 下，插件全程只读、无落盘索引，卸载后搜索历史自然消失，会话本身不受任何影响。
 
@@ -117,7 +121,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 
 ### 在 `/settings` 页面修改
 
-除 `maxMessageChars` 和 `lang` 外的选项也可以在 TUI 内直接改：打开 `/settings`，进入 **dsh-tui-find（会话搜索）** 卡片。
+除 `lang` 外的选项都可以在 TUI 内直接改：打开 `/settings`，进入 **dsh-tui-find（会话搜索）** 卡片。
 
 | 选项 | 取值 |
 |---|---|
@@ -126,6 +130,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 | 索引工具调用 | 开 / 关（默认开） |
 | 索引 thinking 文本 | 开 / 关（默认关） |
 | 会话目录覆盖 | 文本；留空时按下方探测链自动探测 |
+| 单条消息索引字符上限 | 数值（200–65536，步进 100，默认 4000） |
 
 修改即时保存（布尔 / 选择项一改就写入，文本项回车确认），落在宿主设置服务的用户层，按层级覆盖插件行配置的默认值；卡片文案跟随 TUI 的语言设置（zh / en）。
 
@@ -150,16 +155,18 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 ```bash
 npm install        # 开发依赖（构建与测试）
 npm run build      # tsc 编译到 dist/
-npm test           # vitest：帧链解析 / 扫描器 / 搜索 / manifest 准入 / 挂载集成
+npm test           # vitest：帧链解析 / 扫描器 / 搜索 / 事件清洗 / 显示宽度 / 准入与挂载集成
 npm run fixtures   # 生成合成会话 fixture（zstd 帧链 + 明文 + 损坏样本）
 ```
 
-测试覆盖（64 项）：
+测试覆盖（75 项）：
 
 - **帧链解析**：多帧遍历、截断尾帧、magic 误判拒绝、保留块拒绝、RLE 块、单段/校验和帧头形态、64MB 解码上限、明文回退。
 - **扫描器**：双格式（zstd/明文）内容一致、mtime 缓存复用（二次扫描零解码）、追加后增量重扫、损坏样本容错、indexTools 开关、AbortSignal 中止。
 - **搜索**：大小写不敏感与高亮区间、CJK 子串、工具摘要索引、repo/all 范围过滤（含子目录会话与容器边界）。
-- **准入**：manifest 通过宿主同款 `@dsh-std/manifest` v0.15 解析器与投影、契约声明精确性；真实 cordis fiber 挂载（场景注册/open/close、settings 卡片、命令降级路径）。
+- **事件清洗**：终端控制字节与 C1/DEL 剥离、CR/tab 折叠、纯控制字符消息丢弃、头部 cwd 与会话标题清洗。
+- **显示宽度**：CJK/emoji 双宽、头尾截断、两端对齐行、物理行滚动窗口（双行卡预算）、命中行压平/开窗/区间映射。
+- **准入**：manifest 通过宿主同款 `@dsh-std/manifest` v0.15 解析器与投影、契约声明精确性；真实 cordis fiber 挂载（场景注册/open/close、settings 卡片、命令降级路径）、停用即复位语言链。
 
 ## 环境要求
 
