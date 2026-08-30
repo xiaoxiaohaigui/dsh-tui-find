@@ -89,6 +89,42 @@ export function tailWidth(text: string, maxWidth: number): string {
 }
 
 /**
+ * Wrap to a display width, CJK-aware. Greedy, breaking on a space when one
+ * is available in the line just filled and mid-character when it is not —
+ * correct for CJK, where there are no spaces to break on. Newlines in the
+ * input are honoured. (The host browser's own `wrapWidth` contract.)
+ */
+export function wrapWidth(text: string, width: number): string[] {
+  if (width <= 0) return []
+  const lines: string[] = []
+  for (const paragraph of text.split('\n')) {
+    let line = ''
+    let used = 0
+    for (const char of paragraph) {
+      const charW = charWidth(char)
+      if (used + charW > width) {
+        // Prefer a word boundary, but only when it does not throw away most
+        // of the line — a single long token must still make progress.
+        const breakAt = line.lastIndexOf(' ')
+        if (breakAt > width / 2) {
+          lines.push(line.slice(0, breakAt))
+          line = line.slice(breakAt + 1)
+          used = displayWidth(line)
+        } else {
+          lines.push(line)
+          line = ''
+          used = 0
+        }
+      }
+      line += char
+      used += charW
+    }
+    lines.push(line)
+  }
+  return lines
+}
+
+/**
  * Lay out one row with its two ends pushed apart, never wider than
  * `columns`: the left segment yields first, the right is truncated, and at
  * least one column of separation always remains.

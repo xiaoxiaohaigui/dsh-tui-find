@@ -31,7 +31,8 @@ import type { ResolvedConfig } from './config.js'
 import { getLang, t } from './i18n.js'
 import { SessionScanner, type ScanProgress, type ScannedSession } from './core/scan.js'
 import { searchSessions, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
-import { spreadRow, tailWidth, truncateWidth } from './width.js'
+import { displayWidth, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
+import { useHostDeclaredCursor } from './vendor/host-cursor.js'
 
 /** The host ui kit's component/hook surface, derived from the scene props. */
 type Ui = TuiSceneProps['ui']
@@ -42,10 +43,12 @@ type TextColor = NonNullable<React.ComponentProps<Ui['Text']>['color']>
 
 type Mode = 'list' | 'preview' | 'confirm'
 
-/** A row of the flattened list. Session rows are selectable only in the
- *  recent list (empty query); in results mode selection rides the hits. */
+/** A row of the flattened list. Every row is selectable — a session card
+ *  resumes its session, a hit row resumes the session it hit. A card's
+ *  title hit rides INSIDE the card's title line (highlighted there, the
+ *  browser's own title treatment) and never as a separate row. */
 type FlatRow =
-  | { kind: 'session'; session: ScannedSession }
+  | { kind: 'session'; session: ScannedSession; titleHit: MessageHit | undefined }
   | { kind: 'message'; hit: SessionHit; message: MessageHit; index: number; more: number }
 
 /** Vertical chrome of the layout: header + search card (3) + notice +
@@ -124,6 +127,10 @@ function HintLine(props: { React: TuiSceneProps['React']; ui: Ui; text: string }
  * right-aligned dimmed placeholder carrying the scope while empty, so the
  * terminal-painted IME preedit can never collide with it (the host
  * SearchBox's own empty-state shape).
+ *
+ * When the host's cursor hook is reachable, the native terminal cursor is
+ * declared at the caret every frame — that is what pins the IME preedit
+ * INLINE at the input instead of the screen's bottom row.
  */
 function SearchCard(props: {
   React: TuiSceneProps['React']
@@ -140,8 +147,22 @@ function SearchCard(props: {
   const contentWidth = Math.max(8, columns - 4)
   const empty = query.length === 0
   const tail = empty ? '' : tailWidth(query, contentWidth - 3)
+  // Caret column relative to the bordered box: border (1) + paddingX (1) +
+  // `⌕ ` (2) + the visible query tail before the caret.
+  const caretColumn = 4 + (empty ? 0 : displayWidth(tail))
+  const declareCursor =
+    useHostDeclaredCursor !== undefined
+      ? useHostDeclaredCursor({ line: 1, column: caretColumn, active: true })
+      : undefined
   return (
-    <Box flexShrink={0} borderStyle="round" borderColor="suggestion" paddingX={1} width={columns}>
+    <Box
+      flexShrink={0}
+      borderStyle="round"
+      borderColor="suggestion"
+      paddingX={1}
+      width={columns}
+      {...(declareCursor !== undefined ? { ref: declareCursor } : {})}
+    >
       {empty ? (
         <Box flexDirection="row" width="100%">
           <Text>⌕ </Text>
@@ -257,35 +278,38 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
   )
 
   // Flatten to rows. Recent mode lists every session that holds conversation
-  // content (the scanner's MRU order); results mode groups hits per session.
+  // content (the scanner's MRU order); results mode groups hits per session —
+  // the title hit (if any) rides the card's title line, message hits render
+  // under the card.
   const flat = useMemo<FlatRow[]>(() => {
     if (recentMode) {
       return sessions
         .filter(session => session.messages.length > 0)
-        .map(session => ({ kind: 'session' as const, session }))
+        .map(session => ({ kind: 'session' as const, session, titleHit: undefined }))
     }
     const rows: FlatRow[] = []
     for (const hit of hits) {
+      const titleHit = hit.hits.find(entry => entry.kind === 'title')
+      const messageHits = hit.hits.filter(entry => entry.kind === 'message')
       const isExpanded = expanded.has(hit.session.id)
-      const shown = isExpanded ? hit.hits.length : Math.min(PREVIEW_HITS, hit.hits.length)
-      rows.push({ kind: 'session', session: hit.session })
+      const shown = isExpanded ? messageHits.length : Math.min(PREVIEW_HITS, messageHits.length)
+      rows.push({ kind: 'session', session: hit.session, titleHit })
       for (let index = 0; index < shown; index++) {
         rows.push({
           kind: 'message',
           hit,
-          message: hit.hits[index]!,
+          message: messageHits[index]!,
           index,
-          more: isExpanded ? 0 : hit.hits.length - shown,
+          more: isExpanded ? 0 : messageHits.length - shown,
         })
       }
     }
     return rows
   }, [recentMode, sessions, hits, expanded])
 
-  const selectable = useMemo(
-    () => flat.flatMap((row, rowIndex) => (row.kind === 'message' || recentMode ? [rowIndex] : [])),
-    [flat, recentMode],
-  )
+  // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
+  // from the top), hit rows answer the full hit vocabulary.
+  const selectable = useMemo(() => flat.map((_row, index) => index), [flat])
 
   // Keep the selection valid as results change.
   useEffect(() => {
@@ -415,9 +439,11 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
       }
       // Preview/copy/expand live on Alt+P / Alt+C / Alt+E ONLY. Bare letters
       // always type — a bare-key form fought the first keystroke of every
-      // query on a real terminal and was removed in v0.1.2.
+      // query on a real terminal and was removed in v0.1.2. Alt+P works on
+      // cards too (preview from the head of the conversation); Alt+C and
+      // Alt+E need a concrete hit and no-op on a card.
       if (altOnly && input === 'p') {
-        if (selectedRow !== undefined && selectedRow.kind === 'message') setMode('preview')
+        if (selectedRow !== undefined) setMode('preview')
         return
       }
       if (altOnly && input === 'c') {
@@ -476,7 +502,11 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
 
   const listHeight = Math.max(2, rows - CHROME_LINES)
   const titleWidth = Math.max(16, Math.min(48, columns - 40))
-  const hitWidth = Math.max(24, columns - 14)
+  // Hit text budget: the row spends marker (4) + `#<seq> <role>: ` (up to
+  // ~16) before the text — an overlong text must be CUT to this budget, not
+  // wrapped: a wrapped row inflates the list's physical height beyond the
+  // window and gets rows crushed out of the layout (the on-device bug).
+  const hitWidth = Math.max(20, columns - 22)
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
 
   // Header right side: scan progress while sweeping, then hit counts in
@@ -498,29 +528,39 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
     const working = channel.working
     return (
       <Box flexDirection="column" paddingX={1} width={columns}>
-        <Text color="remember" bold>
-          {' '}
-          {t('scene-title')}
-        </Text>
-        <Text color="warning" bold>
-          {' '}
-          {t('confirm-title')}
-        </Text>
-        <Text color="text">
-          {' '}
-          {t('confirm-target', { title: truncateWidth(displayTitle(session), Math.max(0, columns - 12)) })}
-        </Text>
-        {working ? (
-          <Text color="error" bold>
+        <Box flexShrink={0}>
+          <Text color="remember" bold>
             {' '}
-            {t('confirm-warning-working')}
+            {t('scene-title')}
           </Text>
+        </Box>
+        <Box flexShrink={0}>
+          <Text color="warning" bold>
+            {' '}
+            {t('confirm-title')}
+          </Text>
+        </Box>
+        <Box flexShrink={0}>
+          <Text color="text">
+            {' '}
+            {t('confirm-target', { title: truncateWidth(displayTitle(session), Math.max(0, columns - 12)) })}
+          </Text>
+        </Box>
+        {working ? (
+          <Box flexShrink={0}>
+            <Text color="error" bold>
+              {' '}
+              {t('confirm-warning-working')}
+            </Text>
+          </Box>
         ) : null}
-        <Text dimColor>
-          {' '}
-          {t('confirm-warning-context')}
-        </Text>
-        <Box marginTop={1}>
+        <Box flexShrink={0}>
+          <Text dimColor>
+            {' '}
+            {t('confirm-warning-context')}
+          </Text>
+        </Box>
+        <Box flexShrink={0} marginTop={1}>
           <Text dimColor italic>
             {' '}
             <HintLine React={React} ui={ui} text={t('hint-confirm')} />
@@ -530,50 +570,72 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
     )
   }
 
-  if (mode === 'preview' && selectedRow !== undefined && selectedRow.kind === 'message') {
-    const { hit, message } = selectedRow
-    const all = hit.session.messages
-    // Anchor on the hit's own index in the session's message list (title
-    // hits have none and fall back to the head of the conversation).
-    const anchor = message.sourceIndex ?? -1
+  if (mode === 'preview' && selectedRow !== undefined) {
+    const session = selectedRow.kind === 'session' ? selectedRow.session : selectedRow.hit.session
+    const message = selectedRow.kind === 'message' ? selectedRow.message : undefined
+    const all = session.messages
+    // Anchor on the hit's own index in the session's message list; a card
+    // preview (or a title hit) starts from the head of the conversation.
+    const anchor = message?.sourceIndex ?? -1
     const context =
       anchor >= 0
         ? all.slice(Math.max(0, anchor - PREVIEW_CONTEXT), anchor + PREVIEW_CONTEXT + 1)
         : all.slice(0, PREVIEW_CONTEXT * 2 + 1)
-    const session = hit.session
+    const bodyWidth = Math.max(12, columns - 8)
+    const maxLinesPerEntry = 3
     return (
       <Box flexDirection="column" paddingX={1} width={columns}>
-        <Text color="remember" bold>
-          {' '}
-          {truncateWidth(t('preview-title', { title: displayTitle(session) }), Math.max(0, columns - 2))}
-        </Text>
-        <Text dimColor>
-          {' '}
-          {truncateWidth(
-            `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt, lang)} · ${t('msgs-count', { n: all.length })}`,
-            Math.max(0, columns - 2),
-          )}
-        </Text>
+        <Box flexShrink={0}>
+          <Text color="remember" bold>
+            {' '}
+            {truncateWidth(t('preview-title', { title: displayTitle(session) }), Math.max(0, columns - 2))}
+          </Text>
+        </Box>
+        <Box flexShrink={0}>
+          <Text dimColor>
+            {' '}
+            {truncateWidth(
+              `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt, lang)} · ${t('msgs-count', { n: all.length })}`,
+              Math.max(0, columns - 2),
+            )}
+          </Text>
+        </Box>
         <Text> </Text>
-        {context.map((entry, index) => (
-          <Box key={index} flexDirection="column">
-            <Text color={ROLE_MARK[entry.role].color}>
-              {ROLE_MARK[entry.role].glyph}{' '}
-              {entry.role === 'user'
-                ? t('role-user')
-                : entry.role === 'tool'
-                  ? t('role-tool')
-                  : t('role-assistant')}
-              {entry.at === undefined ? '' : ` · ${formatWhen(entry.at, lang)}`}
-            </Text>
-            <Text dimColor={entry.role === 'assistant'}>{entry.text.slice(0, hitWidth * 4)}</Text>
-            <Text> </Text>
-          </Box>
-        ))}
-        <Text dimColor italic>
-          {' '}
-          <HintLine React={React} ui={ui} text={t('hint-preview')} />
-        </Text>
+        {context.map((entry, index) => {
+          // Fixed line budget per entry: wrap, cap, and mark the cut — the
+          // pane must never inflate past the viewport (same discipline as
+          // the list rows).
+          const wrapped = wrapWidth(entry.text, bodyWidth)
+          const shown = wrapped.slice(0, maxLinesPerEntry)
+          const cut = wrapped.length > maxLinesPerEntry && shown.length > 0
+          if (cut) shown[maxLinesPerEntry - 1] = truncateWidth(shown[maxLinesPerEntry - 1]!, bodyWidth - 1)
+          return (
+            <Box key={index} flexDirection="column" flexShrink={0}>
+              <Text color={ROLE_MARK[entry.role].color}>
+                {ROLE_MARK[entry.role].glyph}{' '}
+                {entry.role === 'user'
+                  ? t('role-user')
+                  : entry.role === 'tool'
+                    ? t('role-tool')
+                    : t('role-assistant')}
+                {entry.at === undefined ? '' : ` · ${formatWhen(entry.at, lang)}`}
+              </Text>
+              {shown.map((line, lineIndex) => (
+                <Text key={lineIndex} dimColor={entry.role === 'assistant'}>
+                  {lineIndex === 0 ? '' : '  '}
+                  {line}
+                </Text>
+              ))}
+              <Text> </Text>
+            </Box>
+          )
+        })}
+        <Box flexShrink={0}>
+          <Text dimColor italic>
+            {' '}
+            <HintLine React={React} ui={ui} text={t('hint-preview')} />
+          </Text>
+        </Box>
       </Box>
     )
   }
@@ -602,7 +664,7 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
               {t('no-sessions')}
             </Text>
           ) : (
-            <Box flexDirection="column">
+            <Box flexDirection="column" flexShrink={0}>
               <Text dimColor italic>
                 {t('no-results')}
               </Text>
@@ -622,7 +684,6 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
             titleWidth={titleWidth}
             hitWidth={hitWidth}
             lang={lang}
-            recentMode={recentMode}
           />
         )}
       </Box>
@@ -656,7 +717,6 @@ function ListView(props: {
   titleWidth: number
   hitWidth: number
   lang: 'zh' | 'en'
-  recentMode: boolean
 }): React.ReactElement {
   const { React: R, ui, rows, selectable, selected, height, titleWidth, hitWidth, lang } = props
   const { Box, Text } = ui
@@ -680,16 +740,29 @@ function ListView(props: {
           const session = row.session
           // Two lines per session, the browser's rule: the title answers "is
           // this the conversation I mean", the metadata line answers "which
-          // of the ones that look alike is it".
+          // of the ones that look alike is it". The card's title hit rides
+          // INSIDE the title line — highlighted there, never as a separate
+          // row repeating the title.
           return (
             <Box key={`s${rowIndex}`} flexDirection="column" flexShrink={0}>
-              <Box>
+              <Box flexShrink={0}>
                 <Text color={isSelected ? 'suggestion' : 'subtle'}>{isSelected ? '❯ ' : '  '}</Text>
-                <Text color={isSelected ? 'suggestion' : 'text'} bold={isSelected}>
-                  {truncateWidth(displayTitle(session), titleWidth)}
-                </Text>
+                {row.titleHit === undefined ? (
+                  <Text color={isSelected ? 'suggestion' : 'text'} bold={isSelected}>
+                    {truncateWidth(displayTitle(session), titleWidth)}
+                  </Text>
+                ) : (
+                  <HighlightedText
+                    React={R}
+                    ui={ui}
+                    text={displayTitle(session)}
+                    ranges={row.titleHit.ranges}
+                    color="warning"
+                    width={titleWidth}
+                  />
+                )}
               </Box>
-              <Box>
+              <Box flexShrink={0}>
                 <Text dimColor>
                   {'  '}
                   {truncateWidth(
@@ -721,7 +794,7 @@ function ListView(props: {
         const marker = isSelected ? '  ❯ ' : '    '
         const more = row.more > 0 && !isSelected ? <Text dimColor>{t('more-hits', { count: row.more })}</Text> : null
         return (
-          <Box key={`m${rowIndex}`} flexDirection="row">
+          <Box key={`m${rowIndex}`} flexDirection="row" flexShrink={0}>
             <Text color={isSelected ? 'suggestion' : 'subtle'}>{marker}</Text>
             <Text dimColor={!isSelected} {...(isSelected && roleColor !== undefined ? { color: roleColor } : {})}>
               #{hit.seq ?? '·'} {roleLabel}:{' '}
