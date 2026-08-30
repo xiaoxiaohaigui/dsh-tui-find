@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionScanner, enumerateLogs } from '../src/core/scan.js'
-import { matchRanges, searchSessions, sessionCwdMatches } from '../src/core/search.js'
+import { compileRegex, matchRanges, searchSessions, sessionCwdMatches } from '../src/core/search.js'
 import type { ScannedSession } from '../src/core/scan.js'
 
 const FIXTURE_ROOT = join(import.meta.dirname, 'fixtures', 'generated')
@@ -369,8 +369,7 @@ describe('searchSessions', () => {
     expect(searchSessions(sessions, '   ', { scope: 'all' })).toEqual([])
   })
 
-  it('honors the sinceMs time window inclusively', () => {
-    const now = Date.now()
+  it('honors the sinceMs time window inclusively', () => {    const now = Date.now()
     const day = 86_400_000
     const make = (modifiedAt: number, text: string): ScannedSession => ({
       id: text,
@@ -390,6 +389,51 @@ describe('searchSessions', () => {
     const cutoff = now - 30 * day
     expect(searchSessions([make(cutoff, 'edge auth')], 'auth', { scope: 'all', sinceMs: cutoff })).toHaveLength(1)
     expect(searchSessions([make(cutoff - 1, 'edge auth')], 'auth', { scope: 'all', sinceMs: cutoff })).toEqual([])
+  })
+
+  it('matches regular expressions with per-match highlight ranges', () => {
+    const hits = searchSessions(sessions, 're\\w*ry|jitter', { scope: 'all', regex: true })
+    expect(hits.length).toBeGreaterThan(0)
+    let rangesSeen = 0
+    for (const hit of hits) {
+      for (const message of hit.hits) {
+        for (const [start, end] of message.ranges) {
+          rangesSeen += 1
+          expect(message.text.slice(start, end)).toMatch(/^(re\w*ry|jitter)$/i)
+        }
+      }
+    }
+    expect(rangesSeen).toBeGreaterThan(0)
+  })
+
+  it('keeps the regex path case-insensitive unless matching is case-sensitive', () => {
+    // Fixture texts carry lowercase 'auth' only.
+    expect(searchSessions(sessions, 'AUTH', { scope: 'all', regex: true }).length).toBeGreaterThan(0)
+    expect(searchSessions(sessions, 'AUTH', { scope: 'all', regex: true, caseSensitive: true })).toEqual([])
+    expect(searchSessions(sessions, 'auth', { scope: 'all', regex: true, caseSensitive: true }).length).toBeGreaterThan(0)
+  })
+
+  it('matches nothing for an invalid regex pattern', () => {
+    // Unclosed group — the core refuses it, and compileRegex (the shared
+    // verdict the scene's invalid-pattern notice reads) agrees.
+    expect(searchSessions(sessions, 'a(th', { scope: 'all', regex: true })).toEqual([])
+    expect(compileRegex('a(th', false)).toBeUndefined()
+    expect(compileRegex('a(th', true)).toBeUndefined()
+    expect(compileRegex('auth', false)).toBeInstanceOf(RegExp)
+  })
+
+  it('survives zero-width-capable regex patterns', () => {
+    // `a*` matches the empty string everywhere: the matcher must advance
+    // instead of looping, and only the non-empty matches are recorded.
+    const hits = searchSessions(sessions, 'a*', { scope: 'all', regex: true })
+    for (const hit of hits) {
+      for (const message of hit.hits) {
+        for (const [start, end] of message.ranges) {
+          expect(end).toBeGreaterThan(start)
+          expect(message.text.slice(start, end)).toMatch(/^a+$/i)
+        }
+      }
+    }
   })
 
   it('is idempotent across repeated searches (cached folds do not shift ranges)', () => {

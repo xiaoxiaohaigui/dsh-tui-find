@@ -11,8 +11,9 @@
  * intercepted (v0.1.2: bare `p`/`c` fought the first keystroke of every
  * query). Preview/copy/expand moved to Alt+P / Alt+C / Alt+E exclusively;
  * the host reports Alt as `key.meta`. Enter opens the resume confirm, Tab
- * toggles the scope, Alt+T cycles the time window, ↑↓/PgUp/PgDn move, Esc
- * backs out one layer (query, then screen). With an empty query the scene
+ * toggles the scope, Alt+R toggles regex matching, Alt+T cycles the time
+ * window, ↑↓/PgUp/PgDn move, Esc backs out one layer (query, then screen).
+ * With an empty query the scene
  * lists recent sessions (most-recent-first, sessions with no conversation
  * excluded, like the browser's empty-session discipline) so /find opens as
  * a live browser, not a dead prompt.
@@ -30,7 +31,7 @@ import { copyToClipboard } from './clipboard.js'
 import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
-import { searchSessions, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
+import { compileRegex, searchSessions, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
 import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
 
@@ -138,6 +139,7 @@ function composeListHint(columns: number): string {
     t('hint-seg-preview'),
     t('hint-seg-copy'),
     t('hint-seg-expand'),
+    t('hint-seg-regex'),
     t('hint-seg-time'),
     t('hint-seg-navigate'),
   ]
@@ -284,6 +286,7 @@ export function FindScene(props: TuiSceneProps & {
   const [query, setQuery] = useState(() => props.initialQuery())
   const [scope, setScope] = useState<SearchScope>(config.defaultScope)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all')
+  const [useRegex, setUseRegex] = useState(config.regex)
   const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
   const [progress, setProgress] = useState<ScanProgress | undefined>(undefined)
   const [mode, setMode] = useState<Mode>('list')
@@ -304,6 +307,8 @@ export function FindScene(props: TuiSceneProps & {
   scopeRef.current = scope
   const timeFilterRef = useRef(timeFilter)
   timeFilterRef.current = timeFilter
+  const useRegexRef = useRef(useRegex)
+  useRegexRef.current = useRegex
   // Locks the resume pipeline so a repeated Enter cannot start the same
   // async operation twice before the mode change renders.
   const actionPendingRef = useRef(false)
@@ -354,9 +359,21 @@ export function FindScene(props: TuiSceneProps & {
       searchSessions(sessions, query, {
         scope,
         repoCwd: channel.cwd,
+        caseSensitive: config.caseSensitive,
+        ...(useRegex ? { regex: true } : {}),
         ...(sinceMs === undefined ? {} : { sinceMs }),
       }),
-    [sessions, query, scope, channel, sinceMs],
+    [sessions, query, scope, channel, config.caseSensitive, useRegex, sinceMs],
+  )
+  // The scene mirrors the core's own regex compilation so a pattern that is
+  // not (yet) valid mid-typing can be explained instead of silently showing
+  // "no results".
+  const regexInvalid = useMemo(
+    () =>
+      useRegex &&
+      query.trim().length > 0 &&
+      compileRegex(query.trim(), config.caseSensitive) === undefined,
+    [useRegex, query, config.caseSensitive],
   )
 
   // Flatten to rows. Recent mode lists every session that holds conversation
@@ -403,10 +420,10 @@ export function FindScene(props: TuiSceneProps & {
 
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
-  // Reset selection when the query, scope or time window changes shape.
+  // Reset selection when the query, scope, time window or match mode changes shape.
   useEffect(() => {
     setSelected(0)
-  }, [query, scope, timeFilter])
+  }, [query, scope, timeFilter, useRegex])
 
   /** The session a resume would target, whatever kind of row is selected. */
   const resumeTarget = useMemo<ScannedSession | undefined>(() => {
@@ -533,6 +550,13 @@ export function FindScene(props: TuiSceneProps & {
         })
         return
       }
+      if (altOnly && lower === 'r') {
+        const next = !useRegexRef.current
+        useRegexRef.current = next
+        setUseRegex(next)
+        setStatus({ text: t(next ? 'regex-on' : 'regex-off'), tone: 'info' })
+        return
+      }
       if (isPlainReturn(key)) {
         beginResume()
         return
@@ -618,8 +642,10 @@ export function FindScene(props: TuiSceneProps & {
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
   // Active non-default filters, shown in the search card (placeholder row
   // when the query is empty, right-aligned badges otherwise).
-  const activeFilters =
-    timeFilter === 'all' ? '' : t(timeFilter === '7d' ? 'time-7d' : 'time-30d')
+  const activeFilters = [
+    ...(timeFilter === 'all' ? [] : [t(timeFilter === '7d' ? 'time-7d' : 'time-30d')]),
+    ...(useRegex ? [t('badge-regex')] : []),
+  ].join(' · ')
 
   // Header right side: scan progress while sweeping, then hit counts in
   // results mode and the session total in recent mode.
@@ -787,9 +813,15 @@ export function FindScene(props: TuiSceneProps & {
               <Text dimColor italic>
                 {t('no-results')}
               </Text>
-              <Text dimColor italic>
-                {t('no-results-scope-hint', { scope: scope === 'repo' ? t('scope-repo') : t('scope-all') })}
-              </Text>
+              {regexInvalid ? (
+                <Text dimColor italic>
+                  {t('regex-invalid')}
+                </Text>
+              ) : (
+                <Text dimColor italic>
+                  {t('no-results-scope-hint', { scope: scope === 'repo' ? t('scope-repo') : t('scope-all') })}
+                </Text>
+              )}
             </Box>
           )
         ) : (

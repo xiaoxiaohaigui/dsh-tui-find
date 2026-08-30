@@ -1,8 +1,10 @@
 /**
  * Query evaluation over the scanned index: substring matching with the
  * configured case sensitivity (v0.1 default: case-insensitive — instant,
- * zero-dependency, and CJK-correct without a segmenter), per-message
- * highlight ranges, and the two-range session filter.
+ * zero-dependency, and CJK-correct without a segmenter), an optional
+ * JavaScript-regex mode over the same index (v0.2 toggle, compiled once per
+ * query), the optional time window over session modification times, and
+ * per-message highlight ranges.
  *
  * Scope filter mirrors the host's `/resume` project filter semantics
  * (`sessionCwdMatches`): exact cwd match plus subdirectory descendants and
@@ -63,6 +65,29 @@ export interface SearchOptions {
    * disables the filter.
    */
   readonly sinceMs?: number
+  /**
+   * Treat the (trimmed) query as a JavaScript regular expression instead of
+   * a literal substring (v0.2's regex toggle over the substring baseline).
+   * Case sensitivity still applies: insensitive matching compiles with the
+   * `i` flag. An uncompilable pattern matches nothing here — the scene
+   * surfaces the invalid-pattern notice through {@link compileRegex}, the
+   * one compilation both paths share.
+   */
+  readonly regex?: boolean
+}
+
+/**
+ * Compile the query into the RegExp the regex path matches with: the `g`
+ * flag for match iteration, plus `i` unless matching is case-sensitive.
+ * Exported because the scene needs the same validity verdict for its
+ * invalid-pattern notice — one compiler, so the two can never disagree.
+ */
+export function compileRegex(query: string, caseSensitive: boolean): RegExp | undefined {
+  try {
+    return new RegExp(query, caseSensitive ? 'g' : 'gi')
+  } catch {
+    return undefined
+  }
 }
 
 /** Normalize a cwd for comparison: forward slashes, no trailing slash; case
@@ -189,6 +214,29 @@ function rangesInFold(fold: FoldedText, needle: string): [number, number][] {
 }
 
 /**
+ * Every match of `pattern` in `text`, as ranges over the original text.
+ * The pattern is the shared compiled query (`g` flag), so `lastIndex` is
+ * reset per text. A zero-width match advances one code unit instead of
+ * being recorded — the guard that keeps patterns like `a*` from looping
+ * forever (and an empty highlight span renders nothing anyway).
+ */
+function regexRanges(pattern: RegExp, text: string): [number, number][] {
+  const ranges: [number, number][] = []
+  pattern.lastIndex = 0
+  for (;;) {
+    const match = pattern.exec(text)
+    if (match === null) break
+    if (match[0].length === 0) {
+      pattern.lastIndex += 1
+      if (pattern.lastIndex > text.length) break
+      continue
+    }
+    ranges.push([match.index, match.index + match[0].length])
+  }
+  return ranges
+}
+
+/**
  * Every occurrence of `needle` in `haystack`, returning ranges over the
  * ORIGINAL string.
  *
@@ -243,6 +291,12 @@ export function searchSessions(
   if (trimmed.length === 0) return []
 
   const caseSensitive = options.caseSensitive === true
+
+  // Regex mode compiles once up front; an invalid pattern matches nothing.
+  // The substring paths keep the folded-needle baseline (below).
+  const pattern =
+    options.regex === true ? compileRegex(trimmed, caseSensitive) : undefined
+  if (options.regex === true && pattern === undefined) return []
   const needle = caseSensitive ? trimmed : trimmed.toLowerCase()
 
   // "This repo" with no cwd to compare against matches nothing.
@@ -250,6 +304,16 @@ export function searchSessions(
   if (options.scope === 'repo' && repoCwd.trim().length === 0) {
     return []
   }
+
+  // One matcher for titles and messages alike: the regex path when a
+  // pattern is live, otherwise the substring paths (the case-insensitive
+  // one goes through the per-object fold cache — see foldOf).
+  const rangesOf = (text: string, owner: object): [number, number][] =>
+    pattern !== undefined
+      ? regexRanges(pattern, text)
+      : caseSensitive
+        ? matchRanges(text, needle, true)
+        : rangesInFold(foldOf(owner, text), needle)
 
   const hits: SessionHit[] = []
   for (const session of sessions) {
@@ -265,12 +329,7 @@ export function searchSessions(
 
     // Title and message folds are cached per object (see foldOf) — across
     // keystrokes only the indexOf scan repeats, never the fold.
-    const titleRanges =
-      session.title === undefined
-        ? []
-        : caseSensitive
-          ? matchRanges(session.title, needle, true)
-          : rangesInFold(foldOf(session, session.title), needle)
+    const titleRanges = session.title === undefined ? [] : rangesOf(session.title, session)
     if (titleRanges.length > 0) {
       messageHits.push({
         kind: 'title',
@@ -285,9 +344,7 @@ export function searchSessions(
     }
 
     for (const [sourceIndex, message] of session.messages.entries()) {
-      const ranges = caseSensitive
-        ? matchRanges(message.text, needle, true)
-        : rangesInFold(foldOf(message, message.text), needle)
+      const ranges = rangesOf(message.text, message)
       if (ranges.length === 0) continue
       messageHits.push({
         kind: 'message',

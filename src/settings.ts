@@ -58,6 +58,14 @@ function section(): TuiSettingsSection {
         kind: 'boolean',
       },
       {
+        path: ['regex'],
+        label: 'Regex matching',
+        descriptions: zh('正则匹配'),
+        hint: 'Treat the query as a JavaScript regular expression (Alt+R toggles it live; default off)',
+        hintDescriptions: zh('把查询当作 JavaScript 正则表达式（场景内 Alt+R 实时切换；默认关闭）'),
+        kind: 'boolean',
+      },
+      {
         path: ['indexTools'],
         label: 'Index tool calls',
         descriptions: zh('索引工具调用'),
@@ -134,6 +142,7 @@ export function registerSettingsSection(ctx: Context, resolved: ResolvedConfig):
         const schema = z.object({
           defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
           caseSensitive: z.boolean().default(resolved.caseSensitive),
+          regex: z.boolean().default(resolved.regex),
           indexTools: z.boolean().default(resolved.indexTools),
           indexThinking: z.boolean().default(resolved.indexThinking),
           sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),

@@ -14,6 +14,9 @@ export type Config = {
   defaultScope?: 'repo' | 'all'
   /** Case-sensitive matching. Default OFF (spec §6 freeze). */
   caseSensitive?: boolean
+  /** Treat queries as JavaScript regular expressions by default. Default
+   *  OFF (substring stays the baseline; Alt+R toggles it live in the scene). */
+  regex?: boolean
   /** Index tool-call summaries (`[name] arguments`). Default ON. */
   indexTools?: boolean
   /** Index assistant thinking text. Default OFF (noisy + private). */
@@ -29,6 +32,7 @@ export type Config = {
 export const Config: Schemastery<Config> = z.object({
   defaultScope: z.union(['repo', 'all']).default('repo'),
   caseSensitive: z.boolean().default(false),
+  regex: z.boolean().default(false),
   indexTools: z.boolean().default(true),
   indexThinking: z.boolean().default(false),
   sessionRoot: z.string().required(false),
@@ -40,6 +44,7 @@ export const Config: Schemastery<Config> = z.object({
 export interface ResolvedConfig {
   readonly defaultScope: 'repo' | 'all'
   readonly caseSensitive: boolean
+  readonly regex: boolean
   readonly indexTools: boolean
   readonly indexThinking: boolean
   readonly sessionRoot: string | undefined
@@ -53,6 +58,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
   return {
     defaultScope: value.defaultScope === 'all' ? 'all' : 'repo',
     caseSensitive: value.caseSensitive === true,
+    regex: value.regex === true,
     indexTools: value.indexTools !== false,
     indexThinking: value.indexThinking === true,
     sessionRoot:
