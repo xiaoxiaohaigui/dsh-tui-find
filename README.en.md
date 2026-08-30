@@ -115,6 +115,20 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
 
 `lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` env → `~/.dsh-tui/lang.json` → OS locale → zh. A `/lang` switch updates the plugin copy immediately.
 
+### Editing in the `/settings` screen
+
+Every option above except `maxMessageChars` and `lang` can also be changed inside the TUI: open `/settings` and enter the **dsh-tui-find (session search)** card.
+
+| Option | Values |
+|---|---|
+| Default scope | This repo (default) ⇄ All sessions |
+| Case-sensitive | on / off (default off) |
+| Index tool calls | on / off (default on) |
+| Index thinking | on / off (default off) |
+| Session root override | text; blank falls back to the resolution chain below |
+
+Edits save immediately (booleans/selects write on the spot, text drafts confirm with Enter) into the host settings service's user layer, which overrides the plugin-row defaults by layering; the card copy follows the TUI language setting (zh / en).
+
 ## Session root resolution
 
 Probed in this order (first hit wins):
@@ -140,7 +154,7 @@ npm test           # vitest: frames / scanner / search / manifest admission / mo
 npm run fixtures   # synthesize session fixtures (zstd chains + plain + corruption cases)
 ```
 
-Test coverage (37 tests):
+Test coverage (64 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), incremental re-decode after append, corruption tolerance, the indexTools switch, AbortSignal.

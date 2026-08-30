@@ -655,8 +655,15 @@ export function FindScene(props: TuiSceneProps & { config: ResolvedConfig; initi
     )
   }
 
+  // Root pinned to the full viewport (the host browser's own rule: every
+  // screen roots at `width: columns, height: rows`): the list box grows to
+  // fill rows-CHROME_LINES exactly, so the notice/divider/hint footer stays
+  // on the bottom row even when the visible window ends on a one-line hit
+  // row instead of a two-line card — an unpinned root is content-sized and
+  // the footer rides up and down a line as the window's line total changes
+  // (the on-device footer-jump bug).
   return (
-    <Box flexDirection="column" width={columns}>
+    <Box flexDirection="column" width={columns} height={rows}>
       <Box flexShrink={0}>
         <Text color="remember" bold>
           {header.left}

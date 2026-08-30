@@ -115,6 +115,20 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 
 `lang: auto` 遵循 dsh-TUI 的语言链：`DSH_TUI_LANG` 环境变量 → `~/.dsh-tui/lang.json` → 系统locale → 中文。`/lang` 切换后插件文案即时跟随。
 
+### 在 `/settings` 页面修改
+
+除 `maxMessageChars` 和 `lang` 外的选项也可以在 TUI 内直接改：打开 `/settings`，进入 **dsh-tui-find（会话搜索）** 卡片。
+
+| 选项 | 取值 |
+|---|---|
+| 默认搜索范围 | 本仓库（默认）⇄ 全部会话 |
+| 大小写敏感 | 开 / 关（默认关） |
+| 索引工具调用 | 开 / 关（默认开） |
+| 索引 thinking 文本 | 开 / 关（默认关） |
+| 会话目录覆盖 | 文本；留空时按下方探测链自动探测 |
+
+修改即时保存（布尔 / 选择项一改就写入，文本项回车确认），落在宿主设置服务的用户层，按层级覆盖插件行配置的默认值；卡片文案跟随 TUI 的语言设置（zh / en）。
+
 ## 会话目录探测
 
 按以下顺序探测会话根目录（发现第一个即用）：
@@ -140,7 +154,7 @@ npm test           # vitest：帧链解析 / 扫描器 / 搜索 / manifest 准�
 npm run fixtures   # 生成合成会话 fixture（zstd 帧链 + 明文 + 损坏样本）
 ```
 
-测试覆盖（37 项）：
+测试覆盖（64 项）：
 
 - **帧链解析**：多帧遍历、截断尾帧、magic 误判拒绝、保留块拒绝、RLE 块、单段/校验和帧头形态、64MB 解码上限、明文回退。
 - **扫描器**：双格式（zstd/明文）内容一致、mtime 缓存复用（二次扫描零解码）、追加后增量重扫、损坏样本容错、indexTools 开关、AbortSignal 中止。

@@ -22,46 +22,64 @@ import type { ResolvedConfig } from './config.js'
 /** Settings namespace owned by this plugin. */
 export const SETTINGS_NS = 'dsh-tui-find'
 
+/** The zh translation for an English base text, per the host's field i18n
+ *  contract: the plain string is the English text and the fallback, and the
+ *  settings screen picks `descriptions[getLang()]` live at render time — so
+ *  the card follows the TUI language setting (including a mid-session /lang
+ *  switch) without re-registering anything. */
+const zh = (text: string): { zh: string } => ({ zh: text })
+
 /** The card, mirroring the row config keys one-to-one. */
 function section(): TuiSettingsSection {
   return {
     ns: SETTINGS_NS,
     title: 'dsh-tui-find (session search)',
+    descriptions: zh('dsh-tui-find（会话搜索）'),
     fields: [
       {
         path: ['defaultScope'],
         label: 'Default scope',
+        descriptions: zh('默认搜索范围'),
         hint: 'Initial search scope for /find (repo = current workspace)',
+        hintDescriptions: zh('/find 打开时的初始搜索范围（repo = 当前工作区）'),
         kind: 'select',
         options: [
-          { value: 'repo', label: 'This repo' },
-          { value: 'all', label: 'All sessions' },
+          { value: 'repo', label: 'This repo', descriptions: zh('本仓库') },
+          { value: 'all', label: 'All sessions', descriptions: zh('全部会话') },
         ],
       },
       {
         path: ['caseSensitive'],
         label: 'Case-sensitive',
+        descriptions: zh('大小写敏感'),
         hint: 'Case-sensitive substring matching (default: insensitive)',
+        hintDescriptions: zh('子串匹配区分大小写（默认不敏感）'),
         kind: 'boolean',
       },
       {
         path: ['indexTools'],
         label: 'Index tool calls',
+        descriptions: zh('索引工具调用'),
         hint: 'Index tool-call summaries ([name] arguments) for search',
+        hintDescriptions: zh('把工具调用摘要（[名称] 参数）纳入搜索索引'),
         kind: 'boolean',
       },
       {
         path: ['indexThinking'],
         label: 'Index thinking',
+        descriptions: zh('索引 thinking 文本'),
         hint: 'Index assistant thinking text (noisy and private; default off)',
+        hintDescriptions: zh('把助手 thinking 文本纳入索引（噪音大且偏私密，默认关闭）'),
         kind: 'boolean',
       },
       {
         path: ['sessionRoot'],
         label: 'Session root override',
+        descriptions: zh('会话目录覆盖'),
         hint: 'Manual session directory override (env/defaults apply when blank)',
+        hintDescriptions: zh('手动指定会话根目录（留空时按环境变量与默认探测）'),
         kind: 'text',
-        placeholder: 'e.g. C:\\Users\\me\\.dsh\\sessions',
+        placeholder: 'C:\\Users\\me\\.dsh\\sessions',
       },
     ],
   }
