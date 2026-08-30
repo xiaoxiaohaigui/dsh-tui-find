@@ -9,7 +9,7 @@
 
 ## 这是什么
 
-dsh-TUI（`@deepseek-harness-tui/dsh-tui`）有 resume 浏览器、会话内 `/` 搜索、Ctrl+R 输入历史，但**没有跨会话内容检索**——一段对话滚出当前窗口后就成了不可搜索的档案。
+[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI)（`@deepseek-harness-tui/dsh-tui`）有 resume 浏览器、会话内 `/` 搜索、Ctrl+R 输入历史，但**没有跨会话内容检索**——一段对话滚出当前窗口后就成了不可搜索的档案。
 
 `dsh-tui-find` 补上这一块：在 TUI 内对**本机全部 dsh 会话**（默认 zstd 帧链压缩、兼容明文 JSONL）做增量即时的内容搜索。命中后可以只读查看上下文、复制原文、或恢复会话。
 

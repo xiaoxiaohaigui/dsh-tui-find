@@ -9,7 +9,7 @@
 
 ## What it is
 
-dsh-TUI (`@deepseek-harness-tui/dsh-tui`) ships a resume browser, in-session `/` search, and Ctrl+R input history — but **no cross-session content search**. Once a conversation scrolls out of the current window it becomes an unsearchable archive.
+[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) (`@deepseek-harness-tui/dsh-tui`) ships a resume browser, in-session `/` search, and Ctrl+R input history — but **no cross-session content search**. Once a conversation scrolls out of the current window it becomes an unsearchable archive.
 
 `dsh-tui-find` closes that gap: instant incremental content search across **all local dsh sessions** (the default zstd frame-chain storage plus plain JSONL), with read-only context preview, one-key copy, and session resume.
 
