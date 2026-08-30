@@ -126,10 +126,6 @@ export const dict = {
 
   // ── preview pane ─────────────────────────────────────────────────────
   'preview-title': { zh: '只读预览 · {{title}}', en: 'Read-only preview · {{title}}' },
-  'preview-context-note': {
-    zh: '命中消息前后各 {{count}} 条；恢复会话可见完整历史',
-    en: '{{count}} messages of context around the hit; resume for the full history',
-  },
 
   // ── resume confirm ───────────────────────────────────────────────────
   'confirm-title': { zh: '恢复该会话？', en: 'Resume this session?' },
@@ -151,7 +147,6 @@ export const dict = {
   'resume-cancelled': { zh: '已取消恢复', en: 'Resume cancelled' },
   'resume-failed': { zh: '恢复失败：{{error}}', en: 'Resume failed: {{error}}' },
   'resumed': { zh: '已恢复会话', en: 'Session resumed' },
-  'scan-aborted': { zh: '扫描已中止（部分索引可用）', en: 'Scan aborted (partial index available)' },
   'scan-failed': { zh: '扫描失败：{{error}}', en: 'Scan failed: {{error}}' },
 } as const satisfies Record<string, { zh: string; en: string }>
 

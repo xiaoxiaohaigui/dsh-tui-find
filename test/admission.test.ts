@@ -20,7 +20,12 @@ import { parseManifest, projectManifest } from '@dsh-std/manifest'
 import * as pluginHostRow from '@deepseek-harness-tui/dsh-tui/plugin-host'
 import TuiSceneRuntime from '@deepseek-harness-tui/dsh-tui/scenes'
 import TuiSettingsSectionsRuntime from '@deepseek-harness-tui/dsh-tui/settings-sections'
-import plugin, { COMMAND_CONTRIBUTION_ID, SCENE_ID, apply } from '../dist/main.js'
+import plugin, {
+  apply,
+  COMMAND_CONTRIBUTION_ID,
+  isExpectedAdmissionRejection,
+  SCENE_ID,
+} from '../dist/main.js'
 import { getLang } from '../dist/i18n.js'
 import type { TuiSettingsSectionsHost } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 
@@ -89,6 +94,29 @@ async function waitForActivation(observed: readonly string[]): Promise<void> {
     { timeout: 5000, interval: 10 },
   )
 }
+
+describe('mediated admission rejection classifier', () => {
+  it('recognizes the host ComponentIdentityError shape and nothing else', () => {
+    // The host internal carries the code OUTSIDE the message (name:
+    // 'ComponentIdentityError', code: 'COMPONENT_NOT_ADMITTED'); the
+    // classifier matches that shape structurally so the designed
+    // C-070 fallback logs at info, and anything drifted or message-only
+    // stays on the warn path.
+    const shaped = Object.assign(
+      new Error('the calling activation has no verified dsh-plugin.json Component identity'),
+      { name: 'ComponentIdentityError', code: 'COMPONENT_NOT_ADMITTED' },
+    )
+    expect(isExpectedAdmissionRejection(shaped)).toBe(true)
+    expect(isExpectedAdmissionRejection(new Error('COMPONENT_NOT_ADMITTED in message only'))).toBe(false)
+    expect(
+      isExpectedAdmissionRejection(
+        Object.assign(new Error('drifted'), { name: 'ComponentIdentityError', code: 'SOMETHING_ELSE' }),
+      ),
+    ).toBe(false)
+    expect(isExpectedAdmissionRejection('COMPONENT_NOT_ADMITTED')).toBe(false)
+    expect(isExpectedAdmissionRejection(undefined)).toBe(false)
+  })
+})
 
 describe('mount integration (headless harness)', () => {
   it('registers the scene and settings card into live host registries', async () => {

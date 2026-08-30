@@ -421,6 +421,10 @@ export function FindScene(props: TuiSceneProps & {
       // break the scene's interrupt path.
       const plain = !key.ctrl && !key.meta && !key.super
       const altOnly = key.meta && !key.ctrl && !key.super
+      // Letter shortcuts match case-insensitively: Shift+Alt+C arrives as
+      // meta + 'C', and the hint lines label the keys as capital letters.
+      // The typing path below still consumes the raw input untouched.
+      const lower = input.toLowerCase()
 
       if (key.escape) {
         if (modeRef.current === 'list') {
@@ -442,7 +446,7 @@ export function FindScene(props: TuiSceneProps & {
       }
       if (modeRef.current === 'preview') {
         if (isPlainReturn(key)) beginResume()
-        else if (input === 'c' && (plain || altOnly)) copySelected()
+        else if (lower === 'c' && (plain || altOnly)) copySelected()
         return
       }
       // list mode
@@ -465,15 +469,15 @@ export function FindScene(props: TuiSceneProps & {
       // query on a real terminal and was removed in v0.1.2. Alt+P works on
       // cards too (preview from the head of the conversation); Alt+C and
       // Alt+E need a concrete hit and no-op on a card.
-      if (altOnly && input === 'p') {
+      if (altOnly && lower === 'p') {
         if (selectedRow !== undefined) setMode('preview')
         return
       }
-      if (altOnly && input === 'c') {
+      if (altOnly && lower === 'c') {
         copySelected()
         return
       }
-      if (altOnly && input === 'e') {
+      if (altOnly && lower === 'e') {
         const row = selectedRow
         if (row !== undefined && row.kind === 'message') {
           const id = row.hit.session.id

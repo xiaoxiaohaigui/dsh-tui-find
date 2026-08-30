@@ -25,7 +25,7 @@
  *
  * @module dsh-tui-find/core/scan
  */
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { decodeFrame, sniffEncoding, walkFrames, type LogLine } from './frames.js'
 import {
@@ -82,8 +82,9 @@ interface CacheEntry {
 }
 
 /** Upper bound on a single log we will read whole; beyond it the session is
- * skipped with its header facts only. (A 128 MB conversation log is far
- * outside anything the format produces in practice; the cap is a seatbelt.) */
+ * skipped entirely — no index entry, so it neither searches nor lists. (A
+ * 128 MB conversation log is far outside anything the format produces in
+ * practice; the cap is a seatbelt against pathological files.) */
 const MAX_LOG_BYTES = 128 * 1024 * 1024
 
 /** Plain-JSONL decode yields to the event loop every this many lines — the
@@ -98,6 +99,23 @@ const PLAIN_YIELD_EVERY_LINES = 2048
  */
 function isSafeSessionId(sessionId: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sessionId)
+}
+
+/**
+ * Stat one candidate log into {@link LogFacts}; undefined when it does not
+ * exist or is not a regular file (a vanished or odd entry simply is not
+ * listed). Stat-only, with no `existsSync` pre-check: enumeration runs
+ * synchronously before the sweep's first yield, so every session costs at
+ * most one syscall per candidate encoding.
+ */
+function statFile(path: string): LogFacts | undefined {
+  try {
+    const stats = statSync(path)
+    if (!stats.isFile()) return undefined
+    return { path, bytes: stats.size, mtimeMs: stats.mtimeMs }
+  } catch {
+    return undefined
+  }
 }
 
 /** Enumerate every session log under the roots; first hit wins per id. */
@@ -125,18 +143,13 @@ export function enumerateLogs(sessionRoot?: string): Map<string, LogFacts> {
       for (const id of ids) {
         if (found.has(id) || !isSafeSessionId(id)) continue
         const dir = join(root, ws, id)
-        // Compressed wins when both encodings exist (host's own preference).
-        const compressed = join(dir, 'session.jsonl.zstd')
-        const plain = join(dir, 'session.jsonl')
-        const path = existsSync(compressed) ? compressed : existsSync(plain) ? plain : undefined
-        if (path === undefined) continue
-        try {
-          const stats = statSync(path)
-          if (!stats.isFile()) continue
-          found.set(id, { path, bytes: stats.size, mtimeMs: stats.mtimeMs })
-        } catch {
-          // A log that vanished mid-enumeration simply is not listed.
-        }
+        // Compressed wins when both encodings exist (host's own preference);
+        // a compressed side that is not a regular file does not shadow the
+        // plain twin beside it.
+        const facts =
+          statFile(join(dir, 'session.jsonl.zstd')) ?? statFile(join(dir, 'session.jsonl'))
+        if (facts === undefined) continue
+        found.set(id, facts)
       }
     }
   }

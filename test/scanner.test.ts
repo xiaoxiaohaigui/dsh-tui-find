@@ -21,6 +21,22 @@ describe('enumerateLogs', () => {
     expect(ids).toContain('22222222-2222-4222-8222-222222222222')
     expect(ids.some(id => id.includes('..') || id.includes('/'))).toBe(false)
   })
+
+  it('does not let a non-file compressed side shadow the plain twin', () => {
+    // "Compressed wins when both encodings exist" presumes the compressed
+    // side IS one; a directory named like the log must not hide the plain
+    // session beside it.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-enum-'))
+    try {
+      const dir = join(root, 'ws', '99999999-9999-4999-8999-999999999999')
+      mkdirSync(join(dir, 'session.jsonl.zstd'), { recursive: true })
+      writeFileSync(join(dir, 'session.jsonl'), '{"type":"session","cwd":"D:/x"}\n', 'utf8')
+      const logs = enumerateLogs(root)
+      expect(logs.get('99999999-9999-4999-8999-999999999999')?.path).toBe(join(dir, 'session.jsonl'))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('SessionScanner', () => {

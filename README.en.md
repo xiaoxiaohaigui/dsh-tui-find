@@ -159,7 +159,7 @@ npm test           # vitest: frames / scanner / search / event sanitization / di
 npm run fixtures   # synthesize session fixtures (zstd chains + plain + corruption cases)
 ```
 
-Test coverage (80 tests):
+Test coverage (82 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), incremental re-decode after append, corruption tolerance, the indexTools switch, AbortSignal.

@@ -73,6 +73,23 @@ function resolveActivationConfig(config: PluginConfig | undefined): ResolvedConf
 }
 
 /**
+ * Whether this is the mediated path's designed rejection: a verified
+ * Component identity is required for C-041 attribution, and the current
+ * host runtime never issues one (the loader never calls admit) — so this
+ * exact rejection is the documented trigger for the C-070 direct-registration
+ * fallback, not a failure. Matched structurally (error name + code) because
+ * `ComponentIdentityError` is a host internal the plugin must not import; a
+ * drifted shape falls through to the warn path and stays loud.
+ */
+export function isExpectedAdmissionRejection(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'ComponentIdentityError' &&
+    (error as { code?: unknown }).code === 'COMPONENT_NOT_ADMITTED'
+  )
+}
+
+/**
  * Wire the plugin.
  *
  * @param ctx - Cordis context (plugin activation).
@@ -172,9 +189,18 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       ctx.effect(() => dispose)
       commandRegistered = true
     } catch (error) {
-      ctx.logger.warn(
-        `dsh-tui-find: mediated /find registration unavailable (${error instanceof Error ? error.message : String(error)}); falling back to direct registration`,
-      )
+      const detail = error instanceof Error ? error.message : String(error)
+      if (isExpectedAdmissionRejection(error)) {
+        // The by-design fallback on this host: info, not warn — a warn on
+        // every boot for the expected path trains the eye to ignore warnings.
+        ctx.logger.info(
+          `dsh-tui-find: mediated /find registration unavailable (${detail}); using direct registration (C-070)`,
+        )
+      } else {
+        ctx.logger.warn(
+          `dsh-tui-find: mediated /find registration unavailable (${detail}); falling back to direct registration`,
+        )
+      }
     }
   }
   if (!commandRegistered) {
@@ -207,10 +233,12 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
           description: 'Find in all sessions (dsh-tui-find)',
           handler: () => {
             const scenes = ctx.get('tuiScenes', false)
-            if (scenes !== undefined) {
-              if (scenes.active?.id === SCENE_ID) scenes.close()
-              scenes.open(SCENE_ID)
-            }
+            if (scenes === undefined) return
+            // Already open: leave it running. Unlike /find there is no seed
+            // to consume here, and the command path's close/open cycle would
+            // erase the user's in-progress query.
+            if (scenes.active?.id === SCENE_ID) return
+            scenes.open(SCENE_ID)
           },
         },
         ctx,
