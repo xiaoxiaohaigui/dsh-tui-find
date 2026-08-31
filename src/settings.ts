@@ -18,10 +18,18 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { TuiSettingsSection } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 import type { ResolvedConfig } from './config.js'
+import { DEFAULT_SHORTCUT, resolveConfig } from './config.js'
 import { registerSeamWithRetry } from './seam.js'
 
 /** Settings namespace owned by this plugin. */
 export const SETTINGS_NS = 'dsh-tui-find'
+
+/** The optional settings package is a runtime peer, so keep this structural
+ *  rather than importing its types into the plugin's required surface. */
+interface SettingsScope<T> {
+  get(): T
+  watch(callback: (next: T, prev: T) => void | Promise<void>): () => void
+}
 
 /** The zh translation for an English base text, per the host's field i18n
  *  contract: the plain string is the English text and the fallback, and the
@@ -47,6 +55,19 @@ function section(): TuiSettingsSection {
         options: [
           { value: 'repo', label: 'This repo', descriptions: zh('本仓库') },
           { value: 'all', label: 'All sessions', descriptions: zh('全部会话') },
+        ],
+      },
+      {
+        path: ['defaultTime'],
+        label: 'Default time window',
+        descriptions: zh('默认搜索时间'),
+        hint: 'Initial time window for /find (Alt+T cycles it live; default all)',
+        hintDescriptions: zh('/find 打开时的初始时间窗口（场景内 Alt+T 实时切换；默认全部）'),
+        kind: 'select',
+        options: [
+          { value: 'all', label: 'All time', descriptions: zh('全部时间') },
+          { value: '7d', label: 'Last 7 days', descriptions: zh('近 7 天') },
+          { value: '30d', label: 'Last 30 days', descriptions: zh('近 30 天') },
         ],
       },
       {
@@ -99,6 +120,15 @@ function section(): TuiSettingsSection {
         kind: 'number',
         placeholder: '4000',
       },
+      {
+        path: ['shortcut'],
+        label: 'Global shortcut',
+        descriptions: zh('全局快捷键'),
+        hint: 'Combo that opens /find from anywhere (needs ctrl or alt; "off" disables; default ctrl+alt+f)',
+        hintDescriptions: zh('打开 /find 的全局组合键（需含 ctrl 或 alt；off 关闭全局入口；默认 ctrl+alt+f）'),
+        kind: 'text',
+        placeholder: DEFAULT_SHORTCUT,
+      },
     ],
   }
 }
@@ -107,7 +137,11 @@ function section(): TuiSettingsSection {
  * Register the settings card; the namespace lands only when the host
  * settings service is present (dynamic import, contained failure).
  */
-export function registerSettingsSection(ctx: Context, resolved: ResolvedConfig): void {
+export function registerSettingsSection(
+  ctx: Context,
+  resolved: ResolvedConfig,
+  onResolvedConfig?: (next: ResolvedConfig, raw: ConfigValue) => void,
+): void {
   const sectionsRuntime = ctx.get('tuiSettingsSections', false)
   if (sectionsRuntime === undefined) return
   try {
@@ -141,6 +175,7 @@ export function registerSettingsSection(ctx: Context, resolved: ResolvedConfig):
         }
         const schema = z.object({
           defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
+          defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
           caseSensitive: z.boolean().default(resolved.caseSensitive),
           regex: z.boolean().default(resolved.regex),
           indexTools: z.boolean().default(resolved.indexTools),
@@ -154,12 +189,42 @@ export function registerSettingsSection(ctx: Context, resolved: ResolvedConfig):
             .min(200)
             .max(65536)
             .default(resolved.maxMessageChars),
+          // 'off' (the disabled state of resolved.shortcut) is the namespace
+          // default; combo validation stays with the shortcut registry at
+          // apply time — the namespace only carries the string.
+          shortcut: z.string().default(resolved.shortcut ?? 'off'),
         })
-        settings.register(mod.settingsNamespace(SETTINGS_NS), schema)
+        const scope = settings.register(mod.settingsNamespace(SETTINGS_NS), schema) as SettingsScope<ConfigValue>
+        const apply = (value: ConfigValue): void => {
+          onResolvedConfig?.(resolveSettingsValue(value), value)
+        }
+        apply(scope.get())
+        const unwatch = scope.watch(next => {
+          apply(next)
+        })
+        settingsCtx.effect(() => unwatch)
       } catch {
         // No dsh-settings copy reachable from the plugin: the section stays
         // unavailable; the row config keeps working.
       }
     })()
   })
+}
+
+/** Schema output is validated by the host, but this boundary is optional and
+ *  must still tolerate an older provider returning a partial object. */
+type ConfigValue = {
+  defaultScope?: 'repo' | 'all'
+  defaultTime?: 'all' | '7d' | '30d'
+  caseSensitive?: boolean
+  regex?: boolean
+  indexTools?: boolean
+  indexThinking?: boolean
+  sessionRoot?: string
+  maxMessageChars?: number
+  shortcut?: string
+}
+
+function resolveSettingsValue(value: ConfigValue): ResolvedConfig {
+  return resolveConfig(value)
 }

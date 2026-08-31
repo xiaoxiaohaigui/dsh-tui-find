@@ -88,6 +88,28 @@ describe('walkFrames', () => {
     expect(frames[1]!.end).toBeLessThanOrEqual(torn.length)
   })
 
+  it('walks complete skippable frames between zstd frames and at the prefix', () => {
+    const first = frame(['{"a":1}'])
+    const second = frame(['{"b":2}'])
+    const skip = Buffer.alloc(12)
+    skip.writeUInt32LE(0x184d2a50, 0)
+    skip.writeUInt32LE(4, 4)
+    skip.writeUInt32LE(0xdeadbeef, 8)
+    const ranges = walkFrames(chain([skip, first, skip, second]))
+    expect(ranges).toHaveLength(4)
+    expect(ranges[0]!.skippable).toBe(true)
+    expect(ranges[1]!.skippable).toBeUndefined()
+    expect(ranges[2]!.skippable).toBe(true)
+    expect(ranges[3]!.skippable).toBeUndefined()
+  })
+
+  it('stops safely on a truncated skippable frame', () => {
+    const first = frame(['{"a":1}'])
+    const skip = Buffer.alloc(10)
+    skip.writeUInt32LE(0x184d2a50, 0)
+    skip.writeUInt32LE(10, 4)
+    expect(walkFrames(chain([first, skip]))).toHaveLength(1)
+  })
   it('honors the maxFrames cost ceiling', () => {
     const buffer = chain([frame(['{"a":1}']), frame(['{"b":2}']), frame(['{"c":3}'])])
     expect(walkFrames(buffer, 0, 2)).toHaveLength(2)

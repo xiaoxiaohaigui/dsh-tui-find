@@ -128,8 +128,8 @@ export const dict = {
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
   'hint-preview': {
-    zh: '**Enter** 恢复 · C 复制 · Esc 返回',
-    en: '**Enter** resume · C copy · Esc back',
+    zh: '**Enter** 恢复 · Alt+C 复制 · Esc 返回',
+    en: '**Enter** resume · Alt+C copy · Esc back',
   },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',

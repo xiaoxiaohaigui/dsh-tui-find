@@ -8,9 +8,10 @@
  *   as contribution `dsh-tui-find.find`), opening the scene, optionally
  *   seeding the query from the command's raw input.
  * - `tuiScenes.register` — the full-screen search scene.
- * - `tuiShortcuts.register` — `Ctrl+Shift+F` as a global entry (verified
- *   against the fixed reserved list; the registry itself re-checks user
- *   remaps and refuses reserved combos with a warning).
+ * - `tuiShortcuts.register` — a configurable global entry combo (default
+ *   `Ctrl+Alt+F`; NOT `Ctrl+Shift+F`, which mainstream terminals bind
+ *   locally for their own find UI and never forward). The registry itself
+ *   re-checks user remaps and refuses reserved combos with a warning.
  * - `tuiSettingsSections.register` — the plugin's settings card (mirrors
  *   the row config onto the host settings service namespace).
  *
@@ -29,7 +30,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
-import { Config, resolveConfig, type Config as PluginConfig, type ResolvedConfig } from './config.js'
+import { Config, DEFAULT_SHORTCUT, resolveConfig, resolveShortcut, type Config as PluginConfig, type ResolvedConfig } from './config.js'
 import { SessionScanner } from './core/scan.js'
 import { setLangOverride } from './i18n.js'
 import { FindScene } from './scene.js'
@@ -56,9 +57,12 @@ export const COMMAND_NAME = 'find'
 /** Contribution id declared in dsh-plugin.json. */
 export const COMMAND_CONTRIBUTION_ID = 'dsh-tui-find.find'
 
-/** Global entry combo (verified absent from FIXED_RESERVED_COMBOS; the
- *  shortcut registry re-validates against live user remaps). */
-export const SHORTCUT_COMBO = 'ctrl+shift+f'
+/** Default global entry combo (verified absent from FIXED_RESERVED_COMBOS;
+ *  the shortcut registry re-validates against live user remaps). The
+ *  effective combo is the `shortcut` row-config value — see config.ts for
+ *  why the default is not Ctrl+Shift+F. Kept as an export for consumers
+ *  that only want the default. */
+export const SHORTCUT_COMBO = DEFAULT_SHORTCUT
 
 /**
  * Query seeded by a `/find <words>` invocation and consumed by the scene on
@@ -113,6 +117,16 @@ function watermarkJournalPath(): string | undefined {
  */
 export function apply(ctx: Context, config: PluginConfig = {}): void {
   const resolved = resolveActivationConfig(config)
+  let runtimeConfig = resolved
+  // The global-entry combo gets its own resolution so a typo can be
+  // reported (resolveConfig folds it silently; the warn below restores the
+  // signal). Same pure function, so both paths agree.
+  const shortcut = resolveShortcut(config?.shortcut)
+  if (shortcut.invalid) {
+    ctx.logger.warn(
+      `dsh-tui-find: invalid shortcut '${config?.shortcut}' — a combo must carry ctrl or alt; using the default ${DEFAULT_SHORTCUT}`,
+    )
+  }
   // setLangOverride pins module-level state; the disposer reverts it on
   // deactivation so a removed/reloaded row cannot leave a stale pin behind
   // (the next apply re-pins unconditionally — this matters while inactive).
@@ -136,7 +150,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     const component = (props: TuiSceneProps) => (
       <FindScene
         {...props}
-        config={resolved}
+        config={runtimeConfig}
         scanner={scanner}
         initialQuery={() => {
           const value = pendingQuery
@@ -237,42 +251,91 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     }
   }
 
-  // Ctrl+Shift+F — global entry into the scene. Registration failures are
-  // contained like the command path: a bad binding must not fail the whole
-  // plugin activation. The registry itself refuses reserved combos with a
-  // logged warning (never a throw), so a user remap that collided with this
-  // binding degrades to command-only access.
-  const shortcutsRuntime = ctx.get('tuiShortcuts', false)
-  if (shortcutsRuntime !== undefined) {
-    const registerShortcut = () =>
-      shortcutsRuntime.register(
-        SHORTCUT_COMBO,
+  // Settings are optional at runtime; when present they become the source for
+  // future scene mounts and for the replaceable global shortcut binding.
+  let shortcutDispose: (() => void) | undefined
+  let shortcutCombo: string | undefined
+  const bindShortcut = (candidate: string | undefined, source: string): void => {
+    if (shortcutsRuntime === undefined) return
+    if (candidate === shortcutCombo) return
+    if (candidate === undefined) {
+      shortcutDispose?.()
+      shortcutDispose = undefined
+      shortcutCombo = undefined
+      ctx.logger.info('dsh-tui-find: global shortcut disabled (shortcut: off) — /find remains the entry')
+      return
+    }
+    const registerAccepted = (): (() => void) | undefined => {
+      const dispose = shortcutsRuntime.register(
+        candidate,
         {
           description: 'Find in all sessions (dsh-tui-find)',
           handler: () => {
             const scenes = ctx.get('tuiScenes', false)
             if (scenes === undefined) return
-            // Already open: leave it running. Unlike /find there is no seed
-            // to consume here, and the command path's close/open cycle would
-            // erase the user's in-progress query.
             if (scenes.active?.id === SCENE_ID) return
             scenes.open(SCENE_ID)
           },
         },
         ctx,
       )
-    try {
-      const dispose = registerShortcut()
-      ctx.effect(() => dispose)
-    } catch (error) {
-      // Same boot-window race as the scene registration above; a plain warn
-      // would silently drop the shortcut for the whole session.
-      registerSeamWithRetry(ctx, SHORTCUT_COMBO, registerShortcut, dispose => ctx.effect(() => dispose), error)
+      const accepted = shortcutsRuntime.list().some((entry: { combo: string }) => entry.combo === candidate)
+      if (!accepted) {
+        dispose()
+        return undefined
+      }
+      return dispose
     }
+    const attach = (dispose: () => void): void => {
+      const previous = shortcutDispose
+      shortcutDispose = dispose
+      shortcutCombo = candidate
+      previous?.()
+    }
+    try {
+      const dispose = registerAccepted()
+      if (dispose === undefined) {
+        ctx.logger.warn(`dsh-tui-find: shortcut '${source}' was rejected by the host; keeping the previous binding`)
+        return
+      }
+      attach(dispose)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      if (!detail.includes('requires a live')) {
+        ctx.logger.warn(
+          `dsh-tui-find: shortcut '${source}' registration failed (${detail}); keeping the previous binding`,
+        )
+        return
+      }
+      registerSeamWithRetry(
+        ctx,
+        candidate,
+        () => {
+          const dispose = registerAccepted()
+          if (dispose === undefined) throw new Error('host rejected the shortcut during boot retry')
+          return dispose
+        },
+        attach,
+        error,
+      )
+    }
+  }
+  const shortcutsRuntime = ctx.get('tuiShortcuts', false)
+  if (shortcutsRuntime !== undefined) {
+    bindShortcut(shortcut.combo, config?.shortcut ?? DEFAULT_SHORTCUT)
+    ctx.effect(() => () => {
+      shortcutDispose?.()
+      shortcutDispose = undefined
+      shortcutCombo = undefined
+    })
   }
 
   // Settings card over the host settings service.
-  registerSettingsSection(ctx, resolved)
+  registerSettingsSection(ctx, resolved, next => {
+    runtimeConfig = next
+    const nextShortcut = next.shortcut
+    bindShortcut(nextShortcut, next.shortcut ?? 'off')
+  })
 }
 
 export default { name, inject, Config, apply }

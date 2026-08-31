@@ -31,7 +31,7 @@ import { copyToClipboard } from './clipboard.js'
 import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
-import { compileRegex, searchSessions, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
+import { compileRegex, searchSessions, sessionCwdMatches, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
 import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
 
@@ -42,10 +42,21 @@ type InputKey = Parameters<Parameters<Ui['useInput']>[0]>[1]
 /** The color vocabulary Text accepts (theme keys + raw values). */
 type TextColor = NonNullable<React.ComponentProps<Ui['Text']>['color']>
 
+/**
+ * The installed dsh-tui 0.9.3 declarations predate `onWheel`, although its
+ * runtime dispatcher already routes wheel events to handler props. Keep the
+ * widening local to this scene instead of weakening the injected ui surface.
+ */
+type WheelEventLike = { readonly deltaY: number; readonly deltaX?: number }
+type WheelBoxProps = React.ComponentProps<Ui['Box']> & {
+  onWheel?: (event: WheelEventLike) => void
+}
+
 type Mode = 'list' | 'preview' | 'confirm'
 
-/** The time window the list and search filter sessions by. */
-type TimeFilter = 'all' | '7d' | '30d'
+/** The time window the list and search filter sessions by — the same
+ *  vocabulary as the `defaultTime` config knob (its initial value). */
+type TimeFilter = ResolvedConfig['defaultTime']
 
 /** A row of the flattened list. Every row is selectable — a session card
  *  resumes its session, a hit row resumes the session it hit. A card's
@@ -145,14 +156,14 @@ function composeListHint(columns: number): string {
   ]
   const last = t('hint-seg-esc')
   const separator = ' · '
-  const budget = Math.max(20, columns - 2)
+  const budget = Math.max(1, columns - 2)
   let line = segments[0]!
   for (let index = 1; index < segments.length; index++) {
     const candidate = `${line}${separator}${segments[index]!}`
     if (displayWidth(candidate) + separator.length + displayWidth(last) > budget) break
     line = candidate
   }
-  return `${line}${separator}${last}`
+  return truncateWidth(`${line}${separator}${last}`, budget)
 }
 
 /**
@@ -180,9 +191,12 @@ function SearchCard(props: {
   const placeholder = t('search-placeholder', {
     scope: scope === 'repo' ? t('scope-repo') : t('scope-all'),
   })
-  const contentWidth = Math.max(8, columns - 4)
+  const contentWidth = Math.max(1, columns - 4)
   const empty = query.length === 0
-  const tail = empty ? '' : tailWidth(query, contentWidth - 3)
+  const filterWidth =
+    filters === '' ? 0 : Math.min(displayWidth(filters), Math.max(1, Math.floor(contentWidth / 2)))
+  const queryWidth = Math.max(1, contentWidth - filterWidth - (filters === '' ? 0 : 1))
+  const tail = empty ? '' : tailWidth(query, Math.max(0, queryWidth - 3))
   // Caret column relative to the bordered box: border (1) + paddingX (1) +
   // `⌕ ` (2) + the visible query tail before the caret.
   const caretColumn = 4 + (empty ? 0 : displayWidth(tail))
@@ -210,17 +224,21 @@ function SearchCard(props: {
         </Box>
       ) : (
         <Box flexDirection="row" width="100%">
-          <Text wrap="truncate-end">
+          <Box flexDirection="row" width={queryWidth}>
+            <Text wrap="truncate-end">
             {'⌕ '}
             {tail}
             <Text inverse>{' '}</Text>
-          </Text>
+            </Text>
+          </Box>
           {filters === '' ? null : (
             <>
               <Box flexGrow={1} />
-              <Text dimColor wrap="truncate">
-                {filters}
-              </Text>
+              <Box width={filterWidth}>
+                <Text dimColor wrap="truncate">
+                  {filters}
+                </Text>
+              </Box>
             </>
           )}
         </Box>
@@ -272,7 +290,11 @@ function HighlightedText(props: {
   return <>{parts}</>
 }
 
-/** The main scene component, registered under `dsh-tui-find-scene`. */
+export function wheelStep(deltaY: number, deltaX = 0): -1 | 0 | 1 {
+  if (deltaY === 0 || !Number.isFinite(deltaY) || !Number.isFinite(deltaX)) return 0
+  return deltaY > 0 ? 1 : -1
+}
+
 export function FindScene(props: TuiSceneProps & {
   config: ResolvedConfig
   /** Plugin-scoped scanner (created in main.tsx): its decode cache outlives the scene. */
@@ -285,7 +307,7 @@ export function FindScene(props: TuiSceneProps & {
 
   const [query, setQuery] = useState(() => props.initialQuery())
   const [scope, setScope] = useState<SearchScope>(config.defaultScope)
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>('all')
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>(config.defaultTime)
   const [useRegex, setUseRegex] = useState(config.regex)
   const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
   const [progress, setProgress] = useState<ScanProgress | undefined>(undefined)
@@ -386,12 +408,15 @@ export function FindScene(props: TuiSceneProps & {
   // content (the scanner's MRU order), narrowed by the time window; results
   // mode groups hits per session — the title hit (if any) rides the card's
   // title line, message hits render under the card.
+  const recentScopeCwd = channel.cwd
   const flat = useMemo<FlatRow[]>(() => {
     if (recentMode) {
       return sessions
         .filter(
           session =>
-            session.messages.length > 0 && (sinceMs === undefined || session.modifiedAt >= sinceMs),
+            session.messages.length > 0 &&
+            (scope === 'all' || sessionCwdMatches(recentScopeCwd ?? '', session.header.cwd ?? '')) &&
+            (sinceMs === undefined || session.modifiedAt >= sinceMs),
         )
         .map(session => ({ kind: 'session' as const, session, titleHit: undefined }))
     }
@@ -413,7 +438,7 @@ export function FindScene(props: TuiSceneProps & {
       }
     }
     return rows
-  }, [recentMode, sessions, hits, expanded, sinceMs])
+  }, [recentMode, sessions, hits, expanded, sinceMs, scope, recentScopeCwd])
 
   // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
   // from the top), hit rows answer the full hit vocabulary. The selection is
@@ -528,7 +553,7 @@ export function FindScene(props: TuiSceneProps & {
       }
       if (modeRef.current === 'preview') {
         if (isPlainReturn(key)) beginResume()
-        else if (lower === 'c' && (plain || altOnly)) copySelected()
+        else if (lower === 'c' && altOnly) copySelected()
         return
       }
       // list mode
@@ -638,13 +663,10 @@ export function FindScene(props: TuiSceneProps & {
   }, [status])
 
   const listHeight = Math.max(2, rows - CHROME_LINES)
-  const titleWidth = Math.max(16, Math.min(48, columns - 40))
-  // Hit text budget: the row spends marker (4) + `#<seq> <role>: ` (up to
-  // ~16) before the text — an overlong text is flattened and windowed down
-  // to this budget (around the first highlight), never wrapped: a wrapped
-  // row inflates the list's physical height beyond the window and gets rows
-  // crushed out of the layout (the on-device bug).
-  const hitWidth = Math.max(20, columns - 22)
+  const titleWidth = Math.max(1, Math.min(48, columns - 4))
+  // Keep every row's content inside the terminal even when the viewport is
+  // narrower than the desktop prefix budget.
+  const hitWidth = Math.max(1, columns - 4)
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
   // Active non-default filters, shown in the search card (placeholder row
   // when the query is empty, right-aligned badges otherwise).
@@ -666,6 +688,38 @@ export function FindScene(props: TuiSceneProps & {
   const header = spreadRow(` ${t('scene-title')}`, headerRight, Math.max(0, columns - 1))
 
   const listHint = composeListHint(columns)
+
+  /** Mouse selection mirrors the browser: hover moves focus. */
+  const selectRow = useCallback(
+    (rowIndex: number) => {
+      if (modeRef.current !== 'list' || actionPendingRef.current) return
+      setSelected(Math.min(Math.max(0, rowIndex), Math.max(0, flat.length - 1)))
+      setStatus(undefined)
+    },
+    [flat.length],
+  )
+  /** A row click follows the browser's open path, including confirmation. */
+  const clickRow = useCallback(
+    (rowIndex: number) => {
+      if (modeRef.current !== 'list' || actionPendingRef.current) return
+      const row = flat[rowIndex]
+      if (row === undefined) return
+      setSelected(rowIndex)
+      setStatus(undefined)
+      modeRef.current = 'confirm'
+      setMode('confirm')
+    },
+    [flat],
+  )
+  const stepRows = useCallback(
+    (event: WheelEventLike) => {
+      if (modeRef.current !== 'list' || actionPendingRef.current || flat.length === 0) return
+      const by = wheelStep(event.deltaY, event.deltaX)
+      if (by === 0) return
+      setSelected(current => Math.min(Math.max(0, flat.length - 1), Math.max(0, current + by)))
+    },
+    [flat.length],
+  )
 
   if (mode === 'confirm' && resumeTarget !== undefined) {
     const session = resumeTarget
@@ -725,7 +779,7 @@ export function FindScene(props: TuiSceneProps & {
       anchor >= 0
         ? all.slice(Math.max(0, anchor - PREVIEW_CONTEXT), anchor + PREVIEW_CONTEXT + 1)
         : all.slice(0, PREVIEW_CONTEXT * 2 + 1)
-    const bodyWidth = Math.max(12, columns - 8)
+  const bodyWidth = Math.max(1, columns - 4)
     const maxLinesPerEntry = 3
     return (
       <Box flexDirection="column" paddingX={1} width={columns}>
@@ -839,6 +893,10 @@ export function FindScene(props: TuiSceneProps & {
             height={listHeight}
             titleWidth={titleWidth}
             hitWidth={hitWidth}
+            columns={columns}
+            onRowClick={clickRow}
+            onRowHover={selectRow}
+            onWheel={stepRows}
           />
         )}
       </Box>
@@ -879,9 +937,14 @@ function ListView(props: {
   height: number
   titleWidth: number
   hitWidth: number
+  columns: number
+  onRowClick: (rowIndex: number) => void
+  onRowHover: (rowIndex: number) => void
+  onWheel: (event: WheelEventLike) => void
 }): React.ReactElement {
-  const { React: R, ui, rows, selected, height, titleWidth, hitWidth } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, columns, onRowClick, onRowHover, onWheel } = props
   const { Box, Text } = ui
+  const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
   const { useState, useMemo } = R
 
   // Scroll window over the flat rows, fitted in physical lines so the
@@ -896,7 +959,12 @@ function ListView(props: {
   const visible = rows.slice(view.start, view.end)
 
   return (
-    <Box flexDirection="column">
+    <WheelBox
+      flexDirection="column"
+      height={height}
+      overflow="hidden"
+      onWheel={onWheel}
+    >
       {visible.map((row, offset) => {
         const rowIndex = view.start + offset
         const isSelected = selected === rowIndex
@@ -913,7 +981,13 @@ function ListView(props: {
               ? undefined
               : hitLine(displayTitle(session), row.titleHit.ranges, titleWidth)
           return (
-            <Box key={`s${rowIndex}`} flexDirection="column" flexShrink={0}>
+            <Box
+              key={`s${rowIndex}`}
+              flexDirection="column"
+              flexShrink={0}
+              onClick={() => onRowClick(rowIndex)}
+              onMouseEnter={() => onRowHover(rowIndex)}
+            >
               <Box flexShrink={0}>
                 <Text color={isSelected ? 'suggestion' : 'subtle'}>{isSelected ? '❯ ' : '  '}</Text>
                 {titleLine === undefined ? (
@@ -941,7 +1015,7 @@ function ListView(props: {
                       t('msgs-count', { n: session.messages.length }),
                       session.header.cwd?.split(/[\\/]/).pop() ?? session.id.slice(0, 8),
                     ].join(' · '),
-                    Math.max(12, titleWidth + 18),
+                    Math.max(1, columns - 4),
                   )}
                 </Text>
               </Box>
@@ -967,16 +1041,23 @@ function ListView(props: {
         // selection would reflow the row's whole content on every focus move.
         const more = row.more > 0 ? t('more-hits', { count: row.more }) : undefined
         const moreReserve = more === undefined ? 0 : displayWidth(more) + 1
-        const budget = Math.max(8, hitWidth - moreReserve)
+        const prefix = `${marker}#${hit.seq ?? '·'} ${roleLabel}: `
+        const budget = Math.max(1, hitWidth - displayWidth(prefix) - moreReserve)
         // One line, guaranteed: newlines flatten, and the visible slice is
         // cut around the first highlight so the keyword cannot be truncated
         // out of view on a long message.
         const line = hitLine(hit.text, hit.ranges, budget)
         return (
-          <Box key={`m${rowIndex}`} flexDirection="row" flexShrink={0}>
+          <Box
+            key={`m${rowIndex}`}
+            flexDirection="row"
+            flexShrink={0}
+            onClick={() => onRowClick(rowIndex)}
+            onMouseEnter={() => onRowHover(rowIndex)}
+          >
             <Text color={isSelected ? 'suggestion' : 'subtle'}>{marker}</Text>
             <Text dimColor={!isSelected} {...(isSelected && roleColor !== undefined ? { color: roleColor } : {})}>
-              #{hit.seq ?? '·'} {roleLabel}:{' '}
+              {prefix}
             </Text>
             <HighlightedText
               React={R}
@@ -990,6 +1071,6 @@ function ListView(props: {
           </Box>
         )
       })}
-    </Box>
+    </WheelBox>
   )
 }

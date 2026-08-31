@@ -596,6 +596,25 @@ describe('offset watermark (incremental decode)', () => {
     }
   })
 
+  it('keeps the full prefix proof for a large equal-length rewrite', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a8000000-0000-4000-8000-000000000008'
+      const prefix = 'x'.repeat(10_000)
+      const first = rawFrame(`${headerLine(id, 'D:/work/wm-large')}\n${env('user/message', 1, prefix)}\n`)
+      const path = writeSession(root, id, first)
+      const scanner = new SessionScanner()
+      await scanner.scan({ sessionRoot: root, maxMessageChars: 20_000 })
+      const changed = `${prefix.slice(0, 4_096)}${'y'.repeat(prefix.length - 8_192)}${prefix.slice(-4_096)}`
+      const rewritten = rawFrame(`${headerLine(id, 'D:/work/wm-large')}\n${env('user/message', 1, changed)}\n`)
+      expect(rewritten.length).toBe(first.length)
+      writeFileSync(path, rewritten)
+      const result = await scanner.scan({ sessionRoot: root, maxMessageChars: 20_000 })
+      expect(result[0]!.messages[0]!.text).toBe(changed)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
   it('mirrors watermarks into the journal; a cold scanner still decodes fully', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
     const journalDir = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-j-'))
@@ -806,6 +825,11 @@ describe('searchSessions', () => {
     expect(compileRegex('auth', false)).toBeInstanceOf(RegExp)
   })
 
+  it('rejects pathological or oversized regex patterns before execution', () => {
+    expect(compileRegex('(a+)+$', false)).toBeUndefined()
+    expect(compileRegex('a'.repeat(513), false)).toBeUndefined()
+    expect(compileRegex('a+\\1', false)).toBeUndefined()
+  })
   it('survives zero-width-capable regex patterns', () => {
     // `a*` matches the empty string everywhere: the matcher must advance
     // instead of looping, and only the non-empty matches are recorded.

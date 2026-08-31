@@ -219,7 +219,7 @@ writeLog(
   ),
 )
 
-writeFileSync(join(dirname(fileURLToPath(import.meta.url)), '../test/fixtures/manifest.json'), JSON.stringify(manifest, null, 2))
+writeFileSync(join(outRoot, 'manifest.json'), JSON.stringify(manifest, null, 2))
 console.log(`fixtures written to ${outRoot}`)
 console.log(`  sessions: ${manifest.sessions.length} (compressed + plain twins)`)
 console.log(`  corruption: torn frame, garbage, torn plain line`)

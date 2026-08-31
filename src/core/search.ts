@@ -76,13 +76,26 @@ export interface SearchOptions {
   readonly regex?: boolean
 }
 
+/** Synchronous regex matching policy: reject patterns whose worst-case
+ *  backtracking is easy to identify before native RegExp can block the UI. */
+export const MAX_REGEX_PATTERN_LENGTH = 512
+const UNSAFE_REGEX_PATTERNS = [
+  /\\\d/u, // backreferences
+  /\([^)]*[+*][^)]*\)[+*?]/u, // quantified groups containing quantifiers
+  /\([^)]*\|[^)]*\)[+*?]/u, // quantified alternation groups
+]
+
+export function isRegexAllowed(query: string): boolean {
+  return query.length <= MAX_REGEX_PATTERN_LENGTH && !UNSAFE_REGEX_PATTERNS.some(pattern => pattern.test(query))
+}
+
 /**
  * Compile the query into the RegExp the regex path matches with: the `g`
- * flag for match iteration, plus `i` unless matching is case-sensitive.
  * Exported because the scene needs the same validity verdict for its
  * invalid-pattern notice — one compiler, so the two can never disagree.
  */
 export function compileRegex(query: string, caseSensitive: boolean): RegExp | undefined {
+  if (!isRegexAllowed(query)) return undefined
   try {
     return new RegExp(query, caseSensitive ? 'g' : 'gi')
   } catch {

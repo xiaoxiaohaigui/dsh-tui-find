@@ -13,7 +13,7 @@
  * @module dsh-tui-find/core/roots
  */
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /**
  * Session-log storage roots.
@@ -26,14 +26,14 @@ import { join } from 'node:path'
  */
 export function sessionsRoots(manualOverride?: string): string[] {
   const trimmed = manualOverride?.trim()
-  if (trimmed !== undefined && trimmed.length > 0) return [trimmed]
+  if (trimmed !== undefined && trimmed.length > 0) return [resolve(trimmed)]
   const home = homedir()
   const envOverride = process.env['DSH_TUI_SESSION_ROOT']
-  if (envOverride !== undefined && envOverride.trim().length > 0) return [envOverride.trim()]
+  if (envOverride !== undefined && envOverride.trim().length > 0) return [resolve(envOverride.trim())]
   const dshHome = process.env['DSH_HOME']
   const roots = [
     join(
-      dshHome !== undefined && dshHome.trim().length > 0 ? dshHome.trim() : join(home, '.dsh'),
+      dshHome !== undefined && dshHome.trim().length > 0 ? resolve(dshHome.trim()) : join(home, '.dsh'),
       'sessions',
     ),
     join(home, '.dsh-tui', 'sessions'),

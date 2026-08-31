@@ -25,8 +25,11 @@
  */
 import { zstdDecompressSync } from 'node:zlib'
 
-/** Zstandard frame magic, little-endian (RFC 8878 §3.1.1.1). */
+/** RFC 8878 standard frame magic, little-endian. */
 export const ZSTD_MAGIC = 0xfd2fb528
+/** RFC 8878 skippable-frame magic range, little-endian. */
+export const ZSTD_SKIPPABLE_MAGIC_MIN = 0x184d2a50
+export const ZSTD_SKIPPABLE_MAGIC_MAX = 0x184d2a5f
 
 /** A frame must not expand past this ceiling when decoded. */
 export const MAX_DECODED_FRAME_BYTES = 64 * 1024 * 1024
@@ -35,13 +38,34 @@ export const MAX_DECODED_FRAME_BYTES = 64 * 1024 * 1024
 export interface FrameRange {
   readonly start: number
   readonly end: number
+  /** True for an RFC 8878 skippable frame; such ranges are never decoded. */
+  readonly skippable?: boolean
 }
 
 /** One decoded log line, still untyped — the caller owns interpretation. */
 export type LogLine = Record<string, unknown>
 
+/** Return the exclusive end of a complete RFC 8878 skippable frame. */
+function skippableEnd(buffer: Buffer, start: number): number {
+  if (start < 0 || start + 8 > buffer.length) return -1
+  const magic = buffer.readUInt32LE(start)
+  if (magic < ZSTD_SKIPPABLE_MAGIC_MIN || magic > ZSTD_SKIPPABLE_MAGIC_MAX) return -1
+  const size = buffer.readUInt32LE(start + 4)
+  const end = start + 8 + size
+  return end >= start + 8 && end <= buffer.length ? end : -1
+}
+
+/** Whether a complete skippable frame starts at `start`. */
+function isSkippableMagic(buffer: Buffer, start: number): boolean {
+  return start >= 0 && start + 4 <= buffer.length && (() => {
+    const magic = buffer.readUInt32LE(start)
+    return magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX
+  })()
+}
+
 /**
- * Locate the end of the frame starting at `start`, without decompressing it.
+ * Locate the end of the standard frame starting at `start`, without
+ * decompressing it.
  *
  * The walk reads the Frame_Header (descriptor, optional window/dictionary/
  * content-size fields) and then each Block_Header in turn — a 3-byte
@@ -113,6 +137,13 @@ export function walkFrames(
   const frames: FrameRange[] = []
   let at = from
   while (at < buffer.length && frames.length < maxFrames) {
+    if (isSkippableMagic(buffer, at)) {
+      const end = skippableEnd(buffer, at)
+      if (end < 0) break
+      frames.push({ start: at, end, skippable: true })
+      at = end
+      continue
+    }
     const end = frameEnd(buffer, at)
     if (end < 0) break
     frames.push({ start: at, end })
@@ -172,5 +203,9 @@ export function decodeFrame(buffer: Buffer, frame: FrameRange): LogLine[] | unde
  * @param bytesRead - How many of those bytes are valid.
  */
 export function sniffEncoding(head: Buffer, bytesRead: number): 'zstd' | 'plain' {
-  return bytesRead === 4 && head.readUInt32LE(0) === ZSTD_MAGIC ? 'zstd' : 'plain'
+  if (bytesRead !== 4) return 'plain'
+  const magic = head.readUInt32LE(0)
+  return magic === ZSTD_MAGIC || (magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX)
+    ? 'zstd'
+    : 'plain'
 }

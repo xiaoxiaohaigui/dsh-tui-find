@@ -28,7 +28,7 @@
  * line) its extract state has folded, and keeps that state alive — so when
  * a log GROWS, the next sweep re-walks the frame chain (structural, no
  * decode), verifies a frame still ends exactly at the watermark, verifies
- * a sampled digest of the bytes before it (first/last 4 KB — the boundary
+ * a complete SHA-256 digest of the bytes before it (the boundary
  * proof alone cannot see a same-boundary equal-length rewrite), and decodes
  * only the frames beyond it, continuing the fold. A same-size mtime touch
  * verifies the same way and decodes nothing. Any mismatch (shrunk file,
@@ -111,15 +111,8 @@ interface CacheEntry {
    * implies the snapshot covers everything decodable in that file version.
    */
   readonly decodedTo: number
-  /**
-   * Digest of the sampled bytes before {@link decodedTo} (first/last 4 KB,
-   * whole prefix when smaller) — the second half of the append-only prefix
-   * proof: the boundary check proves the watermark is still a frame/line
-   * boundary, this proves the bytes before it are still the ones the cached
-   * fold was built from, closing the same-boundary equal-length rewrite
-   * hole. In-memory only; the journal stays offsets-only (it never takes
-   * part in resume decisions).
-   */
+  /** Complete SHA-256 digest of every byte before {@link decodedTo}. The
+   *  journal stays offsets-only and never takes part in resume decisions. */
   readonly prefixDigest: string
   /** Encoding the watermark was taken under; an encoding flip is a rewrite
    *  and forces a full decode. */
@@ -135,6 +128,7 @@ interface CacheEntry {
 interface DecodedLog {
   readonly session: ScannedSession
   readonly state: ExtractState
+  readonly bytes: number
   readonly decodedTo: number
   readonly prefixDigest: string
   readonly isZstd: boolean
@@ -219,7 +213,7 @@ export function enumerateLogs(sessionRoot?: string): Map<string, LogFacts> {
  * Read a whole file's bytes with a shared open; undefined when unreadable.
  * (Single open per file — the scanner never keeps handles across yields.)
  */
-function readWholeFile(path: string): Buffer | undefined {
+function readWholeFile(path: string, limit: number): Buffer | undefined {
   let handle: number
   try {
     handle = openSync(path, 'r')
@@ -227,7 +221,14 @@ function readWholeFile(path: string): Buffer | undefined {
     return undefined
   }
   try {
-    return readFileSync(handle)
+    const buffer = Buffer.allocUnsafe(Math.max(0, limit))
+    let offset = 0
+    while (offset < buffer.length) {
+      const read = readSync(handle, buffer, offset, buffer.length - offset, offset)
+      if (read === 0) break
+      offset += read
+    }
+    return offset === buffer.length ? buffer : buffer.subarray(0, offset)
   } catch {
     return undefined
   } finally {
@@ -271,29 +272,11 @@ function* plainLines(buffer: Buffer, from = 0): Generator<{ line: LogLine | unde
   }
 }
 
-/** Sample size for {@link prefixDigest}: the first and last this many bytes
- *  before the watermark (the whole prefix when it is smaller). An append
- *  leaves both windows byte-identical; an equal-length rewrite of the
- *  decoded prefix moves bytes in at least one of them with overwhelming
- *  likelihood, at O(kilobytes) per resume check regardless of log size. */
-const PREFIX_SAMPLE_BYTES = 4096
-
-/**
- * Digest of the sampled bytes before offset `end` of `buffer` — the resume
- * path recomputes this over the live buffer and compares against the value
- * committed with the cache entry. Sampled rather than whole-prefix so the
- * check stays cheap on 100 MB logs; deterministic, so equal inputs always
- * compare equal and an untouched prefix never forces a full decode.
- */
+/** Digest of every byte before offset `end` — the resume proof covers the
+ *  complete decoded prefix, so equal-length rewrites cannot hide in an
+ *  un-sampled middle region. */
 function prefixDigest(buffer: Buffer, end: number): string {
-  const hash = createHash('sha256')
-  if (end <= PREFIX_SAMPLE_BYTES) {
-    hash.update(buffer.subarray(0, end))
-  } else {
-    hash.update(buffer.subarray(0, PREFIX_SAMPLE_BYTES))
-    hash.update(buffer.subarray(end - PREFIX_SAMPLE_BYTES, end))
-  }
-  return hash.digest('hex')
+  return createHash('sha256').update(buffer.subarray(0, Math.max(0, Math.min(end, buffer.length)))).digest('hex')
 }
 
 /** Yield to the event loop so a cold sweep never blocks the render tick. */
@@ -449,7 +432,7 @@ export class SessionScanner {
    *
    * With a resumable cache entry (same options, matching encoding, a
    * watermark that is still a frame/line boundary of the current file, and
-   * a matching sampled digest of the bytes before it), only the frames or
+   * a matching complete-prefix digest of the bytes before it), only the frames or
    * lines BEYOND the watermark are decoded, folded into a
    * clone of the cached state; every other case decodes from zero. Frames
    * are decoded one at a time; after every 64 frames (and inside very large
@@ -466,8 +449,15 @@ export class SessionScanner {
     resume: CacheEntry | undefined,
   ): Promise<DecodedLog | undefined> {
     if (facts.bytes > MAX_LOG_BYTES) return undefined
-    const buffer = readWholeFile(facts.path)
+    const buffer = readWholeFile(facts.path, facts.bytes)
     if (buffer === undefined) return undefined
+
+    const observedBytes = buffer.length
+    if (observedBytes !== facts.bytes) {
+      // The stat snapshot raced a writer. Serve only a coherent bounded read;
+      // do not commit/cache it under facts from a different file version.
+      return undefined
+    }
 
     const isZstd = sniffEncoding(buffer.subarray(0, 4), Math.min(4, buffer.length)) === 'zstd'
     let state = newExtractState()
@@ -478,7 +468,7 @@ export class SessionScanner {
       // file, and it doubles as the watermark's boundary proof: some
       // complete frame of the current file ends exactly at the watermark.
       // The boundary alone cannot tell an append from a same-boundary
-      // equal-length rewrite, so the sampled prefix digest must also
+      // equal-length rewrite, so the complete-prefix digest must also
       // match before the cached fold is trusted.
       const frames = walkFrames(buffer)
       let startIndex = 0
@@ -498,6 +488,10 @@ export class SessionScanner {
       for (let index = startIndex; index < frames.length; index++) {
         if (signal?.aborted) return undefined
         const frame = frames[index]!
+        if (frame.skippable === true) {
+          decodedTo = frame.end
+          continue
+        }
         const lines = decodeFrame(buffer, frame)
         if (lines !== undefined) {
           for (const line of lines) extractLine(state, line, options)
@@ -512,7 +506,7 @@ export class SessionScanner {
     } else {
       // Plain resume boundary: the watermark must sit right after a
       // newline of the current file (decodedTo 0 is the trivial one), and
-      // the sampled prefix digest must still match — a newline at the
+      // the complete-prefix digest must still match — a newline at the
       // boundary alone would let an equal-length rewrite of the decoded
       // prefix resume on stale fold state.
       let startOffset = 0
@@ -547,13 +541,13 @@ export class SessionScanner {
     const session: ScannedSession = {
       id,
       path: facts.path,
-      bytes: facts.bytes,
+      bytes: observedBytes,
       modifiedAt: facts.mtimeMs,
       title: state.title,
       header: state.header,
       messages: state.messages,
     }
-    return { session, state, decodedTo, prefixDigest: prefixDigest(buffer, decodedTo), isZstd }
+    return { session, state, bytes: observedBytes, decodedTo, prefixDigest: prefixDigest(buffer, decodedTo), isZstd }
   }
 
   /**
@@ -606,7 +600,7 @@ export class SessionScanner {
         const decoded = await this.decodeLog(id, facts, extract, signal, progress, resume)
         if (decoded !== undefined) {
           this.cache.set(facts.path, {
-            bytes: facts.bytes,
+            bytes: decoded.bytes,
             mtimeMs: facts.mtimeMs,
             optionsKey,
             decodedTo: decoded.decodedTo,
