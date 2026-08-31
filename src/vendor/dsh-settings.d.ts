@@ -1,9 +1,9 @@
 /**
- * Vendored type surface of `@deepseek-ai/dsh-settings`, exact to the two
- * members the plugin touches. The real package is a host peer that ships
- * with the dsh profile deployment but is not resolvable from the plugin's
- * own tree — the runtime import in settings.ts is dynamic and contained,
- * and this declaration only gives it a shape.
+ * Legacy type shim for `@deepseek-ai/dsh-settings`. The real package is a
+ * host peer that ships with the dsh profile deployment but is not required by
+ * this plugin's own tree. Namespace registration now passes the raw string
+ * through the structural `ctx.settings` seam, so this helper remains only for
+ * older consumers that still import it.
  */
 
 declare module '@deepseek-ai/dsh-settings' {

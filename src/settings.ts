@@ -8,7 +8,7 @@
  *    namespace's schema paths.
  *
  * The settings service is a host peer (`@deepseek-ai/dsh-settings`) that may
- * be absent on minimal compositions; its import is therefore dynamic and
+ * be absent on minimal compositions; the injection is therefore optional and
  * every failure degrades to "section renders unavailable" — the row config
  * (cordis.patch.yml) remains the always-works path.
  *
@@ -24,8 +24,8 @@ import { registerSeamWithRetry } from './seam.js'
 /** Settings namespace owned by this plugin. */
 export const SETTINGS_NS = 'dsh-tui-find'
 
-/** The optional settings package is a runtime peer, so keep this structural
- *  rather than importing its types into the plugin's required surface. */
+/** Keep the settings service structural rather than importing its types into
+ *  the plugin's required surface; the peer remains optional at runtime. */
 interface SettingsScope<T> {
   get(): T
   watch(callback: (next: T, prev: T) => void | Promise<void>): () => void
@@ -168,46 +168,43 @@ export function registerSettingsSection(
       | { register(ns: unknown, schema: unknown): unknown }
       | undefined
     if (settings === undefined) return
-    void (async () => {
-      try {
-        const mod = (await import('@deepseek-ai/dsh-settings')) as {
-          settingsNamespace: (name: string) => unknown
-        }
-        const schema = z.object({
-          defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
-          defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
-          caseSensitive: z.boolean().default(resolved.caseSensitive),
-          regex: z.boolean().default(resolved.regex),
-          indexTools: z.boolean().default(resolved.indexTools),
-          indexThinking: z.boolean().default(resolved.indexThinking),
-          sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),
-          // Same bounds the row-config schema enforces (config.ts) — the
-          // namespace must not accept values the row config would reject.
-          maxMessageChars: z
-            .number()
-            .step(100)
-            .min(200)
-            .max(65536)
-            .default(resolved.maxMessageChars),
-          // 'off' (the disabled state of resolved.shortcut) is the namespace
-          // default; combo validation stays with the shortcut registry at
-          // apply time — the namespace only carries the string.
-          shortcut: z.string().default(resolved.shortcut ?? 'off'),
-        })
-        const scope = settings.register(mod.settingsNamespace(SETTINGS_NS), schema) as SettingsScope<ConfigValue>
-        const apply = (value: ConfigValue): void => {
-          onResolvedConfig?.(resolveSettingsValue(value), value)
-        }
-        apply(scope.get())
-        const unwatch = scope.watch(next => {
-          apply(next)
-        })
-        settingsCtx.effect(() => unwatch)
-      } catch {
-        // No dsh-settings copy reachable from the plugin: the section stays
-        // unavailable; the row config keeps working.
+    try {
+      const schema = z.object({
+        defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
+        defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
+        caseSensitive: z.boolean().default(resolved.caseSensitive),
+        regex: z.boolean().default(resolved.regex),
+        indexTools: z.boolean().default(resolved.indexTools),
+        indexThinking: z.boolean().default(resolved.indexThinking),
+        sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),
+        // Same bounds the row-config schema enforces (config.ts) — the
+        // namespace must not accept values the row config would reject.
+        maxMessageChars: z
+          .number()
+          .step(100)
+          .min(200)
+          .max(65536)
+          .default(resolved.maxMessageChars),
+        // 'off' (the disabled state of resolved.shortcut) is the namespace
+        // default; combo validation stays with the shortcut registry at
+        // apply time — the namespace only carries the string.
+        shortcut: z.string().default(resolved.shortcut ?? 'off'),
+      })
+      // Namespace brands are type-only; alpha.2 validates the raw string in
+      // register() itself, and the constant satisfies the older provider too.
+      const scope = settings.register(SETTINGS_NS, schema) as SettingsScope<ConfigValue>
+      const apply = (value: ConfigValue): void => {
+        onResolvedConfig?.(resolveSettingsValue(value), value)
       }
-    })()
+      apply(scope.get())
+      const unwatch = scope.watch(next => {
+        apply(next)
+      })
+      settingsCtx.effect(() => unwatch)
+    } catch {
+      // The provider or schema is unavailable: the section stays unavailable;
+      // the row config keeps working.
+    }
   })
 }
 
