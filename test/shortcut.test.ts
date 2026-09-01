@@ -115,4 +115,37 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
     // plugin's structural shortcut validation.
     expect(await mountAndList({ shortcut: 'ctrl+v' })).toEqual([DEFAULT_SHORTCUT])
   })
+
+  it('binds after tuiShortcuts mounts later in the profile boot', async () => {
+    const root = new Context()
+    root.reflect.provide('agents', {})
+
+    // Start the plugin before dsh-tui-extensions. The first activation cannot
+    // read the optional service synchronously; its injected binding callback
+    // must attach when the service is provided below.
+    const first = root.plugin(
+      { name: plugin.name, inject: plugin.inject, apply: plugin.apply },
+      { shortcut: 'alt+f' },
+    )
+    await first
+
+    const extensions = root.plugin({ name: extensionsName, apply: extensionsApply })
+    await extensions
+    await vi.waitFor(() => expect(root.get('tuiShortcuts', false)).toBeDefined(), { timeout: 5000, interval: 10 })
+    await sleep(50)
+
+    // A second activation with the same combo is a probe: if the late bind
+    // succeeded it is rejected as a duplicate and this activation's list is
+    // empty; with the old captured-undefined bug it would claim alt+f itself.
+    const observed: string[] = []
+    const probe = root.plugin({
+      name: 'dsh-tui-find-shortcut-probe',
+      apply: (ctx: Context) => {
+        apply(ctx, { shortcut: 'alt+f' })
+        observed.push(...(ctx.get('tuiShortcuts', false)?.list().map(entry => entry.combo) ?? []))
+      },
+    })
+    await probe
+    expect(observed).toEqual([])
+  })
 })

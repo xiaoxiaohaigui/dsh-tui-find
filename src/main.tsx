@@ -255,6 +255,10 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // future scene mounts and for the replaceable global shortcut binding.
   let shortcutDispose: (() => void) | undefined
   let shortcutCombo: string | undefined
+  // `tuiShortcuts` is optional during a profile's cold boot. Keep the
+  // reference mutable so the injected binding callback can attach once the
+  // service is mounted instead of permanently capturing `undefined`.
+  let shortcutsRuntime = ctx.get('tuiShortcuts', false)
   const bindShortcut = (candidate: string | undefined, source: string): void => {
     if (shortcutsRuntime === undefined) return
     if (candidate === shortcutCombo) return
@@ -342,14 +346,29 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       )
     }
   }
-  const shortcutsRuntime = ctx.get('tuiShortcuts', false)
+  const bindWhenShortcutsReady = (shortcutsCtx: Context): void => {
+    shortcutsRuntime = shortcutsCtx.get('tuiShortcuts', false)
+    bindShortcut(runtimeConfig.shortcut, runtimeConfig.shortcut ?? 'off')
+    shortcutsCtx.effect(() => () => {
+      shortcutDispose?.()
+      shortcutDispose = undefined
+      shortcutCombo = undefined
+      shortcutsRuntime = undefined
+    })
+  }
   if (shortcutsRuntime !== undefined) {
     bindShortcut(shortcut.combo, config?.shortcut ?? DEFAULT_SHORTCUT)
     ctx.effect(() => () => {
       shortcutDispose?.()
       shortcutDispose = undefined
       shortcutCombo = undefined
+      shortcutsRuntime = undefined
     })
+  } else {
+    // The service may be mounted after this plugin's apply (the normal
+    // profile loader can interleave rows during startup). `inject` waits for
+    // it and runs the same binding path in a live activation fiber.
+    ctx.inject?.(['tuiShortcuts'], bindWhenShortcutsReady)
   }
 
   // Settings card over the host settings service.

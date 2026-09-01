@@ -295,6 +295,14 @@ export function wheelStep(deltaY: number, deltaX = 0): -1 | 0 | 1 {
   return deltaY > 0 ? 1 : -1
 }
 
+/** Selection marker shared by title and message rows. Both arrows occupy the
+ * first terminal column, while message rows retain their extra two-cell
+ * content indent so the list hierarchy remains visible. */
+export function selectionMarker(selected: boolean, row: 'title' | 'message' = 'title'): string {
+  if (row === 'message') return selected ? '❯   ' : '    '
+  return selected ? '❯ ' : '  '
+}
+
 export function FindScene(props: TuiSceneProps & {
   config: ResolvedConfig
   /** Plugin-scoped scanner (created in main.tsx): its decode cache outlives the scene. */
@@ -990,7 +998,7 @@ function ListView(props: {
               onMouseEnter={() => onRowHover(rowIndex)}
             >
               <Box flexShrink={0}>
-                <Text color={isSelected ? 'suggestion' : 'subtle'}>{isSelected ? '❯ ' : '  '}</Text>
+                <Text color={isSelected ? 'suggestion' : 'subtle'}>{selectionMarker(isSelected)}</Text>
                 {titleLine === undefined ? (
                   <Text color={isSelected ? 'suggestion' : 'text'} bold={isSelected}>
                     {truncateWidth(displayTitle(session), titleWidth)}
@@ -1036,7 +1044,7 @@ function ListView(props: {
                 : t('role-tool')
         const roleColor: TextColor | undefined =
           hit.role === undefined ? undefined : ROLE_MARK[hit.role].color
-        const marker = isSelected ? '  ❯ ' : '    '
+        const marker = selectionMarker(isSelected, 'message')
         // The `(+N)` tail is reserved from the text budget even while the
         // row is selected (it is hidden then): a budget that depends on the
         // selection would reflow the row's whole content on every focus move.
