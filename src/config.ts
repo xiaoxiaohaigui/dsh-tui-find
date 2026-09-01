@@ -94,7 +94,7 @@ export type Config = {
   /** Treat queries as JavaScript regular expressions by default. Default
    *  OFF (substring stays the baseline; Alt+R toggles it live in the scene). */
   regex?: boolean
-  /** Index tool-call summaries (`[name] arguments`). Default ON. */
+  /** Index tool-call summaries (`[name] arguments`). Default OFF. */
   indexTools?: boolean
   /** Index assistant thinking text. Default OFF (noisy + private). */
   indexThinking?: boolean
@@ -117,7 +117,7 @@ export const Config: Schemastery<Config> = z.object({
   defaultTime: z.union(['all', '7d', '30d']).default('all'),
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
-  indexTools: z.boolean().default(true),
+  indexTools: z.boolean().default(false),
   indexThinking: z.boolean().default(false),
   sessionRoot: z.string().required(false),
   maxMessageChars: z.number().step(100).min(200).max(65536).default(4000),
@@ -149,7 +149,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
       value.defaultTime === '7d' || value.defaultTime === '30d' ? value.defaultTime : 'all',
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,
-    indexTools: value.indexTools !== false,
+    indexTools: value.indexTools === true,
     indexThinking: value.indexThinking === true,
     sessionRoot:
       typeof value.sessionRoot === 'string' && value.sessionRoot.trim().length > 0

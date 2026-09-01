@@ -1,6 +1,6 @@
 {
   "name": "dsh-tui-find",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Cross-session full-text search for dsh-TUI — /find over all local dsh session logs (zstd frame chains and plain JSONL), read-only.",
   "type": "module",
   "main": "dist/main.js",
@@ -14,6 +14,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "assets",
     "dist",
     "dsh-plugin.json",
     "cordis.patch.yml",

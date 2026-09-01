@@ -1,5 +1,7 @@
 # dsh-tui-find
 
+![dsh-tui-find cover](./assets/dsh-tui-find-cover-title.png)
+
 **Cross-session full-text search for dsh-TUI** — turn "I remember discussing/generating X in some session" into "found it, readable, copyable, resumable" within seconds.
 
 [中文说明](./README.md) · MIT · Zero runtime dependencies
@@ -109,7 +111,7 @@ Results are grouped per session, hits are highlighted, each session shows its fi
 
 ## Search semantics
 
-- **Indexed**: user messages, assistant text, session titles, tool-call summaries (`[name] arguments`).
+- **Indexed**: user messages, assistant text, and session titles; tool-call summaries (`[name] arguments`) are included when `indexTools` is enabled.
 - **Not indexed by default**: thinking text (opt-in via config).
 - **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); `Alt+R` switches to JS regex mode (case sensitivity follows the case-sensitive switch; invalid, oversized, or potentially catastrophic patterns are rejected and show a notice).
 - **Time window**: `Alt+T` filters by session modification time (all ⇄ last 7 days ⇄ last 30 days), applying to both search results and the empty-query recent list; the initial window comes from the `defaultTime` config (default all).
@@ -127,7 +129,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       defaultTime: 'all'         # initial time window: all (default) | 7d | 30d
       caseSensitive: false       # case-sensitive matching (default off)
       regex: false               # start with regex matching on (default off; Alt+R toggles it live)
-      indexTools: true           # index tool-call summaries (default on)
+      indexTools: false          # index tool-call summaries (default off)
       indexThinking: false       # index thinking text (default off)
       sessionRoot: ''            # manual session root override
       maxMessageChars: 4000      # per-message index character budget
@@ -147,7 +149,7 @@ Every option above except `lang` can also be changed inside the TUI: open `/sett
 | Default time window | All time (default) ⇄ Last 7 days ⇄ Last 30 days |
 | Case-sensitive | on / off (default off) |
 | Regex matching | on / off (default off; `Alt+R` toggles it live in the scene) |
-| Index tool calls | on / off (default on) |
+| Index tool calls | on / off (default off) |
 | Index thinking | on / off (default off) |
 | Session root override | text; blank falls back to the resolution chain below |
 | Per-message index budget | number (200–65536, step 100, default 4000) |

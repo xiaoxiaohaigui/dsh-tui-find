@@ -90,8 +90,8 @@ function section(): TuiSettingsSection {
         path: ['indexTools'],
         label: 'Index tool calls',
         descriptions: zh('索引工具调用'),
-        hint: 'Index tool-call summaries ([name] arguments) for search',
-        hintDescriptions: zh('把工具调用摘要（[名称] 参数）纳入搜索索引'),
+        hint: 'Index tool-call summaries ([name] arguments) for search (default off)',
+        hintDescriptions: zh('把工具调用摘要（[名称] 参数）纳入搜索索引（默认关闭）'),
         kind: 'boolean',
       },
       {

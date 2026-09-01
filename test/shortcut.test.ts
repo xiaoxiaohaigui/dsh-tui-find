@@ -109,4 +109,10 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
   it('falls back to the default on an implausible value', async () => {
     expect(await mountAndList({ shortcut: 'shift+f' })).toEqual([DEFAULT_SHORTCUT])
   })
+
+  it('falls back to the default when the host rejects a reserved combo', async () => {
+    // ctrl+v is reserved by the host's built-in paste action but passes the
+    // plugin's structural shortcut validation.
+    expect(await mountAndList({ shortcut: 'ctrl+v' })).toEqual([DEFAULT_SHORTCUT])
+  })
 })

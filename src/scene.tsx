@@ -1041,8 +1041,8 @@ function ListView(props: {
         // selection would reflow the row's whole content on every focus move.
         const more = row.more > 0 ? t('more-hits', { count: row.more }) : undefined
         const moreReserve = more === undefined ? 0 : displayWidth(more) + 1
-        const prefix = `${marker}#${hit.seq ?? '·'} ${roleLabel}: `
-        const budget = Math.max(1, hitWidth - displayWidth(prefix) - moreReserve)
+        const prefix = `#${hit.seq ?? '·'} ${roleLabel}: `
+        const budget = Math.max(1, hitWidth - displayWidth(marker) - displayWidth(prefix) - moreReserve)
         // One line, guaranteed: newlines flatten, and the visible slice is
         // cut around the first highlight so the keyword cannot be truncated
         // out of view on a long message.
@@ -1052,6 +1052,7 @@ function ListView(props: {
             key={`m${rowIndex}`}
             flexDirection="row"
             flexShrink={0}
+            {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
             onClick={() => onRowClick(rowIndex)}
             onMouseEnter={() => onRowHover(rowIndex)}
           >

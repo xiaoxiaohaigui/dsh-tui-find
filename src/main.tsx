@@ -265,9 +265,9 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       ctx.logger.info('dsh-tui-find: global shortcut disabled (shortcut: off) — /find remains the entry')
       return
     }
-    const registerAccepted = (): (() => void) | undefined => {
+    const registerAccepted = (combo: string): (() => void) | undefined => {
       const dispose = shortcutsRuntime.register(
-        candidate,
+        combo,
         {
           description: 'Find in all sessions (dsh-tui-find)',
           handler: () => {
@@ -279,21 +279,43 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         },
         ctx,
       )
-      const accepted = shortcutsRuntime.list().some((entry: { combo: string }) => entry.combo === candidate)
+      const accepted = shortcutsRuntime.list().some((entry: { combo: string }) => entry.combo === combo)
       if (!accepted) {
         dispose()
         return undefined
       }
       return dispose
     }
+    let acceptedCombo = candidate
+    const registerCandidate = (): (() => void) | undefined => {
+      acceptedCombo = candidate
+      const dispose = registerAccepted(candidate)
+      if (dispose !== undefined) return dispose
+
+      // A structurally valid combo can still be reserved by the host (for
+      // example ctrl+v, which is the built-in paste action). On first bind
+      // there is no previous contribution to preserve, so keep the entry
+      // usable by explicitly trying the documented default.
+      if (shortcutDispose === undefined && candidate !== DEFAULT_SHORTCUT) {
+        const fallback = registerAccepted(DEFAULT_SHORTCUT)
+        if (fallback !== undefined) {
+          acceptedCombo = DEFAULT_SHORTCUT
+          ctx.logger.warn(
+            `dsh-tui-find: shortcut '${source}' was rejected by the host; using the default ${DEFAULT_SHORTCUT}`,
+          )
+          return fallback
+        }
+      }
+      return undefined
+    }
     const attach = (dispose: () => void): void => {
       const previous = shortcutDispose
       shortcutDispose = dispose
-      shortcutCombo = candidate
+      shortcutCombo = acceptedCombo
       previous?.()
     }
     try {
-      const dispose = registerAccepted()
+      const dispose = registerCandidate()
       if (dispose === undefined) {
         ctx.logger.warn(`dsh-tui-find: shortcut '${source}' was rejected by the host; keeping the previous binding`)
         return
@@ -311,7 +333,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         ctx,
         candidate,
         () => {
-          const dispose = registerAccepted()
+          const dispose = registerCandidate()
           if (dispose === undefined) throw new Error('host rejected the shortcut during boot retry')
           return dispose
         },

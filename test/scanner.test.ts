@@ -58,7 +58,7 @@ describe('SessionScanner', () => {
     const roles = auth.messages.map(m => m.role)
     expect(roles).toContain('user')
     expect(roles).toContain('assistant')
-    expect(roles).toContain('tool')
+    expect(roles).not.toContain('tool')
   })
 
   it('produces identical searchable content for the zstd and plain twins', async () => {
@@ -183,6 +183,12 @@ describe('SessionScanner', () => {
       list.some(s => s.messages.some(m => m.role === 'tool'))
     expect(hasTool(withTools)).toBe(true)
     expect(hasTool(withoutTools)).toBe(false)
+  })
+
+  it('does not index tool-call summaries by default', async () => {
+    const scanner = new SessionScanner()
+    const sessions = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    expect(sessions.some(session => session.messages.some(message => message.role === 'tool'))).toBe(false)
   })
 
   it('extracts header cwd/createdAt from both header-row shapes', async () => {
@@ -743,8 +749,9 @@ describe('searchSessions', () => {
     expect(text.slice(11, 15)).toBe('auth')
   })
 
-  it('indexes tool-call summaries when enabled', () => {
-    const hits = searchSessions(sessions, 'src/auth/retry.ts', { scope: 'all' })
+  it('indexes tool-call summaries when enabled', async () => {
+    const indexed = await new SessionScanner().scan({ sessionRoot: FIXTURE_ROOT, indexTools: true })
+    const hits = searchSessions(indexed, 'src/auth/retry.ts', { scope: 'all' })
     expect(hits.length).toBe(2) // compressed + plain mirror
     expect(hits.every(h => h.hits.some(x => x.role === 'tool'))).toBe(true)
   })

@@ -10,9 +10,7 @@
  *   own `isHumanSource`),
  * - `assistant/message` text blocks (thinking blocks are skipped unless
  *   indexing for them is explicitly enabled — noisy and private by default),
- * - optional `tool/call` summaries (`[name] arguments`), off-by-default in
- *   v0.1 per the spec freeze they stay ON here as the spec §6 mandates —
- *   the settings switch only widens the default.
+ * - optional `tool/call` summaries (`[name] arguments`), off by default.
  *
  * Every text is truncated to a per-message char budget so one giant paste or
  * one enormous tool result cannot dominate the index. Envelopes with
@@ -52,7 +50,7 @@ export interface ExtractOptions {
 }
 
 export const DEFAULT_EXTRACT_OPTIONS: ExtractOptions = {
-  indexTools: true,
+  indexTools: false,
   indexThinking: false,
   maxMessageChars: 4000,
 }

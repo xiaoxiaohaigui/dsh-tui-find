@@ -12,7 +12,7 @@
       # defaultScope: 'repo' | 'all'   — initial search scope (default repo)
       # defaultTime: 'all' | '7d' | '30d' — initial time window (default all)
       # caseSensitive: boolean         — v0.1 default is case-insensitive
-      # indexTools: boolean            — index tool-call summaries (default true)
+      # indexTools: boolean            — index tool-call summaries (default false)
       # indexThinking: boolean         — index thinking text (default false)
       # sessionRoot: string            — manual session-root override
       # maxMessageChars: number        — per-message index character budget

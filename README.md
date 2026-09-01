@@ -1,5 +1,7 @@
 # dsh-tui-find
 
+![dsh-tui-find 封面](./assets/dsh-tui-find-cover-title.png)
+
 **dsh-TUI 的跨会话全文搜索插件** —— 让"我记得哪次会话里聊过/生成过 X"在几秒内变成"找到了，能读、能复制、能接着做"。
 
 [English](./README.en.md) · MIT · 零第三方运行时依赖
@@ -109,7 +111,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 
 ## 检索范围
 
-- **索引内容**：用户消息、助手文本、会话标题、工具调用摘要（`[名称] 参数`）。
+- **索引内容**：用户消息、助手文本、会话标题；启用 `indexTools` 后另包含工具调用摘要（`[名称] 参数`）。
 - **默认不索引**：thinking 文本（可在配置开启）。
 - **匹配方式**：默认大小写不敏感子串（CJK 天然正确，无分词依赖）；`Alt+R` 可切换为 JS 正则模式（大小写敏感性跟随"大小写敏感"开关；无效、过长或可能导致灾难性回溯的模式会被拒绝并给出提示）。
 - **时间过滤**：`Alt+T` 按会话最近修改时间过滤（全部 ⇄ 近 7 天 ⇄ 近 30 天），同时作用于搜索结果与空查询的最近列表；初始窗口由 `defaultTime` 配置决定（默认全部）。
@@ -127,7 +129,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
       defaultTime: 'all'         # 初始时间窗口：all(默认) | 7d | 30d
       caseSensitive: false       # 大小写敏感匹配（默认关）
       regex: false               # 默认启用正则匹配（默认关；场景内 Alt+R 即时切换）
-      indexTools: true           # 索引工具调用摘要（默认开）
+      indexTools: false          # 索引工具调用摘要（默认关）
       indexThinking: false       # 索引 thinking 文本（默认关）
       sessionRoot: ''            # 手动指定会话根目录（默认自动探测）
       maxMessageChars: 4000      # 单条消息索引字符上限
@@ -147,7 +149,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 | 默认搜索时间 | 全部时间（默认）⇄ 近 7 天 ⇄ 近 30 天 |
 | 大小写敏感 | 开 / 关（默认关） |
 | 正则匹配 | 开 / 关（默认关；场景内 `Alt+R` 即时切换） |
-| 索引工具调用 | 开 / 关（默认开） |
+| 索引工具调用 | 开 / 关（默认关） |
 | 索引 thinking 文本 | 开 / 关（默认关） |
 | 会话目录覆盖 | 文本；留空时按下方探测链自动探测 |
 | 单条消息索引字符上限 | 数值（200–65536，步进 100，默认 4000） |

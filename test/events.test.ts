@@ -91,7 +91,7 @@ describe('extractLine sanitization', () => {
         time: 1,
         data: { name: 'edit', arguments: { path: `a${C1}b\u007Fc` } },
       },
-      DEFAULT_EXTRACT_OPTIONS,
+      { ...DEFAULT_EXTRACT_OPTIONS, indexTools: true },
     )
     expect(state.messages[0]!.text).toBe('[edit] {"path":"abc"}')
   })
