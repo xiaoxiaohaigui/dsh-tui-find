@@ -18,4 +18,4 @@
       # maxMessageChars: number        — per-message index character budget
       # lang: 'auto' | 'zh' | 'en'     — UI language (auto follows the host)
       # shortcut: string               — global entry combo, ctrl/alt required
-      #                                  ('off' disables; default 'ctrl+alt+f')
+      #                                  ('off' disables; default 'alt+f')

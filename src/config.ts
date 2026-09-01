@@ -11,10 +11,9 @@ import z from '@deepseek-ai/schemastery'
 /** Default global-entry combo. Deliberately NOT Ctrl+Shift+F: mainstream
  *  terminal emulators (Windows Terminal, VS Code, GNOME Terminal, …) bind
  *  that chord locally for their own find UI and never forward the keypress,
- *  so the TUI would never see it. Ctrl+Alt+F clears every common terminal
- *  default and every host-reserved combo while keeping the F-for-find
- *  muscle memory. */
-export const DEFAULT_SHORTCUT = 'ctrl+alt+f'
+ *  so the TUI would never see it. Alt+F keeps the F-for-find muscle memory
+ *  without the Ctrl+Alt+F conflict with QQ's global shortcut. */
+export const DEFAULT_SHORTCUT = 'alt+f'
 
 /** Modifier tokens that satisfy the host grammar's hard rule (a combo must
  *  carry ctrl or alt; aliases mirror keymap.ts's parser). */
@@ -105,8 +104,8 @@ export type Config = {
   /** UI language: `auto` (default) follows the host language contract. */
   lang?: 'auto' | 'zh' | 'en'
   /** Global-entry combo for the search scene; must carry ctrl or alt
-   *  (e.g. `ctrl+alt+f`). `off` disables the global entry (the `/find`
-   *  command keeps working). Default `ctrl+alt+f` — Ctrl+Shift+F is
+   *  (e.g. `alt+f`). `off` disables the global entry (the `/find`
+   *  command keeps working). Default `alt+f` — Ctrl+Shift+F is
    *  swallowed by mainstream terminals' own find UI before dsh-TUI can
    *  see it. */
   shortcut?: string

@@ -76,7 +76,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 |---|---|
 | `/find <关键词>` | 带参直接出结果（如 `/find 指数退避`） |
 | `/find` | 空参进全屏搜索场景 |
-| `Ctrl+Alt+F` | 全局入口快捷键（默认值；可用 `shortcut` 配置改键或关闭） |
+| `Alt+F` | 全局入口快捷键（默认值；可用 `shortcut` 配置改键或关闭） |
 
 场景内按键：
 
@@ -105,7 +105,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 
 > 预览与复制只走 `Alt+` 组合键：裸字母永远用于输入查询，不会误触快捷键。
 
-> **为什么默认不是 `Ctrl+Shift+F`**：主流终端（Windows Terminal、VS Code、GNOME Terminal 等）把该键留给终端自身的"查找"功能，按键被终端截获、根本不会到达 dsh-TUI。`Ctrl+Alt+F` 与常见终端默认键及宿主 TUI 的保留键都不冲突；若你的终端恰好占用了它，用 `shortcut` 配置改成任意含 `Ctrl` 或 `Alt` 的组合键即可。
+> **为什么默认不是 `Ctrl+Shift+F`**：主流终端（Windows Terminal、VS Code、GNOME Terminal 等）把该键留给终端自身的"查找"功能，按键被终端截获、根本不会到达 dsh-TUI。默认改为 `Alt+F` 以避开 QQ 的 `Ctrl+Alt+F` 冲突；若你的终端恰好占用了它，用 `shortcut` 配置改成任意含 `Ctrl` 或 `Alt` 的组合键即可。
 
 结果按会话分组、命中词高亮、每会话默认展示前 3 条命中（`(+N)` 提示），最近优先排序。
 
@@ -134,7 +134,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
       sessionRoot: ''            # 手动指定会话根目录（默认自动探测）
       maxMessageChars: 4000      # 单条消息索引字符上限
       lang: 'auto'               # zh | en | auto(跟随宿主语言)
-      shortcut: 'ctrl+alt+f'     # 全局入口组合键（必须含 ctrl 或 alt；'off' 关闭全局入口）
+      shortcut: 'alt+f'           # 全局入口组合键（必须含 ctrl 或 alt；'off' 关闭全局入口）
 ```
 
 `lang: auto` 遵循 dsh-TUI 的语言链：`DSH_TUI_LANG` 环境变量 → `~/.dsh-tui/lang.json` → 系统locale → 中文。`/lang` 切换后插件文案即时跟随。
@@ -153,7 +153,7 @@ dsh plugin --profile dsh-tui remove -w dsh-tui-find
 | 索引 thinking 文本 | 开 / 关（默认关） |
 | 会话目录覆盖 | 文本；留空时按下方探测链自动探测 |
 | 单条消息索引字符上限 | 数值（200–65536，步进 100，默认 4000） |
-| 全局快捷键 | 文本；组合键需含 `Ctrl` 或 `Alt`，`off` 禁用；默认 `Ctrl+Alt+F`（写错自动回退默认值并告警） |
+| 全局快捷键 | 文本；组合键需含 `Ctrl` 或 `Alt`，`off` 禁用；默认 `Alt+F`（写错自动回退默认值并告警） |
 
 修改即时保存（布尔 / 选择项一改就写入，文本项回车确认），落在宿主设置服务的用户层，按层级覆盖插件行配置的默认值；卡片文案跟随 TUI 的语言设置（zh / en）。
 

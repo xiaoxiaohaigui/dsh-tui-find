@@ -94,7 +94,7 @@ describe('resolveShortcut (config normalization)', () => {
 describe('global entry registration (live tuiShortcuts registry)', () => {
   it('binds the terminal-safe default, not Ctrl+Shift+F', async () => {
     const combos = await mountAndList({})
-    expect(combos).toContain('ctrl+alt+f')
+    expect(combos).toContain('alt+f')
     expect(combos).not.toContain('ctrl+shift+f')
   })
 

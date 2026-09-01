@@ -42,7 +42,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       sessionRoot: undefined,
       maxMessageChars: 4000,
       lang: 'auto',
-      shortcut: 'ctrl+alt+f',
+      shortcut: 'alt+f',
     })
   })
 

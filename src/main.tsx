@@ -9,7 +9,7 @@
  *   seeding the query from the command's raw input.
  * - `tuiScenes.register` — the full-screen search scene.
  * - `tuiShortcuts.register` — a configurable global entry combo (default
- *   `Ctrl+Alt+F`; NOT `Ctrl+Shift+F`, which mainstream terminals bind
+ *   `Alt+F`; NOT `Ctrl+Shift+F`, which mainstream terminals bind
  *   locally for their own find UI and never forward). The registry itself
  *   re-checks user remaps and refuses reserved combos with a warning.
  * - `tuiSettingsSections.register` — the plugin's settings card (mirrors

@@ -988,7 +988,7 @@ function ListView(props: {
               onClick={() => onRowClick(rowIndex)}
               onMouseEnter={() => onRowHover(rowIndex)}
             >
-              <Box flexShrink={0}>
+              <Box flexShrink={0} {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}>
                 <Text color={isSelected ? 'suggestion' : 'subtle'}>{isSelected ? '❯ ' : '  '}</Text>
                 {titleLine === undefined ? (
                   <Text color={isSelected ? 'suggestion' : 'text'} bold={isSelected}>

@@ -76,7 +76,7 @@ Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.d
 |---|---|
 | `/find <query>` | Jump straight to results (e.g. `/find backoff`) |
 | `/find` | Open the full-screen search scene |
-| `Ctrl+Alt+F` | Global shortcut entry (default; remap or disable via the `shortcut` config) |
+| `Alt+F` | Global shortcut entry (default; remap or disable via the `shortcut` config) |
 
 Keys inside the scene:
 
@@ -105,7 +105,7 @@ Mouse:
 
 > Preview and copy live on `Alt+` chords only: bare letters always type into the query and never trigger shortcuts.
 
-> **Why the default is not `Ctrl+Shift+F`**: mainstream terminals (Windows Terminal, VS Code, GNOME Terminal, …) reserve that chord for their own find UI, intercepting the keypress before dsh-TUI ever sees it. `Ctrl+Alt+F` clashes with no common terminal default and no host-reserved combo; if your terminal happens to use it, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`.
+> **Why the default is not `Ctrl+Shift+F`**: mainstream terminals (Windows Terminal, VS Code, GNOME Terminal, …) reserve that chord for their own find UI, intercepting the keypress before dsh-TUI ever sees it. The default is now `Alt+F` to avoid QQ's `Ctrl+Alt+F` conflict; if your terminal happens to use it, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`.
 
 Results are grouped per session, hits are highlighted, each session shows its first 3 hits (`(+N)` hint), most-recent-first.
 
@@ -134,7 +134,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       sessionRoot: ''            # manual session root override
       maxMessageChars: 4000      # per-message index character budget
       lang: 'auto'               # zh | en | auto (follow the host language)
-      shortcut: 'ctrl+alt+f'     # global entry combo (ctrl or alt required; 'off' disables the entry)
+      shortcut: 'alt+f'           # global entry combo (ctrl or alt required; 'off' disables the entry)
 ```
 
 `lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` env → `~/.dsh-tui/lang.json` → OS locale → zh. A `/lang` switch updates the plugin copy immediately.
@@ -153,7 +153,7 @@ Every option above except `lang` can also be changed inside the TUI: open `/sett
 | Index thinking | on / off (default off) |
 | Session root override | text; blank falls back to the resolution chain below |
 | Per-message index budget | number (200–65536, step 100, default 4000) |
-| Global shortcut | text; the combo must carry `Ctrl` or `Alt`, `off` disables; default `Ctrl+Alt+F` (an invalid draft falls back to the default with a warning) |
+| Global shortcut | text; the combo must carry `Ctrl` or `Alt`, `off` disables; default `Alt+F` (an invalid draft falls back to the default with a warning) |
 
 Edits save immediately (booleans/selects write on the spot, text drafts confirm with Enter) into the host settings service's user layer, which overrides the plugin-row defaults by layering; the card copy follows the TUI language setting (zh / en).
 
