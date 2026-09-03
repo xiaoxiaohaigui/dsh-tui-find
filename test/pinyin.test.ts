@@ -150,6 +150,22 @@ describe('searchSessions pinyin matching', () => {
     expect(both[0]!.hits[0]!.ranges).toEqual([[3, 7]])
   })
 
+  it('never widens literal sensitivity through the sensitive pinyin folds', () => {
+    // Sensitive folds fold non-table characters to UPPERCASE while the
+    // scanned needle is always lowercase, so a folded needle can only hit
+    // readings — an opposite-case literal occurrence can never match.
+    expect(searchSessions([make('auth token')], 'AUTH', { scope: 'all', pinyin: true, caseSensitive: true })).toEqual([])
+    // 'ZS' still reaches 张三 through the initials, but no longer the
+    // literal lowercase "zs" — literal matching stays the verbatim scan's
+    // business, which still lands exact-case hits.
+    expect(flat(searchSessions([make('zs 张三')], 'ZS', { scope: 'all', pinyin: true, caseSensitive: true }))).toEqual([
+      ['zs 张三', '[[3,5]]'],
+    ])
+    expect(flat(searchSessions([make('auth token')], 'auth', { scope: 'all', pinyin: true, caseSensitive: true }))).toEqual([
+      ['auth token', '[[0,4]]'],
+    ])
+  })
+
   it('stays idempotent across repeated pinyin searches (shared fold cache)', () => {
     const pool = [make('张三的测试记录')]
     const first = searchSessions(pool, 'zs ceshi', P)

@@ -248,9 +248,14 @@ function foldOf(owner: object, text: string): FoldedText {
  * characters fold to their lowercased self under insensitive matching — so
  * for a letter-only needle these folds already contain every literal
  * case-insensitive occurrence and the case fold needs no second scan — and
- * to their ORIGINAL self under case-sensitive matching, so the literal
- * path's sensitivity is never widened by the pinyin path (Chinese readings
- * themselves are lowercase and match either way). All four share one
+ * to their UPPERCASE self under case-sensitive matching: the needle these
+ * folds are scanned with is always lowercase (`pinyinNeedleOf`, so Chinese
+ * readings themselves match either way) while a Unicode uppercase mapping
+ * never produces a lowercase ASCII letter, so the sensitive folds carry
+ * readings only and the literal path's sensitivity is never widened by the
+ * pinyin path — opposite-case literal hits stay impossible here, and
+ * literal matching under sensitivity is the caller's verbatim scan's
+ * business. All four share one
  * `cpStart` table: the original UTF-16 start per code point is the same,
  * only the cumulative unit counts differ, which is what lets a hit inside
  * any reading map back onto its character for highlighting.
@@ -301,7 +306,19 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
     utf16 += char.length
     const readings = PINYIN_READINGS[char]
     if (readings === undefined) {
-      const literal = caseSensitive ? char : char.toLowerCase()
+      // Under sensitive matching a non-table character must fold to a form
+      // the lowercase needle can NEVER hit: `pinyinNeedleOf` hands over a
+      // lowercase needle (Chinese readings are lowercase ASCII and must
+      // match either way, e.g. `ZS` → 张三), and a Unicode uppercase
+      // mapping never produces a lowercase ASCII letter — so uppercase
+      // leaves these folds carrying readings only. Keeping the original
+      // self here would let the lowered needle hit an opposite-case
+      // literal occurrence and silently widen the literal path's
+      // sensitivity (literal hits under sensitivity already come from the
+      // caller's verbatim `matchRanges` scan). Any length change the
+      // mapping introduces (ß → SS) is absorbed by `cumUnits`/`cpStart`
+      // like in every other fold.
+      const literal = caseSensitive ? char.toUpperCase() : char.toLowerCase()
       all += literal
       first += literal
       allInit += literal
