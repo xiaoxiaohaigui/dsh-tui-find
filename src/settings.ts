@@ -87,6 +87,14 @@ function section(): TuiSettingsSection {
         kind: 'boolean',
       },
       {
+        path: ['pinyin'],
+        label: 'Pinyin matching',
+        descriptions: zh('拼音搜索'),
+        hint: 'Letter-only terms also match Chinese via pinyin (full readings + initials; default on)',
+        hintDescriptions: zh('纯字母词同时按拼音匹配汉字（全拼 + 首字母；默认开启）'),
+        kind: 'boolean',
+      },
+      {
         path: ['indexTools'],
         label: 'Index tool calls',
         descriptions: zh('索引工具调用'),
@@ -174,6 +182,7 @@ export function registerSettingsSection(
         defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
         caseSensitive: z.boolean().default(resolved.caseSensitive),
         regex: z.boolean().default(resolved.regex),
+        pinyin: z.boolean().default(resolved.pinyin),
         indexTools: z.boolean().default(resolved.indexTools),
         indexThinking: z.boolean().default(resolved.indexThinking),
         sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),
@@ -215,6 +224,7 @@ type ConfigValue = {
   defaultTime?: 'all' | '7d' | '30d'
   caseSensitive?: boolean
   regex?: boolean
+  pinyin?: boolean
   indexTools?: boolean
   indexThinking?: boolean
   sessionRoot?: string

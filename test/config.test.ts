@@ -37,6 +37,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       defaultTime: 'all',
       caseSensitive: false,
       regex: false,
+      pinyin: true,
       indexTools: false,
       indexThinking: false,
       sessionRoot: undefined,

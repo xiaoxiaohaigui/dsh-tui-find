@@ -16,6 +16,16 @@
  * drive roots, UNC share roots) matching only exactly. Comparison follows
  * the platform's filesystem case-insensitivity (Windows folds case).
  *
+ * Pinyin matching (default on): a term made only of ASCII letters also
+ * matches Chinese characters through their pinyin — both the full toneless
+ * syllables (`zhangsan` → 张三) and the initials (`zs` → 张三) — on top of
+ * the literal substring over the original text. The pinyin variant of a
+ * document is a fold just like the case fold (one CJK code point expands
+ * to its readings; the same prefix tables map a hit back onto the original
+ * character), built lazily per document and cached across keystrokes.
+ * Regex mode never consults the pinyin folds: a pattern is pattern syntax
+ * over the raw text, not a term, and expanding it would be ambiguous.
+ *
  * Ordering is most-recent-first (the scanner already yields that order);
  * the sort key here only preserves it deterministically.
  *
@@ -23,6 +33,7 @@
  */
 import { homedir } from 'node:os'
 import type { IndexedMessage } from './events.js'
+import { PINYIN_READINGS } from './pinyin-data.js'
 import type { ScannedSession } from './scan.js'
 
 /** A message (or the session title) that matched, with highlight ranges. */
@@ -88,6 +99,13 @@ export interface SearchOptions {
    * one compilation both paths share.
    */
   readonly regex?: boolean
+  /**
+   * Match letter-only terms against Chinese characters through their
+   * pinyin (full toneless syllables and initials) on top of the literal
+   * substring. Default OFF at this boundary — the scene passes the user's
+   * config, which itself defaults ON.
+   */
+  readonly pinyin?: boolean
 }
 
 /** Synchronous regex matching policy: reject patterns whose worst-case
@@ -212,6 +230,143 @@ function foldOf(owner: object, text: string): FoldedText {
   const built = buildFold(text)
   foldCache.set(owner, built)
   return built
+}
+
+/**
+ * The pinyin variant of a document: the same {@link FoldedText} contract as
+ * the case fold, but a table character expands to its reading(s) instead of
+ * folding to itself. Four folds come out of one pass, two per matching
+ * chain — `allReadings` spells every reading space-separated (a needle can
+ * never contain a space, so the separators are invisible to matching while
+ * keeping a polyphone's readings from gluing into phantom syllables) and
+ * `firstReading` spells only the frequency-first reading of each character;
+ * a reading can only chain forward into the NEXT character from its fold's
+ * trailing position, so 重庆 needs `allReadings` (`chongqing`) while 长沙
+ * needs `firstReading` (`changsha`). Each chain also carries an initials
+ * fold — `allInitials` keeps one letter per reading (`cq` finds 重庆),
+ * `firstInitials` one letter per character (`cs` finds 长沙). Non-table
+ * characters fold to their lowercased self under insensitive matching — so
+ * for a letter-only needle these folds already contain every literal
+ * case-insensitive occurrence and the case fold needs no second scan — and
+ * to their ORIGINAL self under case-sensitive matching, so the literal
+ * path's sensitivity is never widened by the pinyin path (Chinese readings
+ * themselves are lowercase and match either way). All four share one
+ * `cpStart` table: the original UTF-16 start per code point is the same,
+ * only the cumulative unit counts differ, which is what lets a hit inside
+ * any reading map back onto its character for highlighting.
+ */
+interface PinyinFolds {
+  readonly allReadings: FoldedText
+  readonly firstReading: FoldedText
+  readonly allInitials: FoldedText
+  readonly firstInitials: FoldedText
+  readonly caseSensitive: boolean
+}
+
+const pinyinFoldCache = new WeakMap<object, PinyinFolds>()
+
+function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): PinyinFolds {
+  const cached = pinyinFoldCache.get(owner)
+  if (
+    cached !== undefined &&
+    cached.allReadings.sourceLength === text.length &&
+    cached.caseSensitive === caseSensitive
+  ) {
+    return cached
+  }
+  const built = buildPinyinFolds(text, caseSensitive)
+  pinyinFoldCache.set(owner, built)
+  return built
+}
+
+function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
+  const characters = [...text]
+  const cpStart = new Uint32Array(characters.length + 1)
+  const allCum = new Uint32Array(characters.length + 1)
+  const firstCum = new Uint32Array(characters.length + 1)
+  const allInitCum = new Uint32Array(characters.length + 1)
+  const firstInitCum = new Uint32Array(characters.length + 1)
+  let all = ''
+  let first = ''
+  let allInit = ''
+  let firstInit = ''
+  let utf16 = 0
+  let allUnits = 0
+  let firstUnits = 0
+  let allInitUnits = 0
+  let firstInitUnits = 0
+  for (let index = 0; index < characters.length; index++) {
+    const char = characters[index]!
+    cpStart[index] = utf16
+    utf16 += char.length
+    const readings = PINYIN_READINGS[char]
+    if (readings === undefined) {
+      const literal = caseSensitive ? char : char.toLowerCase()
+      all += literal
+      first += literal
+      allInit += literal
+      firstInit += literal
+      const units = literal.length
+      allUnits += units
+      firstUnits += units
+      allInitUnits += units
+      firstInitUnits += units
+    } else {
+      all += readings
+      allUnits += readings.length
+      const space = readings.indexOf(' ')
+      const firstReading = space === -1 ? readings : readings.slice(0, space)
+      first += firstReading
+      firstUnits += firstReading.length
+      // The initials folds take one letter per reading (all) and per
+      // character (first-only chain).
+      firstInit += firstReading[0]!
+      firstInitUnits += 1
+      let from = 0
+      for (;;) {
+        allInit += readings[from]!
+        allInitUnits += 1
+        const next = readings.indexOf(' ', from)
+        if (next === -1) break
+        from = next + 1
+      }
+    }
+    allCum[index + 1] = allUnits
+    firstCum[index + 1] = firstUnits
+    allInitCum[index + 1] = allInitUnits
+    firstInitCum[index + 1] = firstInitUnits
+  }
+  cpStart[characters.length] = utf16
+  return {
+    allReadings: { folded: all, cumUnits: allCum, cpStart, sourceLength: text.length },
+    firstReading: { folded: first, cumUnits: firstCum, cpStart, sourceLength: text.length },
+    allInitials: { folded: allInit, cumUnits: allInitCum, cpStart, sourceLength: text.length },
+    firstInitials: { folded: firstInit, cumUnits: firstInitCum, cpStart, sourceLength: text.length },
+    caseSensitive,
+  }
+}
+
+/**
+ * A term qualifies for pinyin matching only when every unit is an ASCII
+ * letter: anything else (digits, punctuation, CJK — needles never carry
+ * whitespace) has no pinyin reading to compare with. Returns the lowered
+ * form the folds are scanned with, or undefined when the term is not
+ * pinyin-eligible.
+ */
+function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefined {
+  const lowered = caseSensitive ? term.toLowerCase() : term
+  return /^[a-z]+$/.test(lowered) ? lowered : undefined
+}
+
+/** Every pinyin occurrence of `needle` — both reading chains and both
+ *  initials chains together, as ranges over the ORIGINAL text. */
+function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
+  return [
+    ...rangesInFold(folds.allReadings, needle),
+    ...rangesInFold(folds.firstReading, needle),
+    ...rangesInFold(folds.allInitials, needle),
+    ...rangesInFold(folds.firstInitials, needle),
+  ]
 }
 
 /** The code point a folded UTF-16 index belongs to (binary search). */
@@ -419,9 +574,12 @@ export function mergeRanges(
  * message contains EVERY term — the AND is per document, so terms split
  * across a title and a message (or across two messages) do not match — and
  * each matching document carries the union of all its terms' highlight
- * ranges over the original text. Regex mode (`options.regex`) keeps the
- * whole trimmed query as one pattern instead: inside a regex a space is
- * pattern syntax, not a term separator. Sessions arrive in
+ * ranges over the original text. Letter-only terms additionally match
+ * Chinese characters through their pinyin when {@link SearchOptions.pinyin}
+ * is on (full toneless syllables and initials; see the module doc). Regex
+ * mode (`options.regex`) keeps the whole trimmed query as one pattern
+ * instead: inside a regex a space is pattern syntax, not a term separator.
+ * Sessions arrive in
  * most-recent-first order and that order is preserved. A literal empty query
  * matches nothing and the scene renders the recent list; a non-empty query
  * that parses to no terms (e.g. `""`) also matches nothing, but the scene
@@ -471,20 +629,38 @@ export function searchSessions(
   // AND — the first term that misses kills the document (cheap early
   // exit) — and survivors yield the union of all terms' ranges. The
   // case-insensitive path takes the fold ONCE per document and reuses it
-  // for every term (see foldOf).
+  // for every term (see foldOf). Letter-only terms under pinyin matching
+  // scan the pinyin folds instead of the case fold — the full fold already
+  // contains the folded non-table text, so the case fold would only repeat
+  // the same occurrences — and it is built lazily so a query of Chinese
+  // terms never pays for it (both folds cache across keystrokes).
+  const pinyinOn = options.pinyin === true
   const rangesOf = (text: string, owner: object): [number, number][] => {
     if (pattern !== undefined) return regexRanges(pattern, text)
     const matches: [number, number][] = []
     if (caseSensitive) {
       for (const term of terms) {
         const termRanges = matchRanges(text, term, true)
-        if (termRanges.length === 0) return []
-        for (const range of termRanges) matches.push(range)
+        const pinyinNeedle = pinyinOn ? pinyinNeedleOf(term, true) : undefined
+        const extended =
+          pinyinNeedle === undefined
+            ? termRanges
+            : [...termRanges, ...pinyinRanges(pinyinFoldsOf(owner, text, true), pinyinNeedle)]
+        if (extended.length === 0) return []
+        for (const range of extended) matches.push(range)
       }
     } else {
-      const fold = foldOf(owner, text)
+      let fold: FoldedText | undefined
+      const caseFold = (): FoldedText => {
+        if (fold === undefined) fold = foldOf(owner, text)
+        return fold
+      }
       for (const needle of needles) {
-        const needleRanges = rangesInFold(fold, needle)
+        const pinyinNeedle = pinyinOn ? pinyinNeedleOf(needle, false) : undefined
+        const needleRanges =
+          pinyinNeedle === undefined
+            ? rangesInFold(caseFold(), needle)
+            : pinyinRanges(pinyinFoldsOf(owner, text, false), pinyinNeedle)
         if (needleRanges.length === 0) return []
         for (const range of needleRanges) matches.push(range)
       }

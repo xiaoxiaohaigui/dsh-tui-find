@@ -93,6 +93,9 @@ export type Config = {
   /** Treat queries as JavaScript regular expressions by default. Default
    *  OFF (substring stays the baseline; Alt+R toggles it live in the scene). */
   regex?: boolean
+  /** Match letter-only query terms against Chinese characters through
+   *  their pinyin (full toneless syllables and initials). Default ON. */
+  pinyin?: boolean
   /** Index tool-call summaries (`[name] arguments`). Default OFF. */
   indexTools?: boolean
   /** Index assistant thinking text. Default OFF (noisy + private). */
@@ -116,6 +119,7 @@ export const Config: Schemastery<Config> = z.object({
   defaultTime: z.union(['all', '7d', '30d']).default('all'),
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
+  pinyin: z.boolean().default(true),
   indexTools: z.boolean().default(false),
   indexThinking: z.boolean().default(false),
   sessionRoot: z.string().required(false),
@@ -130,6 +134,7 @@ export interface ResolvedConfig {
   readonly defaultTime: 'all' | '7d' | '30d'
   readonly caseSensitive: boolean
   readonly regex: boolean
+  readonly pinyin: boolean
   readonly indexTools: boolean
   readonly indexThinking: boolean
   readonly sessionRoot: string | undefined
@@ -148,6 +153,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
       value.defaultTime === '7d' || value.defaultTime === '30d' ? value.defaultTime : 'all',
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,
+    pinyin: value.pinyin !== false,
     indexTools: value.indexTools === true,
     indexThinking: value.indexThinking === true,
     sessionRoot:

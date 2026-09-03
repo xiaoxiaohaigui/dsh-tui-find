@@ -418,10 +418,11 @@ export function FindScene(props: TuiSceneProps & {
         scope,
         repoCwd: channel.cwd,
         caseSensitive: config.caseSensitive,
+        ...(config.pinyin ? { pinyin: true } : {}),
         ...(useRegex ? { regex: true } : {}),
         ...(sinceMs === undefined ? {} : { sinceMs }),
       }),
-    [sessions, query, scope, channel, config.caseSensitive, useRegex, sinceMs],
+    [sessions, query, scope, channel, config.caseSensitive, config.pinyin, useRegex, sinceMs],
   )
   // The scene mirrors the core's own regex compilation so a pattern that is
   // not (yet) valid mid-typing can be explained instead of silently showing

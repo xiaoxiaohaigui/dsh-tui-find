@@ -118,6 +118,7 @@ Results are grouped per session, hits are highlighted, each session shows its fi
 - **Not indexed by default**: thinking text (opt-in via config).
 - **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); `Alt+R` switches to JS regex mode (case sensitivity follows the case-sensitive switch; invalid, oversized, or potentially catastrophic patterns are rejected and show a notice).
 - **Multi-term AND**: non-regex queries split on whitespace; a message (or title) matches only when it contains EVERY term (fzf-style semantics). Double-quoted fragments keep their inner spaces (e.g. `auth "retry logic"`); an unclosed quote runs to the end of the query; at most 16 terms, duplicates deduped. In regex mode the whole query stays ONE pattern — a space is pattern syntax there, not a separator.
+- **Pinyin matching** (on by default, disable via `pinyin`): a query term made only of ASCII letters also matches Chinese characters through their pinyin on top of the literal substring — full toneless syllables (`zhangsan` → 张三), the default-reading chain (`zhongqing` → 重庆, `changsha` → 长沙) and initials (`zs` → 张三, `cq` → 重庆); polyphones participate with every reading (`chongqing` and `zhongqing` both find 重庆), and ü is written as the keyboard form v (`lvse` finds 绿色). A 3500-character table (《现代汉语常用字表》, generated from pinyin-pro, reproducible via `scripts/make-pinyin-data.mjs`) ships built in; characters outside it fold to themselves and never break the rest of the matching. Highlights land on the original characters. "Case-sensitive" applies to the literal English path only — Chinese readings always match case-insensitively; regex mode is never pinyin-expanded.
 - **Time window**: `Alt+T` filters by session modification time (all ⇄ last 7 days ⇄ last 30 days), applying to both search results and the empty-query recent list; the initial window comes from the `defaultTime` config (default all).
 - **Default scope**: current repo (session cwd matched against the live channel cwd — the same semantics as the resume browser, subdirectory sessions included).
 
@@ -133,6 +134,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       defaultTime: 'all'         # initial time window: all (default) | 7d | 30d
       caseSensitive: false       # case-sensitive matching (default off)
       regex: false               # start with regex matching on (default off; Alt+R toggles it live)
+      pinyin: true               # pinyin matching (default on; letter-only terms also match Chinese via readings + initials)
       indexTools: false          # index tool-call summaries (default off)
       indexThinking: false       # index thinking text (default off)
       sessionRoot: ''            # manual session root override
@@ -153,6 +155,7 @@ Every option above except `lang` can also be changed inside the TUI: open `/sett
 | Default time window | All time (default) ⇄ Last 7 days ⇄ Last 30 days |
 | Case-sensitive | on / off (default off) |
 | Regex matching | on / off (default off; `Alt+R` toggles it live in the scene) |
+| Pinyin matching | on / off (default on; letter-only terms match Chinese via full readings + initials) |
 | Index tool calls | on / off (default off) |
 | Index thinking | on / off (default off) |
 | Session root override | text; blank falls back to the resolution chain below |
@@ -187,11 +190,11 @@ npm run fixtures   # synthesize session fixtures (zstd chains + plain + corrupti
 npm test           # vitest: frames / scanner / search / event sanitization / display width / admission & mount
 ```
 
-Test coverage (190 tests):
+Test coverage (202 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), zero decode on a same-size touch (boundary-verified), the offset-watermark suite (zstd/plain appends decode only the new frames, torn-tail completion without duplication, detected shrink and same-boundary equal-length rewrites fall back to a full decode, journal 0600/0700 posture and cold-start full decode), corruption tolerance, the indexTools/indexThinking switches, AbortSignal.
-- **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid/oversized/unsafe patterns rejected, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence, multi-term AND queries (whitespace tokenizing, quoted phrases, dedupe and the 16-term cap, range-union merging, whole-pattern regex, scope/time-window interplay).
+- **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid/oversized/unsafe patterns rejected, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence, multi-term AND queries (whitespace tokenizing, quoted phrases, dedupe and the 16-term cap, range-union merging, whole-pattern regex, scope/time-window interplay), pinyin matching (full readings / default-reading chain / initials, polyphone dual chains, ü→v, out-of-table fallback, highlight mapping onto characters, toggle-off regression, regex isolation, case-sensitivity semantics, table integrity).
 - **Preview reader**: line layout and per-message attribution (CJK widths included), cursor-line ↔ message mapping, hit jumping (forward/backward/bounds), scroll-window following, hit-range wrap mapping (`wrapWidthRanges` byte-equivalent to `wrapWidth`).
 - **Keyboard help**: section assembly and narrow-column truncation, the Alt+H open/close wiring.
 - **Scene wiring (real host renderer)**: preview key layering and typing swallow, n/N boundaries and copy, PgDn page math, narrow single-row header truncation, help panel toggling.
