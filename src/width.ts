@@ -10,6 +10,11 @@
  * - an overlong row is cut with an ellipsis instead of wrapping, because a
  *   wrapped row shifts every region below it down a line.
  *
+ * The preview reader additionally wraps whole message bodies:
+ * {@link wrapWidthRanges} is the one core behind {@link wrapWidth} and hands
+ * back each physical line together with the hit ranges that land on it, so
+ * highlights measured on the ORIGINAL text survive the reflow.
+ *
  * @module dsh-tui-find/width
  */
 
@@ -88,18 +93,69 @@ export function tailWidth(text: string, maxWidth: number): string {
   return `…${out}`
 }
 
+/** One wrapped physical line: the line text plus the highlight ranges that
+ *  land on it, rebased into the line's own UTF-16 coordinates. */
+export interface WrappedLine {
+  readonly text: string
+  readonly ranges: [number, number][]
+}
+
 /**
- * Wrap to a display width, CJK-aware. Greedy, breaking on a space when one
- * is available in the line just filled and mid-character when it is not —
- * correct for CJK, where there are no spaces to break on. Newlines in the
- * input are honoured. (The host browser's own `wrapWidth` contract.)
+ * Intersect `ranges` (original-text UTF-16 offsets, sorted and disjoint) with
+ * a line's original-text window `[from, to)` and rebase the survivors onto
+ * the line's own coordinates. A range straddling the window is cut at both
+ * edges; one with no overlap is dropped; an empty window carries nothing.
  */
-export function wrapWidth(text: string, width: number): string[] {
+function windowRanges(
+  ranges: readonly (readonly [number, number])[],
+  from: number | undefined,
+  to: number,
+): [number, number][] {
+  if (from === undefined || to <= from) return []
+  const out: [number, number][] = []
+  for (const [start, end] of ranges) {
+    const low = Math.max(start, from)
+    const high = Math.min(end, to)
+    if (high > low) out.push([low - from, high - from])
+  }
+  return out
+}
+
+/**
+ * The core behind {@link wrapWidth}: the same greedy CJK-aware wrap, with
+ * every output line ALSO carrying the slice of `ranges` — original-text
+ * UTF-16 offsets, sorted and disjoint, as the search kernel produces them —
+ * that lands on that line. The text output is byte-identical to `wrapWidth`
+ * (that function is this one with the ranges discarded), so the two can
+ * never drift.
+ *
+ * The mapping is plain subtraction because every output line's characters
+ * are one CONTIGUOUS slice of the input: the only hole a break ever opens
+ * is the single boundary space it drops, and that hole sits BETWEEN two
+ * lines. Each line therefore spans `[from, to)` in original-text offsets,
+ * and a range crossing the dropped space — or the newline between
+ * paragraphs — simply arrives as one segment on each line it touches.
+ */
+export function wrapWidthRanges(
+  text: string,
+  width: number,
+  ranges: readonly (readonly [number, number])[],
+): WrappedLine[] {
   if (width <= 0) return []
-  const lines: string[] = []
+  const lines: WrappedLine[] = []
+  // UTF-16 offset of the current paragraph inside `text`; the separating
+  // '\n' belongs to neither paragraph.
+  let paragraphStart = 0
   for (const paragraph of text.split('\n')) {
     let line = ''
     let used = 0
+    // Original-text window [lineFrom, lineTo) of the line being built:
+    // `lineFrom` is its first character's offset (undefined while the line
+    // is empty), `lineTo` its end; `cursor` is the offset of the character
+    // about to be appended.
+    let lineFrom: number | undefined = undefined
+    let lineTo = paragraphStart
+    let cursor = paragraphStart
     for (const char of paragraph) {
       const charW = charWidth(char)
       if (used + charW > width) {
@@ -107,21 +163,42 @@ export function wrapWidth(text: string, width: number): string[] {
         // of the line — a single long token must still make progress.
         const breakAt = line.lastIndexOf(' ')
         if (breakAt > width / 2) {
-          lines.push(line.slice(0, breakAt))
+          const headFrom: number = lineFrom ?? cursor
+          const headTo: number = headFrom + breakAt
+          lines.push({ text: line.slice(0, breakAt), ranges: windowRanges(ranges, headFrom, headTo) })
+          const tailFrom: number = headTo + 1 // the boundary space is dropped
           line = line.slice(breakAt + 1)
           used = displayWidth(line)
+          lineFrom = line.length === 0 ? undefined : tailFrom
+          lineTo = tailFrom + line.length
         } else {
-          lines.push(line)
+          lines.push({ text: line, ranges: windowRanges(ranges, lineFrom, lineTo) })
           line = ''
           used = 0
+          lineFrom = undefined
+          lineTo = cursor
         }
       }
       line += char
       used += charW
+      if (lineFrom === undefined) lineFrom = cursor
+      lineTo = cursor + char.length
+      cursor += char.length
     }
-    lines.push(line)
+    lines.push({ text: line, ranges: windowRanges(ranges, lineFrom, lineTo) })
+    paragraphStart += paragraph.length + 1
   }
   return lines
+}
+
+/**
+ * Wrap to a display width, CJK-aware. Greedy, breaking on a space when one
+ * is available in the line just filled and mid-character when it is not —
+ * correct for CJK, where there are no spaces to break on. Newlines in the
+ * input are honoured. (The host browser's own `wrapWidth` contract.)
+ */
+export function wrapWidth(text: string, width: number): string[] {
+  return wrapWidthRanges(text, width, []).map(line => line.text)
 }
 
 /**

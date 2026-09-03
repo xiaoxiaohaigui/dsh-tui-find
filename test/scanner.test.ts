@@ -13,7 +13,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
 import { SessionScanner, enumerateLogs } from '../src/core/scan.js'
-import { compileRegex, matchRanges, searchSessions, sessionCwdMatches } from '../src/core/search.js'
+import {
+  compileRegex,
+  isRegexAllowed,
+  matchRanges,
+  MAX_REGEX_PATTERN_LENGTH,
+  searchSessions,
+  sessionCwdMatches,
+} from '../src/core/search.js'
 import type { ScannedSession } from '../src/core/scan.js'
 
 const FIXTURE_ROOT = join(import.meta.dirname, 'fixtures', 'generated')
@@ -836,7 +843,50 @@ describe('searchSessions', () => {
     expect(compileRegex('(a+)+$', false)).toBeUndefined()
     expect(compileRegex('a'.repeat(513), false)).toBeUndefined()
     expect(compileRegex('a+\\1', false)).toBeUndefined()
+    // A group quantified with the {n,m} brace form blows up like (a+)+$
+    // (measured ~1.4s on 24 `a`s) — the heuristic must refuse it too.
+    expect(compileRegex('(a+){2,}b', false)).toBeUndefined()
+    expect(compileRegex('(?:a+){2,}', false)).toBeUndefined()
+    expect(compileRegex('(a+){1,3}$', false)).toBeUndefined()
   })
+
+  it('isRegexAllowed keeps benign patterns and refuses unbounded nesting', () => {
+    expect(isRegexAllowed('auth')).toBe(true)
+    expect(isRegexAllowed('re\\w*ry|jitter')).toBe(true)
+    expect(isRegexAllowed('ab{2,3}')).toBe(true)
+    expect(isRegexAllowed('\\(x\\)\\{2,\\}')).toBe(true) // escaped braces stay literal
+    expect(isRegexAllowed('(a+)+$')).toBe(false)
+    expect(isRegexAllowed('(a|b)+')).toBe(false)
+    expect(isRegexAllowed('(a+){2,}')).toBe(false)
+    expect(isRegexAllowed('a'.repeat(MAX_REGEX_PATTERN_LENGTH + 1))).toBe(false)
+  })
+
+  it('widens regex ranges onto code point boundaries (no split surrogate pairs)', () => {
+    // The pattern compiles without the `u` flag, so `.` matches one UTF-16
+    // unit at a time: the astral emoji is two unit matches that must widen
+    // into one range, or a range consumer slicing the text would render
+    // lone surrogates.
+    const text = 'a😀b'
+    const pool: ScannedSession[] = [
+      {
+        id: 'emoji',
+        path: 'P:\\fixture\\emoji',
+        bytes: 1,
+        modifiedAt: 0,
+        title: undefined,
+        header: { cwd: undefined, createdAt: undefined },
+        messages: [{ seq: 1, role: 'user', text, at: undefined }],
+      },
+    ]
+    const hits = searchSessions(pool, '.', { scope: 'all', regex: true })
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.hits[0]!.ranges).toEqual([[0, 1], [1, 3], [3, 4]])
+    for (const [start, end] of hits[0]!.hits[0]!.ranges) {
+      // The `u` flag rejects any string holding a lone surrogate.
+      expect(text.slice(start, end)).toMatch(/^[\s\S]$/u)
+    }
+  })
+
   it('survives zero-width-capable regex patterns', () => {
     // `a*` matches the empty string everywhere: the matcher must advance
     // instead of looping, and only the non-empty matches are recorded.

@@ -5,7 +5,16 @@
  * own spreadRow regression pins.
  */
 import { describe, expect, it } from 'vitest'
-import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth } from '../src/width.js'
+import {
+  displayWidth,
+  fitScrollWindow,
+  hitLine,
+  spreadRow,
+  tailWidth,
+  truncateWidth,
+  wrapWidth,
+  wrapWidthRanges,
+} from '../src/width.js'
 
 describe('displayWidth', () => {
   it('counts CJK characters as two columns', () => {
@@ -120,6 +129,106 @@ describe('fitScrollWindow', () => {
     expect(fitScrollWindow([], 0, 10, 0)).toEqual({ start: 0, end: 0 })
     expect(fitScrollWindow([2, 2], 99, 10, 0).end).toBeLessThanOrEqual(2)
     expect(fitScrollWindow([2], 0, 0).end).toBe(0)
+  })
+})
+
+describe('wrapWidthRanges', () => {
+  // A varied corpus: ascii with spaces, CJK, an emoji (surrogate pair),
+  // newlines, and a single long token with no break opportunities.
+  const corpus = [
+    'hello world foo',
+    'one two three four five',
+    '一二三四五六七八',
+    '在服务器上\n部署了机器人',
+    `前缀${'🔍'.repeat(3)}后缀很长的一段文字没有空格`,
+    'aaaaaaaaaa',
+    'x',
+    '',
+  ]
+
+  it('wraps byte-identically to wrapWidth, with or without ranges', () => {
+    for (const text of corpus) {
+      for (const width of [0, 1, 2, 3, 4, 5, 6, 8, 13, 40]) {
+        expect(wrapWidthRanges(text, width, []).map(line => line.text)).toEqual(wrapWidth(text, width))
+        expect(wrapWidthRanges(text, width, [[0, Math.max(0, text.length)]]).map(line => line.text)).toEqual(
+          wrapWidth(text, width),
+        )
+      }
+    }
+  })
+
+  it('keeps a contained range on its own line, unrebased', () => {
+    const lines = wrapWidthRanges('hello world foo', 20, [[6, 11]])
+    expect(lines).toEqual([{ text: 'hello world foo', ranges: [[6, 11]] }])
+    expect(lines[0]!.text.slice(6, 11)).toBe('world')
+  })
+
+  it('splits a range across a line boundary at the break', () => {
+    // 'one two three' at width 8 wraps to ['one two', 'three'] with the
+    // boundary space (original offset 7) dropped between the two lines.
+    const lines = wrapWidthRanges('one two three', 8, [[5, 10]])
+    expect(lines.map(line => line.text)).toEqual(['one two', 'three'])
+    expect(lines[0]!.ranges).toEqual([[5, 7]])
+    expect(lines[1]!.ranges).toEqual([[0, 2]])
+    expect(lines[0]!.text.slice(5, 7)).toBe('wo')
+    expect(lines[1]!.text.slice(0, 2)).toBe('th')
+  })
+
+  it('excludes the dropped boundary space from both segments', () => {
+    // 'one twoo' at width 5 → ['one', 'twoo']; a range spanning the dropped
+    // space at offset 3 reaches both lines but covers neither's full width.
+    const lines = wrapWidthRanges('one twoo', 5, [[2, 6]])
+    expect(lines.map(line => line.text)).toEqual(['one', 'twoo'])
+    expect(lines[0]!.ranges).toEqual([[2, 3]])
+    expect(lines[1]!.ranges).toEqual([[0, 2]])
+    expect(lines[0]!.text.slice(2, 3)).toBe('e')
+    expect(lines[1]!.text.slice(0, 2)).toBe('tw')
+  })
+
+  it('maps ranges across CJK wide-character lines', () => {
+    const lines = wrapWidthRanges('一二三四五六', 4, [[1, 5]])
+    expect(lines.map(line => line.text)).toEqual(['一二', '三四', '五六'])
+    expect(lines[0]!.ranges).toEqual([[1, 2]])
+    expect(lines[1]!.ranges).toEqual([[0, 2]])
+    expect(lines[2]!.ranges).toEqual([[0, 1]])
+    expect(lines[0]!.text.slice(1, 2)).toBe('二')
+    expect(lines[1]!.text.slice(0, 2)).toBe('三四')
+    expect(lines[2]!.text.slice(0, 1)).toBe('五')
+  })
+
+  it('keeps disjoint ranges on their own lines and drops the misses', () => {
+    const lines = wrapWidthRanges('一二三四五六', 4, [
+      [0, 2],
+      [4, 5],
+      [100, 200],
+    ])
+    expect(lines.map(line => line.text)).toEqual(['一二', '三四', '五六'])
+    expect(lines[0]!.ranges).toEqual([[0, 2]])
+    expect(lines[1]!.ranges).toEqual([])
+    expect(lines[2]!.ranges).toEqual([[0, 1]])
+  })
+
+  it('splits a range across the newline between paragraphs', () => {
+    const lines = wrapWidthRanges('ab\ncd', 10, [[1, 4]])
+    expect(lines.map(line => line.text)).toEqual(['ab', 'cd'])
+    expect(lines[0]!.ranges).toEqual([[1, 2]])
+    expect(lines[1]!.ranges).toEqual([[0, 1]])
+  })
+
+  it('keeps surrogate-pair boundaries intact across a break', () => {
+    const lines = wrapWidthRanges('🔍x🔍', 3, [
+      [0, 2],
+      [3, 5],
+    ])
+    expect(lines.map(line => line.text)).toEqual(['🔍x', '🔍'])
+    expect(lines[0]!.ranges).toEqual([[0, 2]])
+    expect(lines[1]!.ranges).toEqual([[0, 2]])
+  })
+
+  it('answers empty for empty text and non-positive budgets', () => {
+    expect(wrapWidthRanges('', 10, [[0, 1]])).toEqual([{ text: '', ranges: [] }])
+    expect(wrapWidthRanges('abc', 0, [[0, 3]])).toEqual([])
+    expect(wrapWidthRanges('abc', -1, [])).toEqual([])
   })
 })
 

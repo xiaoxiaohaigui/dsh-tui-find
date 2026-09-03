@@ -74,7 +74,7 @@ Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.d
 
 | Action | Description |
 |---|---|
-| `/find <query>` | Jump straight to results (e.g. `/find backoff`) |
+| `/find <query>` | Jump straight to results (e.g. `/find backoff`; space-separate multiple terms) |
 | `/find` | Open the full-screen search scene |
 | `Alt+F` | Global shortcut entry (default; remap or disable via the `shortcut` config) |
 
@@ -87,9 +87,12 @@ Keys inside the scene:
 | `Alt+R` | Toggle regex matching (JS syntax; an invalid pattern shows a notice and matches nothing) |
 | `Alt+T` | Cycle the time window: all ⇄ last 7 days ⇄ last 30 days (by session modification time) |
 | `↑` `↓` / `PgUp` `PgDn` | Move between entries / page |
-| `Alt+P` | Read-only preview (2 context messages each side + session header) |
-| `Alt+C` | Copy the hit's original text (role + timestamp included) |
+| `Alt+P` | Read-only preview: a scrollable full-conversation reader anchored on the hit (cards start at the conversation head), with hit highlighting and the session log path |
+| `Alt+C` | Copy the hit's original text (role + timestamp included); in the preview, copies the message under the cursor |
 | `Alt+E` | Expand / collapse all hits of the selected session |
+| In preview `↑` `↓` / `PgUp` `PgDn` / wheel | Scroll the conversation (the cursor row follows and pages automatically) |
+| In preview `n` / `N` | Jump to the next / previous hit (the status line shows "hit i/total") |
+| `Alt+H` | Toggle the keyboard-help panel |
 | `↵` | Resume session (**double confirmation**; loud warning while the live session is working) |
 | `Esc` | Clear query / go back / close the scene |
 
@@ -99,11 +102,11 @@ Mouse:
 |---|---|
 | Left-click a row | Select it and open the same resume confirmation as `↵` |
 | Hover a row | Move the selection and highlight the row |
-| Wheel | Move the selection one row up or down |
+| Wheel | Move the selection one row up or down (in the preview, scrolls the reader line by line) |
 
 > Mouse support depends on dsh-TUI's fullscreen mouse tracking. The dsh-TUI 0.9.3 published package exposes left-click, hover, and wheel events, but does not expose a right-button `onContextMenu` event, so this version does not show a context menu; keyboard shortcuts remain the complete action surface.
 
-> Preview and copy live on `Alt+` chords only: bare letters always type into the query and never trigger shortcuts.
+> In the list, bare letters always type into the query and actions live on `Alt+` chords only; bare `n`/`N` are used for hit jumping in the preview alone, where every other key stays swallowed.
 
 > **Why the default is not `Ctrl+Shift+F`**: mainstream terminals (Windows Terminal, VS Code, GNOME Terminal, …) reserve that chord for their own find UI, intercepting the keypress before dsh-TUI ever sees it. The default is now `Alt+F` to avoid QQ's `Ctrl+Alt+F` conflict; if your terminal happens to use it, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`.
 
@@ -114,6 +117,7 @@ Results are grouped per session, hits are highlighted, each session shows its fi
 - **Indexed**: user messages, assistant text, and session titles; tool-call summaries (`[name] arguments`) are included when `indexTools` is enabled.
 - **Not indexed by default**: thinking text (opt-in via config).
 - **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); `Alt+R` switches to JS regex mode (case sensitivity follows the case-sensitive switch; invalid, oversized, or potentially catastrophic patterns are rejected and show a notice).
+- **Multi-term AND**: non-regex queries split on whitespace; a message (or title) matches only when it contains EVERY term (fzf-style semantics). Double-quoted fragments keep their inner spaces (e.g. `auth "retry logic"`); an unclosed quote runs to the end of the query; at most 16 terms, duplicates deduped. In regex mode the whole query stays ONE pattern — a space is pattern syntax there, not a separator.
 - **Time window**: `Alt+T` filters by session modification time (all ⇄ last 7 days ⇄ last 30 days), applying to both search results and the empty-query recent list; the initial window comes from the `defaultTime` config (default all).
 - **Default scope**: current repo (session cwd matched against the live channel cwd — the same semantics as the resume browser, subdirectory sessions included).
 
@@ -183,11 +187,14 @@ npm run fixtures   # synthesize session fixtures (zstd chains + plain + corrupti
 npm test           # vitest: frames / scanner / search / event sanitization / display width / admission & mount
 ```
 
-Test coverage (114 tests):
+Test coverage (190 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), zero decode on a same-size touch (boundary-verified), the offset-watermark suite (zstd/plain appends decode only the new frames, torn-tail completion without duplication, detected shrink and same-boundary equal-length rewrites fall back to a full decode, journal 0600/0700 posture and cold-start full decode), corruption tolerance, the indexTools/indexThinking switches, AbortSignal.
-- **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid/oversized/unsafe patterns rejected, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence.
+- **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid/oversized/unsafe patterns rejected, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence, multi-term AND queries (whitespace tokenizing, quoted phrases, dedupe and the 16-term cap, range-union merging, whole-pattern regex, scope/time-window interplay).
+- **Preview reader**: line layout and per-message attribution (CJK widths included), cursor-line ↔ message mapping, hit jumping (forward/backward/bounds), scroll-window following, hit-range wrap mapping (`wrapWidthRanges` byte-equivalent to `wrapWidth`).
+- **Keyboard help**: section assembly and narrow-column truncation, the Alt+H open/close wiring.
+- **Scene wiring (real host renderer)**: preview key layering and typing swallow, n/N boundaries and copy, PgDn page math, narrow single-row header truncation, help panel toggling.
 - **Event sanitization**: terminal control-byte and C1/DEL stripping, CR/tab folding, control-only message drops, header cwd and session-title sanitization.
 - **Display width**: CJK/emoji double-width, head/tail truncation, spread rows, physical-line scroll windows (two-line card budget), hit-line flattening/windowing/range mapping.
 - **Admission**: the manifest parses and projects under the host's own `@dsh-std/manifest` v0.15 parser with exact contract declarations; real cordis fibers mount the plugin (scene register/open/close, settings card, mediated-command degradation path) and the language pin reverts on deactivation.

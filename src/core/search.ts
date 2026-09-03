@@ -1,10 +1,14 @@
 /**
- * Query evaluation over the scanned index: substring matching with the
- * configured case sensitivity (v0.1 default: case-insensitive — instant,
- * zero-dependency, and CJK-correct without a segmenter), an optional
- * JavaScript-regex mode over the same index (v0.2 toggle, compiled once per
- * query), the optional time window over session modification times, and
- * per-message highlight ranges.
+ * Query evaluation over the scanned index: whitespace-separated terms
+ * matched per document — a session title or one indexed message must
+ * contain EVERY term (fzf-style AND; a double-quoted fragment is one term
+ * whose inner spaces are literal) — with the configured case sensitivity
+ * (v0.1 default: case-insensitive — instant, zero-dependency, and
+ * CJK-correct without a segmenter), an optional JavaScript-regex mode over
+ * the same index (v0.2 toggle, compiled once per query and deliberately
+ * NOT term-split: inside a regex a space is pattern syntax, not a
+ * separator, so splitting would be ambiguous), the optional time window
+ * over session modification times, and per-message highlight ranges.
  *
  * Scope filter mirrors the host's `/resume` project filter semantics
  * (`sessionCwdMatches`): exact cwd match plus subdirectory descendants and
@@ -28,7 +32,11 @@ export interface MessageHit {
   readonly seq: number | undefined
   readonly text: string
   readonly at: number | undefined
-  /** Half-open [start, end) character ranges to highlight. */
+  /**
+   * Half-open [start, end) character ranges to highlight — sorted and
+   * disjoint (a multi-term hit carries the merged union of its terms'
+   * ranges).
+   */
   readonly ranges: readonly (readonly [number, number])[]
   /**
    * Position of the matched message inside `session.messages`; undefined
@@ -42,7 +50,10 @@ export interface MessageHit {
 export interface SessionHit {
   readonly session: ScannedSession
   readonly hits: readonly MessageHit[]
-  /** Total match count across messages (title included). */
+  /**
+   * Total match count across messages (title included), counting the
+   * merged highlight spans — the segments the renderer actually draws.
+   */
   readonly total: number
 }
 
@@ -67,9 +78,12 @@ export interface SearchOptions {
   readonly sinceMs?: number
   /**
    * Treat the (trimmed) query as a JavaScript regular expression instead of
-   * a literal substring (v0.2's regex toggle over the substring baseline).
-   * Case sensitivity still applies: insensitive matching compiles with the
-   * `i` flag. An uncompilable pattern matches nothing here — the scene
+   * the per-term literal substring match (v0.2's regex toggle over the
+   * substring baseline). The pattern is the WHOLE query — regex mode never
+   * splits on whitespace, because inside a regex a space is pattern syntax
+   * rather than a term separator and splitting would be ambiguous. Case
+   * sensitivity still applies: insensitive matching compiles with the `i`
+   * flag. An uncompilable pattern matches nothing here — the scene
    * surfaces the invalid-pattern notice through {@link compileRegex}, the
    * one compilation both paths share.
    */
@@ -83,6 +97,7 @@ const UNSAFE_REGEX_PATTERNS = [
   /\\\d/u, // backreferences
   /\([^)]*[+*][^)]*\)[+*?]/u, // quantified groups containing quantifiers
   /\([^)]*\|[^)]*\)[+*?]/u, // quantified alternation groups
+  /\)[{]/u, // any group quantified with a {n,m} brace (e.g. the (a+){2,} blowup)
 ]
 
 export function isRegexAllowed(query: string): boolean {
@@ -231,7 +246,11 @@ function rangesInFold(fold: FoldedText, needle: string): [number, number][] {
  * The pattern is the shared compiled query (`g` flag), so `lastIndex` is
  * reset per text. A zero-width match advances one code unit instead of
  * being recorded — the guard that keeps patterns like `a*` from looping
- * forever (and an empty highlight span renders nothing anyway).
+ * forever (and an empty highlight span renders nothing anyway). The flags
+ * lack `u`, so a match may open or close inside a surrogate pair; such an
+ * edge is widened onto the whole code point (unpairable lone units at the
+ * string edges stay as they are) and a widened match folded into the
+ * previous range, keeping the output disjoint like `matchRanges` does.
  */
 function regexRanges(pattern: RegExp, text: string): [number, number][] {
   const ranges: [number, number][] = []
@@ -244,7 +263,18 @@ function regexRanges(pattern: RegExp, text: string): [number, number][] {
       if (pattern.lastIndex > text.length) break
       continue
     }
-    ranges.push([match.index, match.index + match[0].length])
+    let start = match.index
+    let end = start + match[0].length
+    const startUnit = text.charCodeAt(start)
+    if (start > 0 && startUnit >= 0xdc00 && startUnit <= 0xdfff) start -= 1
+    const endUnit = text.charCodeAt(end - 1)
+    if (end < text.length && endUnit >= 0xd800 && endUnit <= 0xdbff) end += 1
+    const previous = ranges[ranges.length - 1]
+    if (previous !== undefined && start < previous[1]) {
+      if (end > previous[1]) previous[1] = end
+      continue
+    }
+    ranges.push([start, end])
   }
   return ranges
 }
@@ -282,14 +312,121 @@ export function matchRanges(
   return rangesInFold(buildFold(haystack), needle)
 }
 
+/** Single-unit whitespace test: every `\s` member is one UTF-16 unit, so
+ *  scanning a string by index never splits a surrogate pair on a separator. */
+const WHITESPACE = /\s/u
+
+/**
+ * Hard cap on the terms one query may carry ({@link parseQueryTerms} drops
+ * later terms once reached): an AND over more terms has long stopped being
+ * a useful search, and the cap keeps a pathological query bounded to a
+ * per-keystroke-friendly amount of work.
+ */
+export const MAX_QUERY_TERMS = 16
+
+/**
+ * Split a query into the whitespace-separated terms the per-document AND
+ * matches with. A double-quoted fragment is ONE term whose inner
+ * whitespace is literal (the phrase form of `auth "retry logic"`); a quote
+ * met inside a bare word closes the word and opens a phrase; a phrase
+ * never closed runs to the end of the query. Empty and whitespace-only
+ * quotes (`""`) are dropped — left in, they would make the AND vacuous —
+ * so a query of nothing but them parses to no terms.
+ *
+ * AND semantics give a repeated term no extra say, so terms are deduped by
+ * match shape — case-folded unless matching is case-sensitive, first
+ * occurrence wins — and the list is capped at {@link MAX_QUERY_TERMS}.
+ * Deduping before capping spends the cap slots on distinct, informative
+ * terms instead of burning them on repeats; both bounds together keep a
+ * pathological query from stretching the per-keystroke budget.
+ *
+ * @param query - The query to tokenize (leading/trailing whitespace is
+ *   skipped here; callers usually pass their already-trimmed input).
+ * @param caseSensitive - Dedupe verbatim instead of case-folded — the
+ *   shape follows the case sensitivity the terms will match under.
+ * @returns Terms in first-occurrence order; `[]` when nothing survives.
+ */
+export function parseQueryTerms(query: string, caseSensitive = false): string[] {
+  const terms: string[] = []
+  const shapes = new Set<string>()
+  let index = 0
+  while (index < query.length) {
+    const unit = query[index]
+    if (unit !== undefined && WHITESPACE.test(unit)) {
+      index += 1
+      continue
+    }
+    let term: string
+    if (unit === '"') {
+      // A phrase: the raw slice between the quotes, inner spaces literal.
+      let end = query.indexOf('"', index + 1)
+      if (end === -1) end = query.length // unclosed quote: run to the end
+      term = query.slice(index + 1, end)
+      index = end < query.length ? end + 1 : query.length
+    } else {
+      const start = index
+      while (
+        index < query.length &&
+        query[index] !== '"' &&
+        !WHITESPACE.test(query[index] ?? '')
+      ) {
+        index += 1
+      }
+      term = query.slice(start, index)
+    }
+    if (term.trim().length === 0) continue
+    const shape = caseSensitive ? term : term.toLowerCase()
+    if (shapes.has(shape) || terms.length === MAX_QUERY_TERMS) continue
+    shapes.add(shape)
+    terms.push(term)
+  }
+  return terms
+}
+
+/**
+ * Union of half-open ranges: sorted by start, with ranges that overlap or
+ * touch (share an endpoint) merged into one span. A multi-term AND hit
+ * unions per-term ranges that can nest (`auth` inside `authentication`) or
+ * touch; the renderer's highlight walk and the `total` count both assume
+ * ordered disjoint spans, so every multi-term result passes through here.
+ * Single-term results are already sorted and disjoint — they come out
+ * unchanged.
+ *
+ * @param ranges - Any order, possibly overlapping; not mutated.
+ * @returns A new sorted, disjoint array.
+ */
+export function mergeRanges(
+  ranges: readonly (readonly [number, number])[],
+): [number, number][] {
+  const sorted = [...ranges].sort((left, right) => left[0] - right[0] || left[1] - right[1])
+  const merged: [number, number][] = []
+  for (const [start, end] of sorted) {
+    const previous = merged[merged.length - 1]
+    if (previous !== undefined && start <= previous[1]) {
+      if (end > previous[1]) previous[1] = end
+      continue
+    }
+    merged.push([start, end])
+  }
+  return merged
+}
+
 /**
  * Run one query over the index.
  *
- * A session matches when its title or any indexed message contains the
- * query; matching messages carry highlight ranges over the original text.
- * Sessions arrive in most-recent-first order and that order is preserved.
- * The empty query matches nothing by design — the scene renders the recent
- * list instead — and the repo scope matches nothing without a cwd.
+ * The query is split into whitespace-separated terms (see
+ * {@link parseQueryTerms}); a session matches when its title or any indexed
+ * message contains EVERY term — the AND is per document, so terms split
+ * across a title and a message (or across two messages) do not match — and
+ * each matching document carries the union of all its terms' highlight
+ * ranges over the original text. Regex mode (`options.regex`) keeps the
+ * whole trimmed query as one pattern instead: inside a regex a space is
+ * pattern syntax, not a term separator. Sessions arrive in
+ * most-recent-first order and that order is preserved. A literal empty query
+ * matches nothing and the scene renders the recent list; a non-empty query
+ * that parses to no terms (e.g. `""`) also matches nothing, but the scene
+ * renders its no-results empty state. The repo scope matches nothing without
+ * a cwd.
  *
  * @param sessions - The scanned index (order preserved by the caller).
  * @param query - Raw user input (trimmed here).
@@ -305,12 +442,23 @@ export function searchSessions(
 
   const caseSensitive = options.caseSensitive === true
 
-  // Regex mode compiles once up front; an invalid pattern matches nothing.
-  // The substring paths keep the folded-needle baseline (below).
+  // Regex mode compiles once up front and keeps the WHOLE trimmed query as
+  // one pattern — inside a regex a space is pattern syntax, not a term
+  // separator, so there is nothing to split into terms. An invalid pattern
+  // matches nothing; the substring paths keep the folded-needle baseline
+  // (below).
   const pattern =
     options.regex === true ? compileRegex(trimmed, caseSensitive) : undefined
   if (options.regex === true && pattern === undefined) return []
-  const needle = caseSensitive ? trimmed : trimmed.toLowerCase()
+
+  // Substring mode parses whitespace-separated terms and matches them with
+  // a per-document AND (below). A non-empty query that parses to no terms
+  // (e.g. `""`) matches nothing; the scene distinguishes its empty state
+  // from the literal empty query's recent-session mode.
+  const terms = pattern === undefined ? parseQueryTerms(trimmed, caseSensitive) : []
+  if (pattern === undefined && terms.length === 0) return []
+  // Folded needles are a per-query constant, not per-document work.
+  const needles = terms.map(term => term.toLowerCase())
 
   // "This repo" with no cwd to compare against matches nothing.
   const repoCwd = options.repoCwd ?? ''
@@ -319,14 +467,32 @@ export function searchSessions(
   }
 
   // One matcher for titles and messages alike: the regex path when a
-  // pattern is live, otherwise the substring paths (the case-insensitive
-  // one goes through the per-object fold cache — see foldOf).
-  const rangesOf = (text: string, owner: object): [number, number][] =>
-    pattern !== undefined
-      ? regexRanges(pattern, text)
-      : caseSensitive
-        ? matchRanges(text, needle, true)
-        : rangesInFold(foldOf(owner, text), needle)
+  // pattern is live, otherwise every term against the document under an
+  // AND — the first term that misses kills the document (cheap early
+  // exit) — and survivors yield the union of all terms' ranges. The
+  // case-insensitive path takes the fold ONCE per document and reuses it
+  // for every term (see foldOf).
+  const rangesOf = (text: string, owner: object): [number, number][] => {
+    if (pattern !== undefined) return regexRanges(pattern, text)
+    const matches: [number, number][] = []
+    if (caseSensitive) {
+      for (const term of terms) {
+        const termRanges = matchRanges(text, term, true)
+        if (termRanges.length === 0) return []
+        for (const range of termRanges) matches.push(range)
+      }
+    } else {
+      const fold = foldOf(owner, text)
+      for (const needle of needles) {
+        const needleRanges = rangesInFold(fold, needle)
+        if (needleRanges.length === 0) return []
+        for (const range of needleRanges) matches.push(range)
+      }
+    }
+    // Per-term ranges can nest or touch (`auth` inside `authentication`);
+    // the renderer walks ordered disjoint spans, so union and merge once.
+    return mergeRanges(matches)
+  }
 
   const hits: SessionHit[] = []
   for (const session of sessions) {

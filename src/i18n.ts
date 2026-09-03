@@ -128,8 +128,8 @@ export const dict = {
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
   'hint-preview': {
-    zh: '**Enter** 恢复 · Alt+C 复制 · Esc 返回',
-    en: '**Enter** resume · Alt+C copy · Esc back',
+    zh: '**↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制 · **Esc** 返回',
+    en: '**↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy · **Esc** back',
   },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',
@@ -138,6 +138,10 @@ export const dict = {
 
   // ── preview pane ─────────────────────────────────────────────────────
   'preview-title': { zh: '只读预览 · {{title}}', en: 'Read-only preview · {{title}}' },
+  // n/N jump feedback in the reader's status row: the 1-based ordinal of
+  // the hit just landed on, over the session's hit total.
+  'preview-hit-jump': { zh: '命中 {{index}}/{{total}}', en: 'Hit {{index}}/{{total}}' },
+  'preview-hit-end': { zh: '没有更多命中', en: 'No more hits' },
 
   // ── resume confirm ───────────────────────────────────────────────────
   'confirm-title': { zh: '恢复该会话？', en: 'Resume this session?' },
@@ -160,6 +164,40 @@ export const dict = {
   'resume-failed': { zh: '恢复失败：{{error}}', en: 'Resume failed: {{error}}' },
   'resumed': { zh: '已恢复会话', en: 'Session resumed' },
   'scan-failed': { zh: '扫描失败：{{error}}', en: 'Scan failed: {{error}}' },
+
+  // ── help overlay (Alt+H) ─────────────────────────────────────────────
+  // The keys column of the help sheet is language-free (src/help.tsx owns
+  // those strings); only the action column is localized here.
+  'help-title': { zh: '键位帮助', en: 'Keyboard help' },
+  'help-section-list': { zh: '列表', en: 'List' },
+  'help-section-preview': { zh: '预览', en: 'Preview' },
+  'help-section-mouse': { zh: '鼠标', en: 'Mouse' },
+  'help-list-type': { zh: '输入查询（任意字符）', en: 'Type to search (any character)' },
+  'help-list-scope': { zh: '切换范围（本仓库 / 全部会话）', en: 'Toggle scope (this repo / all sessions)' },
+  'help-list-regex': { zh: '切换正则匹配', en: 'Toggle regex matching' },
+  'help-list-time': { zh: '切换时间范围', en: 'Cycle the time window' },
+  'help-list-preview': { zh: '打开只读预览', en: 'Open the read-only preview' },
+  'help-list-copy': { zh: '复制选中的命中消息', en: 'Copy the selected hit message' },
+  'help-list-expand': { zh: '展开 / 收起全部命中', en: 'Expand / collapse all hits' },
+  'help-list-resume': { zh: '恢复选中的会话（进入确认）', en: 'Resume the selected session (confirm)' },
+  'help-list-select': { zh: '移动选择', en: 'Move the selection' },
+  'help-list-page': { zh: '翻页', en: 'Page up / down' },
+  'help-list-esc': { zh: '清空查询 / 退出', en: 'Clear the query / exit' },
+  'help-list-help': { zh: '打开 / 关闭本帮助', en: 'Toggle this help' },
+  'help-list-global': { zh: '全局打开 /find（shortcut 配置可改键）', en: 'Open /find globally (remap via shortcut config)' },
+  'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
+  'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
+  'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
+  'help-preview-resume': { zh: '恢复该会话（进入确认）', en: 'Resume this session (confirm)' },
+  'help-preview-copy': { zh: '复制光标所在消息', en: 'Copy the message under the cursor' },
+  'help-preview-esc': { zh: '返回列表', en: 'Back to the list' },
+  'help-mouse-click': { zh: '选中并打开确认', en: 'Select and open the confirm' },
+  'help-mouse-hover': { zh: '移动选择', en: 'Move the selection' },
+  'help-mouse-wheel': { zh: '按条目移动（预览内按行滚动）', en: 'Move by row (scroll by line in the preview)' },
+  // The overlay's own footer hint (HintLine `**key**` vocabulary).
+  'help-footer': { zh: '**Esc** 返回', en: '**Esc** back' },
+  // New list hint segment for the main scene's hint line (Alt+H wiring).
+  'hint-seg-help': { zh: '**Alt+H** 帮助', en: '**Alt+H** help' },
 } as const satisfies Record<string, { zh: string; en: string }>
 
 export type I18nKey = keyof typeof dict

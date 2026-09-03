@@ -13,6 +13,9 @@
  * the host reports Alt as `key.meta`. Enter opens the resume confirm, Tab
  * toggles the scope, Alt+R toggles regex matching, Alt+T cycles the time
  * window, ↑↓/PgUp/PgDn move, Esc backs out one layer (query, then screen).
+ * Alt+P opens the session as a scrollable full-conversation reader anchored
+ * on the selected hit — ↑↓/PgUp/PgDn/wheel scroll it, `n`/`N` walk the
+ * session's own hits, Alt+C copies the message under the cursor.
  * With an empty query the scene
  * lists recent sessions (most-recent-first, sessions with no conversation
  * excluded, like the browser's empty-session discipline) so /find opens as
@@ -32,7 +35,17 @@ import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
 import { compileRegex, searchSessions, sessionCwdMatches, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
-import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth, wrapWidth } from './width.js'
+import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth } from './width.js'
+import {
+  buildPreviewLines,
+  hitOrdinal,
+  jumpHit,
+  messageAtLine,
+  messageHeaderLine,
+  unitWeights,
+  type PreviewLine,
+} from './preview.js'
+import { HelpOverlay } from './help.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
 
 /** The host ui kit's component/hook surface, derived from the scene props. */
@@ -52,7 +65,7 @@ type WheelBoxProps = React.ComponentProps<Ui['Box']> & {
   onWheel?: (event: WheelEventLike) => void
 }
 
-type Mode = 'list' | 'preview' | 'confirm'
+type Mode = 'list' | 'preview' | 'confirm' | 'help'
 
 /** The time window the list and search filter sessions by — the same
  *  vocabulary as the `defaultTime` config knob (its initial value). */
@@ -61,9 +74,12 @@ type TimeFilter = ResolvedConfig['defaultTime']
 /** A row of the flattened list. Every row is selectable — a session card
  *  resumes its session, a hit row resumes the session it hit. A card's
  *  title hit rides INSIDE the card's title line (highlighted there, the
- *  browser's own title treatment) and never as a separate row. */
+ *  browser's own title treatment) and never as a separate row. A results
+ *  card also carries its session's own hit list so Alt+P can open the
+ *  reader anchored anywhere and `n`/`N` can walk its hits; recent-mode
+ *  cards have no SessionHit and set nothing (exactOptionalPropertyTypes). */
 type FlatRow =
-  | { kind: 'session'; session: ScannedSession; titleHit: MessageHit | undefined }
+  | { kind: 'session'; session: ScannedSession; titleHit: MessageHit | undefined; hits?: readonly MessageHit[] }
   | { kind: 'message'; hit: SessionHit; message: MessageHit; index: number; more: number }
 
 /** Vertical chrome of the layout: header + search card (3) + notice +
@@ -71,8 +87,10 @@ type FlatRow =
 const CHROME_LINES = 7
 /** Hits shown per session card before `(+N)`. */
 const PREVIEW_HITS = 3
-/** Context messages on each side of a hit in the preview pane. */
-const PREVIEW_CONTEXT = 2
+/** Fixed chrome rows of the preview pane: title + meta + log path + status
+ *  + hint. The scroll region gets rows minus these; PgUp/PgDn page by the
+ *  same. */
+const PREVIEW_CHROME_LINES = 5
 
 /** Role glyph and colour for a preview entry, the host preview's vocabulary
  *  (user ❯, assistant ✦) plus a tool marker for tool-call rows. */
@@ -152,6 +170,7 @@ function composeListHint(columns: number): string {
     t('hint-seg-expand'),
     t('hint-seg-regex'),
     t('hint-seg-time'),
+    t('hint-seg-help'),
     t('hint-seg-navigate'),
   ]
   const last = t('hint-seg-esc')
@@ -249,7 +268,9 @@ function SearchCard(props: {
 
 /** Highlight `ranges` inside `text` with the theme accent. Plain spans keep
  *  the row's selection treatment (suggestion + bold) so a card whose title
- *  carries the highlight reads as selected exactly like every other card. */
+ *  carries the highlight reads as selected exactly like every other card;
+ *  `plainDim` dims them instead, so the preview reader's assistant bodies
+ *  keep their dim treatment under per-span coloring. */
 function HighlightedText(props: {
   React: TuiSceneProps['React']
   ui: Ui
@@ -258,8 +279,9 @@ function HighlightedText(props: {
   color: TextColor
   width: number
   selected?: boolean
+  plainDim?: boolean
 }): React.ReactElement {
-  const { React: R, ui, text, ranges, color, width, selected } = props
+  const { React: R, ui, text, ranges, color, width, selected, plainDim } = props
   const { Text } = ui
   const plainColor: TextColor = selected === true ? 'suggestion' : 'text'
   const parts: React.ReactElement[] = []
@@ -270,7 +292,7 @@ function HighlightedText(props: {
     const safeEnd = Math.min(end, clipped.length)
     if (start > cursor)
       parts.push(
-        <Text key={`p${index}`} color={plainColor} bold={selected === true}>
+        <Text key={`p${index}`} color={plainColor} bold={selected === true} dimColor={plainDim === true}>
           {clipped.slice(cursor, start)}
         </Text>,
       )
@@ -283,7 +305,7 @@ function HighlightedText(props: {
   })
   if (cursor < clipped.length)
     parts.push(
-      <Text key="tail" color={plainColor} bold={selected === true}>
+      <Text key="tail" color={plainColor} bold={selected === true} dimColor={plainDim === true}>
         {clipped.slice(cursor)}
       </Text>,
     )
@@ -434,7 +456,7 @@ export function FindScene(props: TuiSceneProps & {
       const messageHits = hit.hits.filter(entry => entry.kind === 'message')
       const isExpanded = expanded.has(hit.session.id)
       const shown = isExpanded ? messageHits.length : Math.min(PREVIEW_HITS, messageHits.length)
-      rows.push({ kind: 'session', session: hit.session, titleHit })
+      rows.push({ kind: 'session', session: hit.session, titleHit, hits: hit.hits })
       for (let index = 0; index < shown; index++) {
         rows.push({
           kind: 'message',
@@ -459,6 +481,72 @@ export function FindScene(props: TuiSceneProps & {
 
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
+  // ── preview pane (scrollable full-conversation reader) ────────────────
+  // The cursor is a LINE index into the preview's flat line list; the
+  // window start follows it through fitScrollWindow over 1-weight lines.
+  // Both are discarded on exit: every Alt+P re-anchors (the hit message's
+  // header line, or the head for cards and title hits), delivered through
+  // previewAnchorRef and consumed on the preview's first render.
+  const [previewCursor, setPreviewCursor] = useState(0)
+  const [previewWindowStart, setPreviewWindowStart] = useState(0)
+  const previewAnchorRef = useRef<number | undefined>(undefined)
+  const previewSession = useMemo<ScannedSession | undefined>(() => {
+    if (mode !== 'preview') return undefined
+    const row = selectedRow
+    if (row === undefined) return undefined
+    return row.kind === 'session' ? row.session : row.hit.session
+  }, [mode, selectedRow])
+  // The session's own MESSAGE hits: the ◆ markers and the n/N jump table
+  // come from them (title hits have no message to anchor or mark). Recent
+  // mode has no SessionHit, so a recent card's reader simply has none.
+  const previewHits = useMemo<readonly MessageHit[]>(() => {
+    const row = selectedRow
+    if (mode !== 'preview' || row === undefined) return []
+    const source = row.kind === 'message' ? row.hit.hits : (row.hits ?? [])
+    return source.filter(entry => entry.kind === 'message')
+  }, [mode, selectedRow])
+  const previewHitIndices = useMemo(() => {
+    const indices = new Set<number>()
+    for (const entry of previewHits) {
+      if (entry.sourceIndex !== undefined) indices.add(entry.sourceIndex)
+    }
+    return indices
+  }, [previewHits])
+  // Hit ranges per message index, for the reader's body highlighting: the
+  // session's own message hits keyed by their position in the previewed
+  // messages array (a 'message' row contributes its whole session's hits,
+  // a card its `hits` field, recent mode nothing). searchSessions emits at
+  // most one hit per message, so a plain set is lossless; title hits have
+  // no sourceIndex and are skipped.
+  const previewRangesByMessage = useMemo(() => {
+    const map = new Map<number, readonly (readonly [number, number])[]>()
+    for (const entry of previewHits) {
+      if (entry.sourceIndex !== undefined) map.set(entry.sourceIndex, entry.ranges)
+    }
+    return map
+  }, [previewHits])
+  // Body budget: marker (2) + the deepest continuation indent (4) inside the
+  // terminal width, one column of slack — no line can soft-wrap past it.
+  const previewBodyWidth = Math.max(1, columns - 5)
+  const previewLines = useMemo<PreviewLine[]>(
+    () =>
+      previewSession === undefined
+        ? []
+        : buildPreviewLines(previewSession.messages, previewHitIndices, previewBodyWidth, previewRangesByMessage),
+    [previewSession, previewHitIndices, previewBodyWidth, previewRangesByMessage],
+  )
+  const previewWeights = useMemo(() => unitWeights(previewLines.length), [previewLines])
+  // jumpHit's table, indexed by message index: the header line of that
+  // message when it is a hit, the -1 sentinel when it is not.
+  const previewHitStarts = useMemo(() => {
+    const table = new Array<number>(previewSession?.messages.length ?? 0).fill(-1)
+    for (let at = 0; at < previewLines.length; at++) {
+      const line = previewLines[at]
+      if (line !== undefined && line.kind === 'header' && line.isHit) table[line.messageIndex] = at
+    }
+    return table
+  }, [previewSession, previewLines])
+
   // Reset selection when the query, scope, time window or match mode changes shape.
   useEffect(() => {
     setSelected(0)
@@ -476,19 +564,33 @@ export function FindScene(props: TuiSceneProps & {
     return row !== undefined && row.kind === 'message' ? row.message : undefined
   }, [selectedRow])
 
+  /** The shared copy body: the list's Alt+C copies the selected hit row,
+   *  the preview's Alt+C copies the message under the cursor — same shape,
+   *  so both feed this one builder. */
+  const copyMessage = useCallback(
+    (entry: {
+      readonly role: 'user' | 'assistant' | 'tool' | undefined
+      readonly text: string
+      readonly at: number | undefined
+    }) => {
+      const when = entry.at === undefined ? '' : ` ${new Date(entry.at).toISOString()}`
+      const role = entry.role === 'user' ? t('role-user') : entry.role === 'assistant' ? t('role-assistant') : t('role-tool')
+      const body = `[${role}${when}]\n${entry.text}`
+      try {
+        copyToClipboard(body, process.stdout)
+        setStatus({ text: t('copied', { chars: body.length }), tone: 'info' })
+      } catch {
+        setStatus({ text: t('copy-failed'), tone: 'error' })
+      }
+    },
+    [],
+  )
+
   const copySelected = useCallback(() => {
     const hit = selectedMessage()
     if (hit === undefined) return
-    const when = hit.at === undefined ? '' : ` ${new Date(hit.at).toISOString()}`
-    const role = hit.role === 'user' ? t('role-user') : hit.role === 'assistant' ? t('role-assistant') : t('role-tool')
-    const body = `[${role}${when}]\n${hit.text}`
-    try {
-      copyToClipboard(body, process.stdout)
-      setStatus({ text: t('copied', { chars: body.length }), tone: 'info' })
-    } catch {
-      setStatus({ text: t('copy-failed'), tone: 'error' })
-    }
-  }, [selectedMessage])
+    copyMessage(hit)
+  }, [copyMessage, selectedMessage])
 
   const beginResume = useCallback(() => {
     if (resumeTarget === undefined) return
@@ -559,9 +661,49 @@ export function FindScene(props: TuiSceneProps & {
         }
         return
       }
+      if (modeRef.current === 'help') {
+        // Alt+H toggles the panel closed (its own row says so); Esc lands in
+        // the shared escape branch above. Every other key stays swallowed —
+        // the help screen is inert and typing must never leak into the query.
+        if (altOnly && lower === 'h') setMode('list')
+        return
+      }
       if (modeRef.current === 'preview') {
+        const lastLine = Math.max(0, previewLines.length - 1)
         if (isPlainReturn(key)) beginResume()
-        else if (lower === 'c' && altOnly) copySelected()
+        else if (lower === 'c' && altOnly) {
+          // Alt+C copies the message the cursor sits on, whatever line of
+          // it (header or body) holds the cursor.
+          const entry = previewSession?.messages[messageAtLine(previewLines, previewCursor) ?? 0]
+          if (entry !== undefined) copyMessage(entry)
+        } else if (key.upArrow) {
+          setPreviewCursor(current => Math.max(0, Math.min(lastLine, current - 1)))
+        } else if (key.downArrow) {
+          setPreviewCursor(current => Math.min(lastLine, current + 1))
+        } else if (key.pageUp || key.pageDown) {
+          const jump = Math.max(1, rows - PREVIEW_CHROME_LINES)
+          setPreviewCursor(current => {
+            const next = key.pageUp ? current - jump : current + jump
+            return Math.min(lastLine, Math.max(0, next))
+          })
+        } else if (plain && lower === 'n') {
+          // Walk the session's own hits (`n` forward, Shift+n back). A
+          // recent-session card has an empty hit table and no-ops silently;
+          // a table whose hits are exhausted answers with the boundary toast.
+          const currentMessage = messageAtLine(previewLines, previewCursor) ?? 0
+          const { total } = hitOrdinal(previewHitStarts, currentMessage)
+          if (total > 0) {
+            const target = jumpHit(previewHitStarts, currentMessage, key.shift ? -1 : 1)
+            if (target === undefined) setStatus({ text: t('preview-hit-end'), tone: 'info' })
+            else {
+              setPreviewCursor(target)
+              const { index } = hitOrdinal(previewHitStarts, messageAtLine(previewLines, target) ?? 0)
+              setStatus({ text: t('preview-hit-jump', { index, total }), tone: 'info' })
+            }
+          }
+        }
+        // Every other key stays swallowed: the preview is read-only and
+        // typing must never leak back into the query.
         return
       }
       // list mode
@@ -606,7 +748,14 @@ export function FindScene(props: TuiSceneProps & {
       // cards too (preview from the head of the conversation); Alt+C and
       // Alt+E need a concrete hit and no-op on a card.
       if (altOnly && lower === 'p') {
-        if (selectedRow !== undefined) setMode('preview')
+        const row = selectedRow
+        if (row !== undefined) {
+          // Anchor: a hit row parks the cursor on its own message's header
+          // line; a card (or a title hit, which has no message) starts from
+          // the head of the conversation.
+          previewAnchorRef.current = row.kind === 'message' ? (row.message.sourceIndex ?? -1) : -1
+          setMode('preview')
+        }
         return
       }
       if (altOnly && lower === 'c') {
@@ -624,6 +773,10 @@ export function FindScene(props: TuiSceneProps & {
             return next
           })
         }
+        return
+      }
+      if (altOnly && lower === 'h') {
+        setMode('help')
         return
       }
       if (key.upArrow) {
@@ -729,6 +882,27 @@ export function FindScene(props: TuiSceneProps & {
     [flat.length],
   )
 
+  /** Preview wheel: one line per notch — the cursor is the scroll driver,
+   *  the window follows it through fitScrollWindow. */
+  const stepPreview = useCallback(
+    (event: WheelEventLike) => {
+      if (modeRef.current !== 'preview') return
+      const by = wheelStep(event.deltaY, event.deltaX)
+      if (by === 0) return
+      setPreviewCursor(current => {
+        const last = Math.max(0, previewLines.length - 1)
+        return Math.min(last, Math.max(0, current + by))
+      })
+    },
+    [previewLines.length],
+  )
+
+  if (mode === 'help') {
+    // Render-only overlay: the keyboard stays with the branches above
+    // (Alt+H toggles, Esc returns, everything else is swallowed).
+    return <HelpOverlay React={React} ui={ui} columns={columns} rows={rows} />
+  }
+
   if (mode === 'confirm' && resumeTarget !== undefined) {
     const session = resumeTarget
     const working = channel.working
@@ -778,64 +952,115 @@ export function FindScene(props: TuiSceneProps & {
 
   if (mode === 'preview' && selectedRow !== undefined) {
     const session = selectedRow.kind === 'session' ? selectedRow.session : selectedRow.hit.session
-    const message = selectedRow.kind === 'message' ? selectedRow.message : undefined
-    const all = session.messages
-    // Anchor on the hit's own index in the session's message list; a card
-    // preview (or a title hit) starts from the head of the conversation.
-    const anchor = message?.sourceIndex ?? -1
-    const context =
-      anchor >= 0
-        ? all.slice(Math.max(0, anchor - PREVIEW_CONTEXT), anchor + PREVIEW_CONTEXT + 1)
-        : all.slice(0, PREVIEW_CONTEXT * 2 + 1)
-  const bodyWidth = Math.max(1, columns - 4)
-    const maxLinesPerEntry = 3
+    // First render after Alt+P: park the cursor (and the window) on the
+    // anchor message's header line — the render-phase adjust pattern the
+    // ListView scroll window already uses, so the anchored frame is the
+    // committed one and nothing flickers.
+    let anchored: number | undefined = previewAnchorRef.current
+    if (anchored !== undefined) {
+      const start = messageHeaderLine(previewLines, anchored)
+      previewAnchorRef.current = undefined
+      setPreviewCursor(start)
+      setPreviewWindowStart(start)
+      anchored = start
+    }
+    const cursorLine = Math.min(Math.max(0, anchored ?? previewCursor), Math.max(0, previewLines.length - 1))
+    const cursorMessage = messageAtLine(previewLines, cursorLine) ?? 0
+    const windowPrevious = anchored ?? previewWindowStart
+    const view = fitScrollWindow(
+      previewWeights,
+      cursorLine,
+      Math.max(1, rows - PREVIEW_CHROME_LINES),
+      windowPrevious,
+    )
+    if (view.start !== windowPrevious) setPreviewWindowStart(view.start)
+    const visible = previewLines.slice(view.start, view.end)
+    const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
     return (
-      <Box flexDirection="column" paddingX={1} width={columns}>
+      // Root pinned to the full viewport (the list root's own rule): fixed
+      // chrome — title, meta, status, hint — surrounds a flexGrow scroll
+      // region windowed by fitScrollWindow, so the hint row stays on the
+      // bottom edge however far the reader scrolls.
+      <Box flexDirection="column" width={columns} height={rows}>
         <Box flexShrink={0}>
           <Text color="remember" bold>
-            {' '}
-            {truncateWidth(t('preview-title', { title: displayTitle(session) }), Math.max(0, columns - 2))}
+            {` ${truncateWidth(t('preview-title', { title: displayTitle(session) }), Math.max(0, columns - 2))}`}
           </Text>
         </Box>
         <Box flexShrink={0}>
           <Text dimColor>
-            {' '}
-            {truncateWidth(
-              `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt)} · ${t('msgs-count', { n: all.length })}`,
+            {` ${truncateWidth(
+              `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt)} · ${t('msgs-count', { n: session.messages.length })}`,
               Math.max(0, columns - 2),
-            )}
+            )}`}
           </Text>
         </Box>
-        <Text> </Text>
-        {context.map((entry, index) => {
-          // Fixed line budget per entry: wrap, cap, and mark the cut — the
-          // pane must never inflate past the viewport (same discipline as
-          // the list rows).
-          const wrapped = wrapWidth(entry.text, bodyWidth)
-          const shown = wrapped.slice(0, maxLinesPerEntry)
-          const cut = wrapped.length > maxLinesPerEntry && shown.length > 0
-          if (cut) shown[maxLinesPerEntry - 1] = truncateWidth(shown[maxLinesPerEntry - 1]!, bodyWidth - 1)
-          return (
-            <Box key={index} flexDirection="column" flexShrink={0}>
-              <Text color={ROLE_MARK[entry.role].color}>
-                {ROLE_MARK[entry.role].glyph}{' '}
-                {entry.role === 'user'
-                  ? t('role-user')
-                  : entry.role === 'tool'
-                    ? t('role-tool')
-                    : t('role-assistant')}
-                {entry.at === undefined ? '' : ` · ${formatWhen(entry.at)}`}
-              </Text>
-              {shown.map((line, lineIndex) => (
-                <Text key={lineIndex} dimColor={entry.role === 'assistant'}>
-                  {lineIndex === 0 ? '' : '  '}
-                  {line}
-                </Text>
-              ))}
-              <Text> </Text>
-            </Box>
-          )
-        })}
+        <Box flexShrink={0}>
+          {/* The session log's absolute path, tail-kept so the file name —
+              the path's end — survives any terminal width. */}
+          <Text dimColor>{` ${tailWidth(session.path, Math.max(0, columns - 4))}`}</Text>
+        </Box>
+        <WheelBox flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" onWheel={stepPreview}>
+          {visible.map((line, offset) => {
+            const lineAt = view.start + offset
+            if (line.kind === 'header') {
+              // The header row carries the list's selection vocabulary —
+              // marker arrow plus selectionBg for the cursor's message —
+              // the ROLE_MARK glyph/colour, and a warning `◆` marking the
+              // session's hits (a hit tool row would otherwise share the
+              // tool role's own warning colour).
+              const isCursorMessage = line.messageIndex === cursorMessage
+              const mark = ROLE_MARK[line.role]
+              const label =
+                line.role === 'user' ? t('role-user') : line.role === 'tool' ? t('role-tool') : t('role-assistant')
+              const roleText = `${mark.glyph} ${label}${line.seq === undefined ? '' : ` #${line.seq}`}`
+              const timeText = line.at === undefined ? '' : ` · ${formatWhen(line.at)}`
+              const clipped = truncateWidth(`${roleText}${timeText}${line.isHit ? ' ◆' : ''}`, Math.max(0, columns - 2))
+              const hasVisibleHit = line.isHit && clipped.endsWith(' ◆')
+              const clippedBody = hasVisibleHit ? clipped.slice(0, -2) : clipped
+              const clippedRole = clippedBody.slice(0, Math.min(roleText.length, clippedBody.length))
+              const clippedTime = clippedBody.slice(clippedRole.length)
+              return (
+                <Box
+                  key={`h${lineAt}`}
+                  flexDirection="row"
+                  flexShrink={0}
+                  {...(isCursorMessage ? { backgroundColor: 'selectionBg' } : {})}
+                >
+                  <Text color={isCursorMessage ? 'suggestion' : 'subtle'}>{selectionMarker(isCursorMessage)}</Text>
+                  <Text color={mark.color}>{clippedRole}</Text>
+                  {clippedTime.length > 0 ? <Text dimColor>{clippedTime}</Text> : null}
+                  {hasVisibleHit ? <Text color="warning" bold> ◆</Text> : null}
+                </Box>
+              )
+            }
+            return (
+              // Body rows split indent from content so the hit spans can be
+              // painted per-segment: 'warning' bold highlights (the list's
+              // own accent) over plain spans that keep the reader's hierarchy
+              // — assistant bodies dim, user/tool bodies plain text.
+              <Box key={`b${lineAt}`} flexDirection="row" flexShrink={0}>
+                <Text dimColor={line.role === 'assistant'}>{line.bodyIndex === 0 ? '  ' : '    '}</Text>
+                <HighlightedText
+                  React={React}
+                  ui={ui}
+                  text={line.text}
+                  ranges={line.ranges}
+                  color="warning"
+                  width={previewBodyWidth}
+                  plainDim={line.role === 'assistant'}
+                />
+              </Box>
+            )
+          })}
+        </WheelBox>
+        <Box flexShrink={0}>
+          <Text color={status?.tone === 'error' ? 'error' : 'success'}>
+            {status === undefined
+              ? ' '
+              : ` ${status.tone === 'error' ? '✕' : '✔'} ${truncateWidth(status.text, Math.max(0, columns - 6))}`}
+          </Text>
+        </Box>
         <Box flexShrink={0}>
           <Text dimColor italic>
             {' '}
