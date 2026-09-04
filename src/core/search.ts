@@ -19,7 +19,10 @@
  * Pinyin matching (default on): a term made only of ASCII letters also
  * matches Chinese characters through their pinyin — both the full toneless
  * syllables (`zhangsan` → 张三) and the initials (`zs` → 张三) — on top of
- * the literal substring over the original text. The pinyin variant of a
+ * the literal substring over the original text. Full-reading matches must
+ * start at a syllable boundary, preventing a syllable tail from joining the
+ * next character's initial; initials do not cross ICU Chinese word
+ * boundaries. The pinyin variant of a
  * document is a fold just like the case fold (one CJK code point expands
  * to its readings; the same prefix tables map a hit back onto the original
  * character), built lazily per document and cached across keystrokes.
@@ -192,6 +195,8 @@ interface FoldedText {
   readonly cpStart: Uint32Array
   /** Original text length the fold was built from (staleness guard). */
   readonly sourceLength: number
+  /** Pinyin syllable boundaries; absent on the ordinary case fold. */
+  readonly segmentStarts?: Uint8Array
 }
 
 /** Build the fold of one text. */
@@ -286,6 +291,29 @@ function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): Pin
 
 function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
   const characters = [...text]
+  // Initials should describe one Chinese word, not an arbitrary pair of
+  // neighboring characters (`搜索` is one word, while `时搜` is two). Node's
+  // ICU segmenter is available on every supported runtime; the fallback keeps
+  // the old character-contiguous behavior if a minimal ICU build omits it.
+  const wordBoundaryBefore = new Uint8Array(characters.length)
+  try {
+    const Segmenter = Intl.Segmenter
+    if (Segmenter !== undefined) {
+      const utf16ToCp = new Map<number, number>()
+      let offset = 0
+      for (const [cp, char] of characters.entries()) {
+        utf16ToCp.set(offset, cp)
+        offset += char.length
+      }
+      const segmenter = new Segmenter('zh', { granularity: 'word' })
+      for (const part of segmenter.segment(text)) {
+        const cp = utf16ToCp.get(part.index)
+        if (cp !== undefined && cp > 0) wordBoundaryBefore[cp] = 1
+      }
+    }
+  } catch {
+    // An unavailable ICU locale must not disable pinyin search altogether.
+  }
   const cpStart = new Uint32Array(characters.length + 1)
   const allCum = new Uint32Array(characters.length + 1)
   const firstCum = new Uint32Array(characters.length + 1)
@@ -300,11 +328,24 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
   let firstUnits = 0
   let allInitUnits = 0
   let firstInitUnits = 0
+  const allStarts: number[] = []
+  const firstStarts: number[] = []
+  const markSegment = (starts: number[], start: number): void => {
+    starts[start] = 1
+  }
   for (let index = 0; index < characters.length; index++) {
     const char = characters[index]!
     cpStart[index] = utf16
     utf16 += char.length
     const readings = PINYIN_READINGS[char]
+    const previousIsTableChar = index > 0 && PINYIN_READINGS[characters[index - 1]!] !== undefined
+    const startsNewWord = wordBoundaryBefore[index] === 1 && previousIsTableChar && readings !== undefined
+    if (startsNewWord) {
+      allInit += ' '
+      firstInit += ' '
+      allInitUnits += 1
+      firstInitUnits += 1
+    }
     if (readings === undefined) {
       // Under sensitive matching a non-table character must fold to a form
       // the lowercase needle can NEVER hit: `pinyinNeedleOf` hands over a
@@ -324,17 +365,35 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
       allInit += literal
       firstInit += literal
       const units = literal.length
+      // Non-table text remains ordinary case-insensitive literal text. Each
+      // code point is a valid segment so words such as `auth` still match
+      // across their character boundaries.
+      markSegment(allStarts, allUnits)
+      markSegment(firstStarts, firstUnits)
       allUnits += units
       firstUnits += units
       allInitUnits += units
       firstInitUnits += units
     } else {
-      all += readings
-      allUnits += readings.length
+      let readingStart = allUnits
+      let readingAt = 0
+      for (;;) {
+        const next = readings.indexOf(' ', readingAt)
+        const reading = next === -1 ? readings.slice(readingAt) : readings.slice(readingAt, next)
+        all += reading
+        allUnits += reading.length
+        markSegment(allStarts, readingStart)
+        if (next === -1) break
+        all += ' '
+        allUnits += 1
+        readingStart = allUnits
+        readingAt = next + 1
+      }
       const space = readings.indexOf(' ')
       const firstReading = space === -1 ? readings : readings.slice(0, space)
       first += firstReading
       firstUnits += firstReading.length
+      markSegment(firstStarts, firstUnits - firstReading.length)
       // The initials folds take one letter per reading (all) and per
       // character (first-only chain).
       firstInit += firstReading[0]!
@@ -354,9 +413,14 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
     firstInitCum[index + 1] = firstInitUnits
   }
   cpStart[characters.length] = utf16
+  const segments = (starts: number[], length: number) => ({
+    segmentStarts: Uint8Array.from({ length: length + 1 }, (_, at) => starts[at] === 1 ? 1 : 0),
+  })
+  const allSegments = segments(allStarts, allUnits)
+  const firstSegments = segments(firstStarts, firstUnits)
   return {
-    allReadings: { folded: all, cumUnits: allCum, cpStart, sourceLength: text.length },
-    firstReading: { folded: first, cumUnits: firstCum, cpStart, sourceLength: text.length },
+    allReadings: { folded: all, cumUnits: allCum, cpStart, sourceLength: text.length, ...allSegments },
+    firstReading: { folded: first, cumUnits: firstCum, cpStart, sourceLength: text.length, ...firstSegments },
     allInitials: { folded: allInit, cumUnits: allInitCum, cpStart, sourceLength: text.length },
     firstInitials: { folded: firstInit, cumUnits: firstInitCum, cpStart, sourceLength: text.length },
     caseSensitive,
@@ -379,11 +443,39 @@ function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefine
  *  initials chains together, as ranges over the ORIGINAL text. */
 function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
   return [
-    ...rangesInFold(folds.allReadings, needle),
-    ...rangesInFold(folds.firstReading, needle),
+    ...rangesInPinyinFold(folds.allReadings, needle),
+    ...rangesInPinyinFold(folds.firstReading, needle),
     ...rangesInFold(folds.allInitials, needle),
     ...rangesInFold(folds.firstInitials, needle),
   ]
+}
+
+/** Match pinyin only at syllable boundaries. This prevents a query from
+ * taking the tail of one syllable and the head of the next (for example
+ * `is` in `shi sou`), while still allowing a prefix inside one syllable such
+ * as `zhang` in 张.
+ */
+function rangesInPinyinFold(fold: FoldedText, needle: string): [number, number][] {
+  const starts = fold.segmentStarts
+  if (starts === undefined) return rangesInFold(fold, needle)
+  const ranges: [number, number][] = []
+  let searchFrom = 0
+  for (;;) {
+    const found = fold.folded.indexOf(needle, searchFrom)
+    if (found === -1) break
+    const finish = found + needle.length
+    const startChar = charOfUnit(fold, found)
+    const endChar = charOfUnit(fold, finish - 1)
+    const startsAtSegment = starts[found] === 1
+    // Once a query starts at a syllable boundary it may continue through
+    // following syllables and stop at any prefix of the final one. The only
+    // forbidden shape is a query that starts in the middle of a syllable.
+    if (startsAtSegment) {
+      ranges.push([fold.cpStart[startChar]!, fold.cpStart[endChar + 1]!])
+    }
+    searchFrom = found + Math.max(1, needle.length)
+  }
+  return ranges
 }
 
 /** The code point a folded UTF-16 index belongs to (binary search). */

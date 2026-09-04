@@ -14,7 +14,7 @@
  * toggles the scope, Alt+R toggles regex matching, Alt+T cycles the time
  * window, ↑↓/PgUp/PgDn move, Esc backs out one layer (query, then screen).
  * Alt+P opens the session as a scrollable full-conversation reader anchored
- * on the selected hit — ↑↓/PgUp/PgDn/wheel scroll it, `n`/`N` walk the
+ * on the selected hit — ↑↓ step messages, PgUp/PgDn/wheel scroll it, `n`/`N` walk the
  * session's own hits, Alt+C copies the message under the cursor.
  * With an empty query the scene
  * lists recent sessions (most-recent-first, sessions with no conversation
@@ -42,6 +42,7 @@ import {
   jumpHit,
   messageAtLine,
   messageHeaderLine,
+  stepMessage,
   unitWeights,
   type PreviewLine,
 } from './preview.js'
@@ -464,7 +465,9 @@ export function FindScene(props: TuiSceneProps & {
           hit,
           message: messageHits[index]!,
           index,
-          more: isExpanded ? 0 : messageHits.length - shown,
+          // The remaining-count tail belongs to the final visible hit only;
+          // attaching it to every row repeats the same (+N) on the card.
+          more: !isExpanded && index === shown - 1 ? messageHits.length - shown : 0,
         })
       }
     }
@@ -678,9 +681,9 @@ export function FindScene(props: TuiSceneProps & {
           const entry = previewSession?.messages[messageAtLine(previewLines, previewCursor) ?? 0]
           if (entry !== undefined) copyMessage(entry)
         } else if (key.upArrow) {
-          setPreviewCursor(current => Math.max(0, Math.min(lastLine, current - 1)))
+          setPreviewCursor(current => stepMessage(previewLines, current, -1))
         } else if (key.downArrow) {
-          setPreviewCursor(current => Math.min(lastLine, current + 1))
+          setPreviewCursor(current => stepMessage(previewLines, current, 1))
         } else if (key.pageUp || key.pageDown) {
           const jump = Math.max(1, rows - PREVIEW_CHROME_LINES)
           setPreviewCursor(current => {
@@ -690,7 +693,7 @@ export function FindScene(props: TuiSceneProps & {
         } else if (plain && lower === 'n') {
           // Walk the session's own hits (`n` forward, Shift+n back). A
           // recent-session card has an empty hit table and no-ops silently;
-          // a table whose hits are exhausted answers with the boundary toast.
+          // a session's hit table is circular, so moving past either end wraps.
           const currentMessage = messageAtLine(previewLines, previewCursor) ?? 0
           const { total } = hitOrdinal(previewHitStarts, currentMessage)
           if (total > 0) {
@@ -746,8 +749,8 @@ export function FindScene(props: TuiSceneProps & {
       // Preview/copy/expand live on Alt+P / Alt+C / Alt+E ONLY. Bare letters
       // always type — a bare-key form fought the first keystroke of every
       // query on a real terminal and was removed in v0.1.2. Alt+P works on
-      // cards too (preview from the head of the conversation); Alt+C and
-      // Alt+E need a concrete hit and no-op on a card.
+      // cards too (preview from the head of the conversation); Alt+C needs a
+      // concrete hit, while Alt+E toggles every message hit on the card.
       if (altOnly && lower === 'p') {
         const row = selectedRow
         if (row !== undefined) {
@@ -765,8 +768,12 @@ export function FindScene(props: TuiSceneProps & {
       }
       if (altOnly && lower === 'e') {
         const row = selectedRow
-        if (row !== undefined && row.kind === 'message') {
-          const id = row.hit.session.id
+        if (row !== undefined) {
+          const id = row.kind === 'message' ? row.hit.session.id : row.session.id
+          // Recent-mode cards have no hit bundle, so there is nothing to
+          // expand. Result cards and their child rows share one session id.
+          const hasHits = row.kind === 'message' || (row.hits !== undefined && row.hits.some(entry => entry.kind === 'message'))
+          if (!hasHits) return
           setExpanded(current => {
             const next = new Set(current)
             if (next.has(id)) next.delete(id)

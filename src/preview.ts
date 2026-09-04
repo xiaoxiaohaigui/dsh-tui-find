@@ -154,14 +154,38 @@ export function jumpHit(
 ): number | undefined {
   const count = hitStartLines.length
   if (count === 0) return undefined
-  // Start one message past the cursor in the requested direction; a cursor
-  // outside the message range clamps to the range edge, so "next" from the
-  // head still finds the first hit and "previous" from the tail the last.
-  let index = Math.min(Math.max(currentMessageIndex, -1), count - 1) + direction
-  while (index >= 0 && index < count && (hitStartLines[index] ?? -1) < 0) index += direction
-  if (index < 0 || index >= count) return undefined
-  const start = hitStartLines[index] ?? -1
-  return start >= 0 ? start : undefined
+  // Walk at most one complete message cycle. Wrapping is intentional: the
+  // reader's n/N vocabulary is a navigator, not a bounded search cursor.
+  const current = Math.min(Math.max(currentMessageIndex, -1), count - 1)
+  for (let step = 1; step <= count; step++) {
+    const raw = current + direction * step
+    const index = ((raw % count) + count) % count
+    const start = hitStartLines[index] ?? -1
+    if (start >= 0) return start
+  }
+  return undefined
+}
+
+/** The header line of the adjacent message, used by preview arrow keys. */
+export function stepMessage(
+  lines: readonly PreviewLine[],
+  currentLine: number,
+  direction: 1 | -1,
+): number {
+  if (lines.length === 0) return 0
+  const currentMessage = messageAtLine(lines, currentLine) ?? 0
+  if (direction > 0) {
+    for (let at = Math.max(0, currentLine + 1); at < lines.length; at++) {
+      const line = lines[at]
+      if (line !== undefined && line.kind === 'header' && line.messageIndex > currentMessage) return at
+    }
+    return lines.length - 1
+  }
+  for (let at = Math.min(lines.length - 1, currentLine - 1); at >= 0; at--) {
+    const line = lines[at]
+    if (line !== undefined && line.kind === 'header' && line.messageIndex < currentMessage) return at
+  }
+  return 0
 }
 
 /**

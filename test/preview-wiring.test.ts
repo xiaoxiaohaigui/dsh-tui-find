@@ -185,7 +185,10 @@ describe('preview scene wiring', () => {
       expect(harness.latest()).toMatch(/Copied\s*15\s*chars/)
       harness.send('N')
       await waitFor()
-      expect(harness.latest()).toMatch(/more\s*hits/)
+      harness.send('\u001bc')
+      await waitFor()
+      // N wraps from the first hit back to the last hit.
+      expect(harness.latest()).toMatch(/Copied\s*25\s*chars/)
     } finally {
       harness.dispose()
     }
@@ -218,6 +221,40 @@ describe('preview scene wiring', () => {
       harness.send('\u001bc')
       await waitFor()
       expect(harness.latest().trim()).toMatch(/7$/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('expands all message hits from the selected session card', async () => {
+    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four']))
+    try {
+      // The card initially shows three child hit rows; Alt+E on the card must
+      // expand the fourth without first moving the selection to a child row.
+      expect(harness.latest()).not.toContain('needle four')
+      harness.send('\u001be')
+      await waitFor()
+      // Move into the newly appended row so it enters the fitted viewport.
+      harness.send('\u001b[B')
+      harness.send('\u001b[B')
+      harness.send('\u001b[B')
+      harness.send('\u001b[B')
+      await waitFor()
+      expect(harness.all()).toContain('four')
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('shows the collapsed remaining count only on the final visible hit', async () => {
+    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four', 'needle five']))
+    try {
+      const frame = harness.latest()
+      const count = (frame.match(/\(\+2\)/g) ?? []).length
+      expect(count).toBe(1)
+      expect(frame).toMatch(/needlethree.*\(\+2\)/)
+      expect(frame).not.toMatch(/needleone.*\(\+2\)/)
+      expect(frame).not.toMatch(/needletwo.*\(\+2\)/)
     } finally {
       harness.dispose()
     }

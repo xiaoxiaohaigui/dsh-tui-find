@@ -7,6 +7,7 @@ import {
   messageAtLine,
   messageHeaderLine,
   previewWindow,
+  stepMessage,
 } from '../src/preview.js'
 
 const message = (
@@ -203,11 +204,11 @@ describe('jumpHit', () => {
     expect(jumpHit(table, 2, -1)).toBe(3)
   })
 
-  it('returns undefined past the ends', () => {
-    expect(jumpHit(table, 4, 1)).toBeUndefined()
-    expect(jumpHit(table, 1, -1)).toBeUndefined()
-    expect(jumpHit(table, 99, 1)).toBeUndefined()
-    expect(jumpHit(table, -1, -1)).toBeUndefined()
+  it('wraps around at both ends', () => {
+    expect(jumpHit(table, 4, 1)).toBe(3)
+    expect(jumpHit(table, 1, -1)).toBe(9)
+    expect(jumpHit(table, 99, 1)).toBe(3)
+    expect(jumpHit(table, -1, -1)).toBe(9)
     expect(jumpHit([], 0, 1)).toBeUndefined()
   })
 
@@ -250,5 +251,21 @@ describe('previewWindow', () => {
 
   it('answers empty line lists', () => {
     expect(previewWindow(0, 0, 10, 0)).toEqual({ start: 0, end: 0 })
+  })
+})
+
+describe('stepMessage', () => {
+  const lines = buildPreviewLines([message('one\ntwo'), message('three'), message('four\nfive')], new Set(), 20)
+
+  it('moves one message at a time regardless of wrapped body lines', () => {
+    expect(stepMessage(lines, 0, 1)).toBe(3)
+    expect(stepMessage(lines, 1, 1)).toBe(3)
+    expect(stepMessage(lines, 3, 1)).toBe(5)
+    expect(stepMessage(lines, 4, -1)).toBe(0)
+  })
+
+  it('clamps at the conversation ends', () => {
+    expect(stepMessage(lines, 0, -1)).toBe(0)
+    expect(stepMessage(lines, 5, 1)).toBe(7)
   })
 })

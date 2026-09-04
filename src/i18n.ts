@@ -128,8 +128,8 @@ export const dict = {
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
   'hint-preview': {
-    zh: '**↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制 · **Esc** 返回',
-    en: '**↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy · **Esc** back',
+    zh: '**↑↓** 逐段 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制 · **Esc** 返回',
+    en: '**↑↓** step messages · **n/N** hit · **Enter** resume · **Alt+C** copy · **Esc** back',
   },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',
@@ -185,7 +185,7 @@ export const dict = {
   'help-list-esc': { zh: '清空查询 / 退出', en: 'Clear the query / exit' },
   'help-list-help': { zh: '打开 / 关闭本帮助', en: 'Toggle this help' },
   'help-list-global': { zh: '全局打开 /find（shortcut 配置可改键）', en: 'Open /find globally (remap via shortcut config)' },
-  'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
+  'help-preview-scroll': { zh: '按消息段滚动', en: 'Step through messages' },
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
   'help-preview-resume': { zh: '恢复该会话（进入确认）', en: 'Resume this session (confirm)' },

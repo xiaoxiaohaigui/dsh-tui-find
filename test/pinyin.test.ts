@@ -67,6 +67,16 @@ describe('searchSessions pinyin matching', () => {
     expect(flat(searchSessions(pool, 'zs', P))).toEqual([['张三的会话', '[[0,2]]']])
   })
 
+  it('does not join a syllable tail to the next character initial', () => {
+    // The suffix of 时 ("i") must not combine with the initial of 搜
+    // ("s"); only a syllable-start query is eligible on the full-reading
+    // folds. Initials are also constrained to one segmented Chinese word:
+    // 搜索 is one word, while 时|搜 is two.
+    expect(searchSessions([make('时搜')], 'is', P)).toEqual([])
+    expect(searchSessions([make('时搜')], 'ss', P)).toEqual([])
+    expect(flat(searchSessions([make('搜索')], 'ss', P))).toEqual([['搜索', '[[0,2]]']])
+  })
+
   it('maps a pinyin highlight onto the original characters, not the fold', () => {
     // 'zhang' hits 张 through pinyin AND the literal "zhang" in the text —
     // both ranges land on original-string offsets and stay disjoint.
