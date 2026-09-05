@@ -1,6 +1,6 @@
 {
   "name": "dsh-tui-find",
-  "version": "0.2.8",
+  "version": "0.3.0",
   "description": "Cross-session full-text search for dsh-TUI — /find over all local dsh session logs (zstd frame chains and plain JSONL), read-only.",
   "type": "module",
   "main": "dist/main.js",
