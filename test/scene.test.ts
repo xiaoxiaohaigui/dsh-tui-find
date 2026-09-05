@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import { selectionMarker, wheelStep } from '../src/scene.js'
+import { selectionMarker, wheelStep } from '../src/find-types.js'
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
 import { mount, sessionWithMessages, waitFor } from './harness.js'
