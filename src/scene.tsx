@@ -21,8 +21,10 @@
  * lists recent sessions (most-recent-first, sessions with no conversation
  * excluded, like the browser's empty-session discipline) so /find opens as
  * a live browser, not a dead prompt. Results stream in while the sweep is
- * still running: every session the scanner resolves joins the list at once
- * (recency-ordered), with the header counting the sweep's progress.
+ * still running: sessions the scanner resolves join the list in
+ * recency-ordered bursts through a doubling flush gap (PARTIAL_FLUSH_MS —
+ * a per-arrival flush would re-search the growing list once per session),
+ * with the header counting the sweep's progress per arrival.
  *
  * All React usage goes through the HOST-injected `React` and `ui` kit —
  * the plugin never imports its own React copy (see scenes.ts discipline).
@@ -95,6 +97,14 @@ const PREVIEW_HITS = 3
  *  + hint. The scroll region gets rows minus these; PgUp/PgDn page by the
  *  same. */
 const PREVIEW_CHROME_LINES = 5
+
+/** First gap between progressive-sweep list flushes, doubling per flush up
+ *  to {@link PARTIAL_FLUSH_MAX_MS} — see the sweep wiring in the mount
+ *  effect for why the gap grows instead of staying fixed. */
+const PARTIAL_FLUSH_MS = 100
+/** Ceiling of the doubling flush gap: the streamed list never goes a whole
+ *  second without an update, however long the sweep runs. */
+const PARTIAL_FLUSH_MAX_MS = 800
 
 /** Role glyph and colour for a preview entry, the host preview's vocabulary
  *  (user ❯, assistant ✦) plus a tool marker for tool-call rows. */
@@ -385,6 +395,8 @@ export function FindScene(props: TuiSceneProps & {
     // final setSessions below replaces — not duplicates — the accumulation
     // and the search-side per-object fold caches stay warm.
     const partial: ScannedSession[] = []
+    let nextFlushAt = 0
+    let flushGap = PARTIAL_FLUSH_MS
     const scanOptions = {
       indexTools: config.indexTools,
       indexThinking: config.indexThinking,
@@ -396,7 +408,18 @@ export function FindScene(props: TuiSceneProps & {
         partial.push(session)
         // Arrivals are enumeration order; interleaving in the scanner's own
         // recency order keeps the partial list MRU-sorted so the completed
-        // sweep never reshuffles what is already on screen.
+        // sweep never reshuffles what is already on screen. A cold sweep
+        // delivers each arrival in its own event-loop turn, and every flush
+        // hands the memos a fresh `sessions` identity — one full search over
+        // the accumulated prefix, in query mode. So the flush interval
+        // doubles with the prefix (the geometric-growth argument): the
+        // sweep's total re-search cost stays proportional to a single final
+        // search instead of the session count squared, while the header's
+        // progress ticks stay per-arrival.
+        const now = Date.now()
+        if (now < nextFlushAt) return
+        nextFlushAt = now + flushGap
+        flushGap = Math.min(flushGap * 2, PARTIAL_FLUSH_MAX_MS)
         setSessions([...partial].sort(compareSessionRecency))
       },
     }

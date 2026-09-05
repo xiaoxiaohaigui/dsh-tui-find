@@ -282,51 +282,104 @@ interface PinyinFolds {
   readonly firstReading: FoldedText
   readonly allInitials: FoldedText
   readonly firstInitials: FoldedText
+}
+
+const pinyinFoldCache = new WeakMap<object, PinyinFoldEntry>()
+
+/** One owner's cached pinyin folds. `folds` is undefined when the text holds
+ *  no table character at all and nothing was built — the length/sensitivity
+ *  ride the entry so that negative result validates exactly like a positive
+ *  one instead of rebuilding on every probe. */
+interface PinyinFoldEntry {
+  readonly folds: PinyinFolds | undefined
+  readonly sourceLength: number
   readonly caseSensitive: boolean
 }
 
-const pinyinFoldCache = new WeakMap<object, PinyinFolds>()
-
-function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): PinyinFolds {
+function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): PinyinFolds | undefined {
   const cached = pinyinFoldCache.get(owner)
   if (
     cached !== undefined &&
-    cached.allReadings.sourceLength === text.length &&
+    cached.sourceLength === text.length &&
     cached.caseSensitive === caseSensitive
   ) {
-    return cached
+    return cached.folds
   }
   const built = buildPinyinFolds(text, caseSensitive)
-  pinyinFoldCache.set(owner, built)
+  pinyinFoldCache.set(owner, { folds: built, sourceLength: text.length, caseSensitive })
   return built
 }
 
-function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
+/**
+ * The zh word segmenter, built once per process: `new` resolves ICU locale
+ * data on every call, which was a large slice of the per-document fold
+ * build. `null` means unavailable — a minimal ICU build without the locale
+ * must not disable pinyin search altogether, it only falls back to the
+ * character-contiguous initials behavior.
+ */
+let zhWordSegmenter: Intl.Segmenter | null | undefined
+
+function zhWordSegmenterOf(): Intl.Segmenter | null {
+  if (zhWordSegmenter === undefined) {
+    try {
+      const Segmenter = Intl.Segmenter
+      zhWordSegmenter = Segmenter === undefined ? null : new Segmenter('zh', { granularity: 'word' })
+    } catch {
+      zhWordSegmenter = null
+    }
+  }
+  return zhWordSegmenter
+}
+
+function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | undefined {
   const characters = [...text]
+  // First pass: the shared per-code-point UTF-16 start table, plus whether
+  // the text can use any of the expensive machinery at all. A document
+  // without a single table character has no readings to match — its
+  // insensitive folds would hold nothing but the lowercased literal text
+  // the plain case fold already covers, and its sensitive folds would hold
+  // only uppercase forms a lowercase needle can never hit — so no folds are
+  // built and the caller scans the case fold (or nothing) instead. And a
+  // word boundary only matters where one table character directly follows
+  // another (the `startsNewWord` gate below demands exactly that), so
+  // anything without such a pair skips segmentation entirely.
+  const cpStart = new Uint32Array(characters.length + 1)
+  let utf16 = 0
+  let hasTable = false
+  let hasTablePair = false
+  let previousIsTable = false
+  for (let index = 0; index < characters.length; index++) {
+    const char = characters[index]!
+    cpStart[index] = utf16
+    utf16 += char.length
+    const isTable = PINYIN_READINGS[char] !== undefined
+    if (isTable) {
+      hasTable = true
+      if (previousIsTable) hasTablePair = true
+    }
+    previousIsTable = isTable
+  }
+  cpStart[characters.length] = utf16
+  if (!hasTable) return undefined
+
   // Initials should describe one Chinese word, not an arbitrary pair of
   // neighboring characters (`搜索` is one word, while `时搜` is two). Node's
   // ICU segmenter is available on every supported runtime; the fallback keeps
   // the old character-contiguous behavior if a minimal ICU build omits it.
   const wordBoundaryBefore = new Uint8Array(characters.length)
-  try {
-    const Segmenter = Intl.Segmenter
-    if (Segmenter !== undefined) {
-      const utf16ToCp = new Map<number, number>()
-      let offset = 0
-      for (const [cp, char] of characters.entries()) {
-        utf16ToCp.set(offset, cp)
-        offset += char.length
-      }
-      const segmenter = new Segmenter('zh', { granularity: 'word' })
+  if (hasTablePair) {
+    const segmenter = zhWordSegmenterOf()
+    if (segmenter !== null) {
+      // Segments arrive in ascending UTF-16 order at code point boundaries,
+      // so a cursor over the ascending cpStart table maps each segment start
+      // to its code point — no per-document utf16→code-point map needed.
+      let cursor = 0
       for (const part of segmenter.segment(text)) {
-        const cp = utf16ToCp.get(part.index)
-        if (cp !== undefined && cp > 0) wordBoundaryBefore[cp] = 1
+        while (cursor < characters.length && cpStart[cursor]! < part.index) cursor += 1
+        if (cursor > 0 && cpStart[cursor] === part.index) wordBoundaryBefore[cursor] = 1
       }
     }
-  } catch {
-    // An unavailable ICU locale must not disable pinyin search altogether.
   }
-  const cpStart = new Uint32Array(characters.length + 1)
   const allCum = new Uint32Array(characters.length + 1)
   const firstCum = new Uint32Array(characters.length + 1)
   const allInitCum = new Uint32Array(characters.length + 1)
@@ -335,7 +388,6 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
   let first = ''
   let allInit = ''
   let firstInit = ''
-  let utf16 = 0
   let allUnits = 0
   let firstUnits = 0
   let allInitUnits = 0
@@ -347,8 +399,6 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
   }
   for (let index = 0; index < characters.length; index++) {
     const char = characters[index]!
-    cpStart[index] = utf16
-    utf16 += char.length
     const readings = PINYIN_READINGS[char]
     const previousIsTableChar = index > 0 && PINYIN_READINGS[characters[index - 1]!] !== undefined
     const startsNewWord = wordBoundaryBefore[index] === 1 && previousIsTableChar && readings !== undefined
@@ -424,7 +474,6 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
     allInitCum[index + 1] = allInitUnits
     firstInitCum[index + 1] = firstInitUnits
   }
-  cpStart[characters.length] = utf16
   const segments = (starts: number[], length: number) => ({
     segmentStarts: Uint8Array.from({ length: length + 1 }, (_, at) => starts[at] === 1 ? 1 : 0),
   })
@@ -435,7 +484,6 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds {
     firstReading: { folded: first, cumUnits: firstCum, cpStart, sourceLength: text.length, ...firstSegments },
     allInitials: { folded: allInit, cumUnits: allInitCum, cpStart, sourceLength: text.length },
     firstInitials: { folded: firstInit, cumUnits: firstInitCum, cpStart, sourceLength: text.length },
-    caseSensitive,
   }
 }
 
@@ -757,7 +805,10 @@ export function searchSessions(
   // scan the pinyin folds instead of the case fold — the full fold already
   // contains the folded non-table text, so the case fold would only repeat
   // the same occurrences — and it is built lazily so a query of Chinese
-  // terms never pays for it (both folds cache across keystrokes).
+  // terms never pays for it (both folds cache across keystrokes). A
+  // document without table characters builds no pinyin folds at all: the
+  // case fold stands in for them on the insensitive path, and the
+  // sensitive path gains nothing from them (see buildPinyinFolds).
   const pinyinOn = options.pinyin === true
   const rangesOf = (text: string, owner: object): [number, number][] => {
     if (pattern !== undefined) return regexRanges(pattern, text)
@@ -766,10 +817,11 @@ export function searchSessions(
       for (const term of terms) {
         const termRanges = matchRanges(text, term, true)
         const pinyinNeedle = pinyinOn ? pinyinNeedleOf(term, true) : undefined
-        const extended =
-          pinyinNeedle === undefined
-            ? termRanges
-            : [...termRanges, ...pinyinRanges(pinyinFoldsOf(owner, text, true), pinyinNeedle)]
+        let extended = termRanges
+        if (pinyinNeedle !== undefined) {
+          const folds = pinyinFoldsOf(owner, text, true)
+          if (folds !== undefined) extended = [...termRanges, ...pinyinRanges(folds, pinyinNeedle)]
+        }
         if (extended.length === 0) return []
         for (const range of extended) matches.push(range)
       }
@@ -781,10 +833,14 @@ export function searchSessions(
       }
       for (const needle of needles) {
         const pinyinNeedle = pinyinOn ? pinyinNeedleOf(needle, false) : undefined
-        const needleRanges =
-          pinyinNeedle === undefined
-            ? rangesInFold(caseFold(), needle)
-            : pinyinRanges(pinyinFoldsOf(owner, text, false), pinyinNeedle)
+        let needleRanges: [number, number][]
+        if (pinyinNeedle === undefined) {
+          needleRanges = rangesInFold(caseFold(), needle)
+        } else {
+          const folds = pinyinFoldsOf(owner, text, false)
+          needleRanges =
+            folds === undefined ? rangesInFold(caseFold(), needle) : pinyinRanges(folds, pinyinNeedle)
+        }
         if (needleRanges.length === 0) return []
         for (const range of needleRanges) matches.push(range)
       }
