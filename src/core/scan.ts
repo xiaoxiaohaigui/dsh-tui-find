@@ -75,6 +75,16 @@ export interface ScanOptions extends Partial<ExtractOptions> {
   readonly signal?: AbortSignal | undefined
   /** Progress callback, invoked between files. */
   readonly onProgress?: ((progress: ScanProgress) => void) | undefined
+  /**
+   * Incremental-delivery callback: invoked between files, once per resolved
+   * session (cache hits included, undecodable/skipped logs excluded), in
+   * sweep order — which is ENUMERATION order, not the MRU order the final
+   * array is sorted into. Each callback hands over the exact object the
+   * final result array holds, so a consumer accumulating callbacks can
+   * render progressively without losing the search-side per-object fold
+   * caches when the completed sweep replaces its accumulation.
+   */
+  readonly onSession?: ((session: ScannedSession) => void) | undefined
 }
 
 export interface ScanProgress {
@@ -619,6 +629,7 @@ export class SessionScanner {
       }
       results.push(session)
       progress.resolved += 1
+      options.onSession?.(session)
       options.onProgress?.({ ...progress })
       if (index % 8 === 0) await yieldToLoop()
     }
@@ -641,16 +652,25 @@ export class SessionScanner {
     // are contained inside and never fail the sweep.
     this.syncJournal()
 
-    return results.sort(
-      (left, right) =>
-        right.modifiedAt - left.modifiedAt ||
-        (right.header.createdAt ?? 0) - (left.header.createdAt ?? 0) ||
-        (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-    )
+    return results.sort(compareSessionRecency)
   }
 
   /** Entries currently held (diagnostics only; no liveness implied). */
   get size(): number {
     return this.cache.size
   }
+}
+
+/** Most-recent-first comparator — the scanner's result order: modifiedAt
+ *  descending, then createdAt descending, then id ascending as the stable
+ *  tiebreak. Exported because a consumer accumulating
+ *  {@link ScanOptions.onSession} callbacks (the scene's progressive first
+ *  sweep) must interleave the arrivals in this SAME order, so the partial
+ *  display never reshuffles when the completed sweep replaces it. */
+export function compareSessionRecency(left: ScannedSession, right: ScannedSession): number {
+  return (
+    right.modifiedAt - left.modifiedAt ||
+    (right.header.createdAt ?? 0) - (left.header.createdAt ?? 0) ||
+    (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+  )
 }

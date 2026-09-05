@@ -272,3 +272,50 @@ describe('searchSessions multi-term AND', () => {
     expect(flatHits(second)[0]!.ranges).toEqual([[0, 4], [14, 19]])
   })
 })
+
+describe('title-only matching', () => {
+  it('searches title documents alone — message hits disappear', () => {
+    const pool = [
+      make('unused body', { title: 'auth retry session' }),
+      make('auth retry body', { title: 'unrelated title' }),
+    ]
+    expect(searchSessions(pool, 'auth', { scope: 'all' })).toHaveLength(2)
+    const titleOnly = searchSessions(pool, 'auth', { scope: 'all', titleOnly: true })
+    expect(titleOnly).toHaveLength(1)
+    expect(titleOnly[0]!.hits).toHaveLength(1)
+    expect(titleOnly[0]!.hits[0]!.kind).toBe('title')
+    expect(titleOnly[0]!.hits[0]!.ranges).toEqual([[0, 4]])
+    expect(titleOnly[0]!.total).toBe(1)
+  })
+
+  it('cannot match a session without an indexed title (display fallback is not content)', () => {
+    const untitled = make('auth in body')
+    expect(searchSessions([untitled], 'auth', { scope: 'all' })).toHaveLength(1)
+    expect(searchSessions([untitled], 'auth', { scope: 'all', titleOnly: true })).toHaveLength(0)
+  })
+
+  it('keeps the per-document AND inside the title', () => {
+    const both = make('auth elsewhere', { title: 'auth retry notes' })
+    const split = make('retry here', { title: 'auth notes' })
+    const hits = searchSessions([both, split], 'auth retry', { scope: 'all', titleOnly: true })
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.session).toBe(both)
+    expect(hits[0]!.hits[0]!.ranges).toEqual([[0, 4], [5, 10]])
+  })
+
+  it('extends pinyin and regex matching to the title', () => {
+    const chinese = make('nothing here', { title: '重庆调研' })
+    const pinyin = searchSessions([chinese], 'chongqing', { scope: 'all', titleOnly: true, pinyin: true })
+    expect(pinyin).toHaveLength(1)
+    expect(pinyin[0]!.hits[0]!.ranges).toEqual([[0, 2]])
+    const patterned = make('plain body', { title: 'auth-retry v2' })
+    const regex = searchSessions([patterned], 'v\\d', { scope: 'all', titleOnly: true, regex: true })
+    expect(regex).toHaveLength(1)
+    expect(regex[0]!.hits[0]!.ranges).toEqual([[11, 13]])
+    // In full mode the same session still matches - through the title (the
+    // body 'plain body' carries no match), with the title as the only hit.
+    const full = searchSessions([patterned], 'v\\d', { scope: 'all', regex: true })
+    expect(full).toHaveLength(1)
+    expect(full[0]!.hits.map(hit => hit.kind)).toEqual(['title'])
+  })
+})

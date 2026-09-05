@@ -95,6 +95,14 @@ function section(): TuiSettingsSection {
         kind: 'boolean',
       },
       {
+        path: ['titleOnly'],
+        label: 'Title-only search',
+        descriptions: zh('仅搜索标题'),
+        hint: 'Match session titles only — messages are not searched (Alt+N toggles it live; default off)',
+        hintDescriptions: zh('只匹配会话标题——消息正文不参与搜索（场景内 Alt+N 实时切换；默认关闭）'),
+        kind: 'boolean',
+      },
+      {
         path: ['indexTools'],
         label: 'Index tool calls',
         descriptions: zh('索引工具调用'),
@@ -183,6 +191,7 @@ export function registerSettingsSection(
         caseSensitive: z.boolean().default(resolved.caseSensitive),
         regex: z.boolean().default(resolved.regex),
         pinyin: z.boolean().default(resolved.pinyin),
+        titleOnly: z.boolean().default(resolved.titleOnly),
         indexTools: z.boolean().default(resolved.indexTools),
         indexThinking: z.boolean().default(resolved.indexThinking),
         sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),
@@ -225,6 +234,7 @@ type ConfigValue = {
   caseSensitive?: boolean
   regex?: boolean
   pinyin?: boolean
+  titleOnly?: boolean
   indexTools?: boolean
   indexThinking?: boolean
   sessionRoot?: string

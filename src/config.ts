@@ -96,6 +96,9 @@ export type Config = {
   /** Match letter-only query terms against Chinese characters through
    *  their pinyin (full toneless syllables and initials). Default ON. */
   pinyin?: boolean
+  /** Restrict matching to session titles (messages are not searched).
+   *  Alt+N toggles it live in the scene. Default OFF. */
+  titleOnly?: boolean
   /** Index tool-call summaries (`[name] arguments`). Default OFF. */
   indexTools?: boolean
   /** Index assistant thinking text. Default OFF (noisy + private). */
@@ -120,6 +123,7 @@ export const Config: Schemastery<Config> = z.object({
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
   pinyin: z.boolean().default(true),
+  titleOnly: z.boolean().default(false),
   indexTools: z.boolean().default(false),
   indexThinking: z.boolean().default(false),
   sessionRoot: z.string().required(false),
@@ -135,6 +139,7 @@ export interface ResolvedConfig {
   readonly caseSensitive: boolean
   readonly regex: boolean
   readonly pinyin: boolean
+  readonly titleOnly: boolean
   readonly indexTools: boolean
   readonly indexThinking: boolean
   readonly sessionRoot: string | undefined
@@ -154,6 +159,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,
     pinyin: value.pinyin !== false,
+    titleOnly: value.titleOnly === true,
     indexTools: value.indexTools === true,
     indexThinking: value.indexThinking === true,
     sessionRoot:

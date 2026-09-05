@@ -26,9 +26,9 @@ describe('helpSections', () => {
     ])
   })
 
-  it('carries the full key inventory: 13 list rows, 6 preview rows, 3 mouse rows', () => {
+  it('carries the full key inventory: 14 list rows, 6 preview rows, 3 mouse rows', () => {
     const sections = helpSections(100)
-    expect(sections.map(section => section.rows.length)).toEqual([13, 6, 3])
+    expect(sections.map(section => section.rows.length)).toEqual([14, 6, 3])
   })
 
   it('keeps the keys column language-free while actions localize', () => {
@@ -46,7 +46,7 @@ describe('helpSections', () => {
   it('spells the key combos the way the scene and hints do', () => {
     setLangOverride('en')
     const keys = allKeys(helpSections(100))
-    for (const combo of ['<char>', 'Tab', 'Alt+R', 'Alt+T', 'Alt+P', 'Alt+C', 'Alt+E', 'Enter', '↑↓', 'PgUp/PgDn', 'Esc', 'Alt+H', 'Alt+F', 'n/N', 'Click', 'Hover', 'Wheel']) {
+    for (const combo of ['<char>', 'Tab', 'Alt+R', 'Alt+T', 'Alt+N', 'Alt+P', 'Alt+C', 'Alt+E', 'Enter', '↑↓', 'PgUp/PgDn', 'Esc', 'Alt+H', 'Alt+F', 'n/N', 'Click', 'Hover', 'Wheel']) {
       expect(keys).toContain(combo)
     }
   })

@@ -84,8 +84,11 @@ export const dict = {
   'time-30d': { zh: '近 30 天', en: 'Last 30 days' },
   'time-switched': { zh: '时间范围：{{range}}', en: 'Time range: {{range}}' },
   'badge-regex': { zh: '正则', en: 'regex' },
+  'badge-title-only': { zh: '标题', en: 'titles' },
   'regex-on': { zh: '正则匹配：开', en: 'Regex matching: on' },
   'regex-off': { zh: '正则匹配：关', en: 'Regex matching: off' },
+  'title-only-on': { zh: '标题限定：开（仅搜索会话标题）', en: 'Title-only search: on (session titles only)' },
+  'title-only-off': { zh: '标题限定：关（标题与内容都搜索）', en: 'Title-only search: off (titles and content)' },
   'regex-invalid': { zh: ' 无效的正则表达式', en: ' Invalid regular expression' },
   'scanning': { zh: '扫描中 {{resolved}}/{{total}}…', en: 'Scanning {{resolved}}/{{total}}…' },
   'scanning-initial': { zh: '扫描中…', en: 'Scanning…' },
@@ -124,6 +127,7 @@ export const dict = {
   'hint-seg-copy': { zh: 'Alt+C 复制', en: 'Alt+C copy' },
   'hint-seg-expand': { zh: 'Alt+E 展开', en: 'Alt+E expand' },
   'hint-seg-regex': { zh: 'Alt+R 正则', en: 'Alt+R regex' },
+  'hint-seg-title': { zh: 'Alt+N 标题', en: 'Alt+N titles' },
   'hint-seg-time': { zh: 'Alt+T 时间', en: 'Alt+T time' },
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
@@ -141,7 +145,6 @@ export const dict = {
   // n/N jump feedback in the reader's status row: the 1-based ordinal of
   // the hit just landed on, over the session's hit total.
   'preview-hit-jump': { zh: '命中 {{index}}/{{total}}', en: 'Hit {{index}}/{{total}}' },
-  'preview-hit-end': { zh: '没有更多命中', en: 'No more hits' },
 
   // ── resume confirm ───────────────────────────────────────────────────
   'confirm-title': { zh: '恢复该会话？', en: 'Resume this session?' },
@@ -176,6 +179,7 @@ export const dict = {
   'help-list-scope': { zh: '切换范围（本仓库 / 全部会话）', en: 'Toggle scope (this repo / all sessions)' },
   'help-list-regex': { zh: '切换正则匹配', en: 'Toggle regex matching' },
   'help-list-time': { zh: '切换时间范围', en: 'Cycle the time window' },
+  'help-list-title-only': { zh: '切换标题限定（仅搜索会话标题）', en: 'Toggle title-only search (session titles only)' },
   'help-list-preview': { zh: '打开只读预览', en: 'Open the read-only preview' },
   'help-list-copy': { zh: '复制选中的命中消息', en: 'Copy the selected hit message' },
   'help-list-expand': { zh: '展开 / 收起全部命中', en: 'Expand / collapse all hits' },

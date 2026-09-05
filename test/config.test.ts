@@ -38,6 +38,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       caseSensitive: false,
       regex: false,
       pinyin: true,
+      titleOnly: false,
       indexTools: false,
       indexThinking: false,
       sessionRoot: undefined,
@@ -45,6 +46,13 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       lang: 'auto',
       shortcut: 'alt+f',
     })
+  })
+
+  it('titleOnly defaults off and only an explicit true enables it', () => {
+    expect(resolveConfig({}).titleOnly).toBe(false)
+    expect(resolveConfig({ titleOnly: true }).titleOnly).toBe(true)
+    expect(resolveConfig({ titleOnly: false }).titleOnly).toBe(false)
+    expect(resolveConfig({ titleOnly: 'yes' as never }).titleOnly).toBe(false)
   })
 
   it('the schemastery schema default resolves to the same shape', () => {

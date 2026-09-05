@@ -80,6 +80,7 @@ export function helpSections(columns: number): readonly HelpSection[] {
         { keys: 'Tab', action: t('help-list-scope') },
         { keys: 'Alt+R', action: t('help-list-regex') },
         { keys: 'Alt+T', action: t('help-list-time') },
+        { keys: 'Alt+N', action: t('help-list-title-only') },
         { keys: 'Alt+P', action: t('help-list-preview') },
         { keys: 'Alt+C', action: t('help-list-copy') },
         { keys: 'Alt+E', action: t('help-list-expand') },

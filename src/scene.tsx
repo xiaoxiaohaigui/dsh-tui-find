@@ -12,14 +12,17 @@
  * query). Preview/copy/expand moved to Alt+P / Alt+C / Alt+E exclusively;
  * the host reports Alt as `key.meta`. Enter opens the resume confirm, Tab
  * toggles the scope, Alt+R toggles regex matching, Alt+T cycles the time
- * window, ↑↓/PgUp/PgDn move, Esc backs out one layer (query, then screen).
+ * window, Alt+N toggles title-only search, ↑↓/PgUp/PgDn move, Esc backs out
+ * one layer (query, then screen).
  * Alt+P opens the session as a scrollable full-conversation reader anchored
  * on the selected hit — ↑↓ step messages, PgUp/PgDn/wheel scroll it, `n`/`N` walk the
  * session's own hits, Alt+C copies the message under the cursor.
  * With an empty query the scene
  * lists recent sessions (most-recent-first, sessions with no conversation
  * excluded, like the browser's empty-session discipline) so /find opens as
- * a live browser, not a dead prompt.
+ * a live browser, not a dead prompt. Results stream in while the sweep is
+ * still running: every session the scanner resolves joins the list at once
+ * (recency-ordered), with the header counting the sweep's progress.
  *
  * All React usage goes through the HOST-injected `React` and `ui` kit —
  * the plugin never imports its own React copy (see scenes.ts discipline).
@@ -33,7 +36,7 @@ import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { copyToClipboard } from './clipboard.js'
 import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
-import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
+import { compareSessionRecency, type ScanProgress, type ScannedSession, type SessionScanner } from './core/scan.js'
 import { compileRegex, searchSessions, sessionCwdMatches, type MessageHit, type SearchScope, type SessionHit } from './core/search.js'
 import { displayWidth, fitScrollWindow, hitLine, spreadRow, tailWidth, truncateWidth } from './width.js'
 import {
@@ -171,6 +174,7 @@ function composeListHint(columns: number): string {
     t('hint-seg-expand'),
     t('hint-seg-regex'),
     t('hint-seg-time'),
+    t('hint-seg-title'),
     t('hint-seg-help'),
     t('hint-seg-navigate'),
   ]
@@ -340,6 +344,7 @@ export function FindScene(props: TuiSceneProps & {
   const [scope, setScope] = useState<SearchScope>(config.defaultScope)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(config.defaultTime)
   const [useRegex, setUseRegex] = useState(config.regex)
+  const [titleOnly, setTitleOnly] = useState(config.titleOnly)
   const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
   const [progress, setProgress] = useState<ScanProgress | undefined>(undefined)
   const [mode, setMode] = useState<Mode>('list')
@@ -362,6 +367,8 @@ export function FindScene(props: TuiSceneProps & {
   timeFilterRef.current = timeFilter
   const useRegexRef = useRef(useRegex)
   useRegexRef.current = useRegex
+  const titleOnlyRef = useRef(titleOnly)
+  titleOnlyRef.current = titleOnly
   // Locks the resume pipeline so a repeated Enter cannot start the same
   // async operation twice before the mode change renders.
   const actionPendingRef = useRef(false)
@@ -369,8 +376,15 @@ export function FindScene(props: TuiSceneProps & {
   // One sweep per mount: a fresh abort controller, aborted when the scene
   // unmounts. The scanner itself is plugin-scoped (main.tsx) — its per-file
   // decode cache survives close/open, so a re-open pays only per-file stats.
+  // Results stream in: every resolved session is folded into the list right
+  // away (progressive first sweep) instead of after the whole sweep lands.
   useEffect(() => {
     const signal = new AbortController()
+    // Sessions resolved so far, in arrival order. Each onSession callback
+    // hands over the exact object the completed sweep's array holds, so the
+    // final setSessions below replaces — not duplicates — the accumulation
+    // and the search-side per-object fold caches stay warm.
+    const partial: ScannedSession[] = []
     const scanOptions = {
       indexTools: config.indexTools,
       indexThinking: config.indexThinking,
@@ -378,6 +392,13 @@ export function FindScene(props: TuiSceneProps & {
       ...(config.sessionRoot === undefined ? {} : { sessionRoot: config.sessionRoot }),
       signal: signal.signal,
       onProgress: setProgress,
+      onSession: (session: ScannedSession) => {
+        partial.push(session)
+        // Arrivals are enumeration order; interleaving in the scanner's own
+        // recency order keeps the partial list MRU-sorted so the completed
+        // sweep never reshuffles what is already on screen.
+        setSessions([...partial].sort(compareSessionRecency))
+      },
     }
     void scanner
       .scan(scanOptions)
@@ -421,9 +442,10 @@ export function FindScene(props: TuiSceneProps & {
         caseSensitive: config.caseSensitive,
         ...(config.pinyin ? { pinyin: true } : {}),
         ...(useRegex ? { regex: true } : {}),
+        ...(titleOnly ? { titleOnly: true } : {}),
         ...(sinceMs === undefined ? {} : { sinceMs }),
       }),
-    [sessions, query, scope, channel, config.caseSensitive, config.pinyin, useRegex, sinceMs],
+    [sessions, query, scope, channel, config.caseSensitive, config.pinyin, useRegex, titleOnly, sinceMs],
   )
   // The scene mirrors the core's own regex compilation so a pattern that is
   // not (yet) valid mid-typing can be explained instead of silently showing
@@ -554,7 +576,7 @@ export function FindScene(props: TuiSceneProps & {
   // Reset selection when the query, scope, time window or match mode changes shape.
   useEffect(() => {
     setSelected(0)
-  }, [query, scope, timeFilter, useRegex])
+  }, [query, scope, timeFilter, useRegex, titleOnly])
 
   /** The session a resume would target, whatever kind of row is selected. */
   const resumeTarget = useMemo<ScannedSession | undefined>(() => {
@@ -693,17 +715,15 @@ export function FindScene(props: TuiSceneProps & {
         } else if (plain && lower === 'n') {
           // Walk the session's own hits (`n` forward, Shift+n back). A
           // recent-session card has an empty hit table and no-ops silently;
-          // a session's hit table is circular, so moving past either end wraps.
+          // a session's hit table is circular, so moving past either end
+          // wraps and a non-empty table always yields a target.
           const currentMessage = messageAtLine(previewLines, previewCursor) ?? 0
           const { total } = hitOrdinal(previewHitStarts, currentMessage)
           if (total > 0) {
-            const target = jumpHit(previewHitStarts, currentMessage, key.shift ? -1 : 1)
-            if (target === undefined) setStatus({ text: t('preview-hit-end'), tone: 'info' })
-            else {
-              setPreviewCursor(target)
-              const { index } = hitOrdinal(previewHitStarts, messageAtLine(previewLines, target) ?? 0)
-              setStatus({ text: t('preview-hit-jump', { index, total }), tone: 'info' })
-            }
+            const target = jumpHit(previewHitStarts, currentMessage, key.shift ? -1 : 1)!
+            setPreviewCursor(target)
+            const { index } = hitOrdinal(previewHitStarts, messageAtLine(previewLines, target) ?? 0)
+            setStatus({ text: t('preview-hit-jump', { index, total }), tone: 'info' })
           }
         }
         // Every other key stays swallowed: the preview is read-only and
@@ -740,6 +760,15 @@ export function FindScene(props: TuiSceneProps & {
         useRegexRef.current = next
         setUseRegex(next)
         setStatus({ text: t(next ? 'regex-on' : 'regex-off'), tone: 'info' })
+        return
+      }
+      if (altOnly && lower === 'n') {
+        // Title-only matching: a title hit still highlights inside the
+        // card's title line; message rows simply stop matching.
+        const next = !titleOnlyRef.current
+        titleOnlyRef.current = next
+        setTitleOnly(next)
+        setStatus({ text: t(next ? 'title-only-on' : 'title-only-off'), tone: 'info' })
         return
       }
       if (isPlainReturn(key)) {
@@ -842,6 +871,7 @@ export function FindScene(props: TuiSceneProps & {
   const activeFilters = [
     ...(timeFilter === 'all' ? [] : [t(timeFilter === '7d' ? 'time-7d' : 'time-30d')]),
     ...(useRegex ? [t('badge-regex')] : []),
+    ...(titleOnly ? [t('badge-title-only')] : []),
   ].join(' · ')
 
   // Header right side: scan progress while sweeping, then hit counts in
@@ -1099,7 +1129,11 @@ export function FindScene(props: TuiSceneProps & {
       </Box>
       <SearchCard React={React} ui={ui} query={query} scope={scope} filters={activeFilters} columns={columns} />
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-        {recentMode && progress !== undefined && sessions.length === 0 ? (
+        {/* While a sweep is in flight and nothing has been resolved yet,
+            both list modes show the reading notice — a query-mode user must
+            not see "no matching sessions" for what is only the scan's head
+            of line (results stream in as sessions resolve). */}
+        {progress !== undefined && sessions.length === 0 ? (
           <Text dimColor italic>
             {' '}
             {t('reading-sessions')}
@@ -1279,8 +1313,8 @@ function ListView(props: {
           hit.role === undefined ? undefined : ROLE_MARK[hit.role].color
         const marker = selectionMarker(isSelected, 'message')
         // The `(+N)` tail is reserved from the text budget even while the
-        // row is selected (it is hidden then): a budget that depends on the
-        // selection would reflow the row's whole content on every focus move.
+        // row is selected: a budget that depends on the selection would
+        // reflow the row's whole content on every focus move.
         const more = row.more > 0 ? t('more-hits', { count: row.more }) : undefined
         const moreReserve = more === undefined ? 0 : displayWidth(more) + 1
         const prefix = `#${hit.seq ?? '·'} ${roleLabel}: `
@@ -1310,7 +1344,7 @@ function ListView(props: {
               color="warning"
               width={budget}
             />
-            {more !== undefined && !isSelected ? <Text dimColor>{` ${more}`}</Text> : null}
+            {more !== undefined ? <Text dimColor={!isSelected}>{` ${more}`}</Text> : null}
           </Box>
         )
       })}

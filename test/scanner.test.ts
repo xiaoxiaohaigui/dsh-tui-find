@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, ut
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
-import { SessionScanner, enumerateLogs } from '../src/core/scan.js'
+import { SessionScanner, compareSessionRecency, enumerateLogs } from '../src/core/scan.js'
 import {
   compileRegex,
   isRegexAllowed,
@@ -938,5 +938,76 @@ describe('sessionCwdMatches', () => {
   it('matches container roots only exactly', () => {
     expect(sessionCwdMatches('C:/', 'D:/anything', true)).toBe(false)
     expect(sessionCwdMatches('C:/', 'c:/', true)).toBe(true)
+  })
+})
+
+describe('onSession incremental delivery', () => {
+  it('hands over each resolved session exactly once, matching the final result objects', async () => {
+    const scanner = new SessionScanner()
+    const delivered: ScannedSession[] = []
+    const result = await scanner.scan({ sessionRoot: FIXTURE_ROOT, onSession: session => delivered.push(session) })
+    expect(delivered.length).toBe(result.length)
+    for (const session of delivered) {
+      // Identity, not deep equality: the completed sweep holds the same
+      // objects the callbacks handed over, so a consumer accumulating the
+      // callbacks (the scene's progressive sweep) can be replaced by the
+      // final array without invalidating search-side per-object fold caches.
+      expect(result.includes(session)).toBe(true)
+    }
+  })
+
+  it('fires for cache hits too on a warm second sweep', async () => {
+    const scanner = new SessionScanner()
+    await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    const delivered: ScannedSession[] = []
+    let decoded = -1
+    const result = await scanner.scan({
+      sessionRoot: FIXTURE_ROOT,
+      onProgress: progress => {
+        decoded = progress.decodedBytes
+      },
+      onSession: session => delivered.push(session),
+    })
+    expect(decoded).toBe(0)
+    expect(delivered).toHaveLength(result.length)
+    for (const session of delivered) expect(result.includes(session)).toBe(true)
+  })
+
+  it('stops delivering when the sweep aborts; delivered sessions are the partial result', async () => {
+    const scanner = new SessionScanner()
+    await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    const controller = new AbortController()
+    const delivered: ScannedSession[] = []
+    let ticks = 0
+    const partial = await scanner.scan({
+      sessionRoot: FIXTURE_ROOT,
+      signal: controller.signal,
+      onProgress: () => {
+        ticks += 1
+        if (ticks === 2) controller.abort()
+      },
+      onSession: session => delivered.push(session),
+    })
+    expect(partial.length).toBeGreaterThan(0)
+    expect(delivered.length).toBe(partial.length)
+    for (const session of delivered) expect(partial.includes(session)).toBe(true)
+  })
+
+  it('compareSessionRecency orders most-recent-first with a stable id tiebreak', () => {
+    const session = (id: string, modifiedAt: number, createdAt?: number): ScannedSession => ({
+      id,
+      path: id,
+      bytes: 1,
+      modifiedAt,
+      title: undefined,
+      header: { cwd: undefined, createdAt },
+      messages: [],
+    })
+    const newer = session('a', 200)
+    const older = session('b', 100)
+    const tieFirst = session('x', 150, 50)
+    const tieSecond = session('y', 150, 50)
+    const pool = [tieSecond, older, newer, tieFirst]
+    expect([...pool].sort(compareSessionRecency).map(entry => entry.id)).toEqual(['a', 'x', 'y', 'b'])
   })
 })

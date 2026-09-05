@@ -109,6 +109,18 @@ export interface SearchOptions {
    * config, which itself defaults ON.
    */
   readonly pinyin?: boolean
+  /**
+   * Restrict matching to session TITLE documents: indexed messages are not
+   * searched at all, so a session matches only through its title (the
+   * `session/title` value — a session without one cannot match, and the
+   * cwd/id display fallback is display-only, never indexed). Everything
+   * else is unchanged: the per-document AND, pinyin folds and regex mode
+   * all apply to the title exactly as they do in full search, and the
+   * empty-query recent list is unaffected (this is a match-time
+   * constraint, not a list filter). Default OFF — the scene passes the
+   * user's Alt+N toggle.
+   */
+  readonly titleOnly?: boolean
 }
 
 /** Synchronous regex matching policy: reject patterns whose worst-case
@@ -688,6 +700,9 @@ export function mergeRanges(
  * is on (full toneless syllables and initials; see the module doc). Regex
  * mode (`options.regex`) keeps the whole trimmed query as one pattern
  * instead: inside a regex a space is pattern syntax, not a term separator.
+ * Title-only mode (`options.titleOnly`) searches the title documents alone —
+ * indexed messages are skipped, so a session can only match through its
+ * title.
  * Sessions arrive in
  * most-recent-first order and that order is preserved. A literal empty query
  * matches nothing and the scene renders the recent list; a non-empty query
@@ -792,7 +807,9 @@ export function searchSessions(
     let total = 0
 
     // Title and message folds are cached per object (see foldOf) — across
-    // keystrokes only the indexOf scan repeats, never the fold.
+    // keystrokes only the indexOf scan repeats, never the fold. Title-only
+    // mode stops here: messages are not searched, so the title is the only
+    // document a session can match through.
     const titleRanges = session.title === undefined ? [] : rangesOf(session.title, session)
     if (titleRanges.length > 0) {
       messageHits.push({
@@ -805,6 +822,11 @@ export function searchSessions(
         sourceIndex: undefined,
       })
       total += titleRanges.length
+    }
+
+    if (options.titleOnly === true) {
+      if (messageHits.length > 0) hits.push({ session, hits: messageHits, total })
+      continue
     }
 
     for (const [sourceIndex, message] of session.messages.entries()) {

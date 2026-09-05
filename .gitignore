@@ -10,3 +10,8 @@ HANDOFF.md
 REVIEW.md
 docs/
 .zcode/
+
+# 真实机一次性测试数据生成器与产物（不入库）
+scripts/rm-test-sessions.mjs
+.rmtest-launch.cmd
+.rmtest-sessions/
