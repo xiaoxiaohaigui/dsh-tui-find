@@ -14,8 +14,10 @@ import { HighlightedText } from './find-chrome.js'
 import {
   displayTitle,
   formatWhen,
-  ROLE_MARK,
+  roleMarkColor,
   selectionMarker,
+  type ContextBoxProps,
+  type ContextMenuEventLike,
   type FlatRow,
   type TextColor,
   type Ui,
@@ -44,10 +46,14 @@ export function ListView(props: {
   onRowClick: (rowIndex: number) => void
   onRowHover: (rowIndex: number) => void
   onWheel: (event: WheelEventLike) => void
+  /** Right-click a row; attached by the scene only on 0.10+ kits (the 0.9
+   *  runtime dispatches no context-menu events and the prop stays absent). */
+  onRowContextMenu?: (rowIndex: number, event: ContextMenuEventLike) => void
 }): React.ReactElement {
-  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, columns, onRowClick, onRowHover, onWheel } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, columns, onRowClick, onRowHover, onWheel, onRowContextMenu } = props
   const { Box, Text } = ui
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
+  const ContextBox = Box as unknown as React.ComponentType<ContextBoxProps>
   const { useState, useMemo } = R
 
   // Scroll window over the flat rows, fitted in physical lines so the
@@ -84,13 +90,16 @@ export function ListView(props: {
               ? undefined
               : hitLine(displayTitle(session), row.titleHit.ranges, titleWidth)
           return (
-            <Box
+            <ContextBox
               key={`s${rowIndex}`}
               flexDirection="column"
               flexShrink={0}
               {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
               onClick={() => onRowClick(rowIndex)}
               onMouseEnter={() => onRowHover(rowIndex)}
+              {...(onRowContextMenu !== undefined
+                ? { onContextMenu: (event: ContextMenuEventLike) => onRowContextMenu(rowIndex, event) }
+                : {})}
             >
               <Box flexShrink={0}>
                 <Text color={isSelected ? 'suggestion' : 'subtle'}>{selectionMarker(isSelected)}</Text>
@@ -123,7 +132,7 @@ export function ListView(props: {
                   )}
                 </Text>
               </Box>
-            </Box>
+            </ContextBox>
           )
         }
         const hit = row.message
@@ -138,7 +147,7 @@ export function ListView(props: {
                 ? t('role-assistant')
                 : t('role-tool')
         const roleColor: TextColor | undefined =
-          hit.role === undefined ? undefined : ROLE_MARK[hit.role].color
+          hit.role === undefined ? undefined : roleMarkColor(ui, hit.role)
         const marker = selectionMarker(isSelected, 'message')
         // The `(+N)` tail is reserved from the text budget even while the
         // row is selected: a budget that depends on the selection would
@@ -152,13 +161,16 @@ export function ListView(props: {
         // out of view on a long message.
         const line = hitLine(hit.text, hit.ranges, budget)
         return (
-          <Box
+          <ContextBox
             key={`m${rowIndex}`}
             flexDirection="row"
             flexShrink={0}
             {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
             onClick={() => onRowClick(rowIndex)}
             onMouseEnter={() => onRowHover(rowIndex)}
+            {...(onRowContextMenu !== undefined
+              ? { onContextMenu: (event: ContextMenuEventLike) => onRowContextMenu(rowIndex, event) }
+              : {})}
           >
             <Text color={isSelected ? 'suggestion' : 'subtle'}>{marker}</Text>
             <Text dimColor={!isSelected} {...(isSelected && roleColor !== undefined ? { color: roleColor } : {})}>
@@ -173,7 +185,7 @@ export function ListView(props: {
               width={budget}
             />
             {more !== undefined ? <Text dimColor={!isSelected}>{` ${more}`}</Text> : null}
-          </Box>
+          </ContextBox>
         )
       })}
     </WheelBox>

@@ -1,6 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
+import { PARTIAL_FLUSH_MAX_MS } from '../src/find-types.js'
 import { mount, sessionWithMessages, waitFor } from './harness.js'
 
 setLangOverride('en')
@@ -266,14 +267,16 @@ describe('search filter and scan streaming wiring', () => {
       expect(harness.latest()).toMatch(/First\s*session/)
       expect(harness.all()).not.toMatch(/Second\s*session/)
       // The doubled flush gap (PARTIAL_FLUSH_MS) can lag the arrival's
-      // render behind the gate by a frame, and a parallel test run slows
-      // the write-out further — wait long enough for the flush frame to
-      // land before asserting on the cumulative stream.
+      // render behind the gate by a frame — the gap doubles per flush up to
+      // PARTIAL_FLUSH_MAX_MS, and a parallel run or a cold working tree
+      // (the host-matrix copies) slows the write-out further. Wait past the
+      // ceiling the scene itself guarantees before asserting on the
+      // cumulative stream.
       firstGate.resolve()
-      await waitFor(300)
+      await waitFor(PARTIAL_FLUSH_MAX_MS + 200)
       expect(harness.all()).toMatch(/Second\s*session/)
       secondGate.resolve()
-      await waitFor(300)
+      await waitFor(PARTIAL_FLUSH_MAX_MS + 200)
       // The completed sweep replaces the accumulation; the streamed rows stay.
       expect(harness.all()).toMatch(/First\s*session/)
       expect(harness.all()).toMatch(/Second\s*session/)
@@ -317,6 +320,30 @@ describe('search filter and scan streaming wiring', () => {
       await waitFor()
       expect(harness.latest()).toMatch(/No\s*matching/)
       expect(harness.latest()).not.toMatch(/Reading\s*sessions/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('mirrors copy feedback onto the host toast channel', async () => {
+    const notify = vi.fn()
+    const harness = await mount(sessionWithMessages(['needle body']), { notify })
+    try {
+      // ↓ moves onto the hit row (cards have no message to copy), then
+      // Alt+C copies it. The footer note stays the in-scene channel and the
+      // notifier rides along (0.9.x hosts without the toast service simply
+      // pass no spy — the footer stands alone).
+      harness.send('\u001b[B')
+      await waitFor()
+      harness.send('\u001bc')
+      await waitFor()
+      // The cumulative stream, not the latest diff frame: a status-row
+      // overwrite can be suppressed by the renderer's diff frames.
+      expect(harness.all()).toMatch(/Copied\s*\d+\s*chars/)
+      expect(notify).toHaveBeenCalledTimes(1)
+      const [text, tone] = notify.mock.calls[0] ?? []
+      expect(text).toMatch(/^Copied \d+ chars to clipboard$/)
+      expect(tone).toBe('info')
     } finally {
       harness.dispose()
     }

@@ -26,9 +26,9 @@ describe('helpSections', () => {
     ])
   })
 
-  it('carries the full key inventory: 14 list rows, 6 preview rows, 3 mouse rows', () => {
+  it('carries the full key inventory: 14 list rows, 6 preview rows, 4 mouse rows', () => {
     const sections = helpSections(100)
-    expect(sections.map(section => section.rows.length)).toEqual([14, 6, 3])
+    expect(sections.map(section => section.rows.length)).toEqual([14, 6, 4])
   })
 
   it('keeps the keys column language-free while actions localize', () => {

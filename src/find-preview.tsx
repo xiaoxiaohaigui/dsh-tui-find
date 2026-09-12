@@ -27,8 +27,11 @@ import {
   formatWhen,
   PREVIEW_CHROME_LINES,
   ROLE_MARK,
+  roleMarkColor,
   selectionMarker,
   wheelStep,
+  type ContextBoxProps,
+  type ContextMenuEventLike,
   type FlatRow,
   type Mode,
   type StatusNote,
@@ -164,6 +167,8 @@ export function PreviewPane(props: {
   columns: number
   rows: number
   onWheel: (event: WheelEventLike) => void
+  /** Right-click inside the reader; attached by the scene only on 0.10+ kits. */
+  onPreviewContextMenu?: (event: ContextMenuEventLike) => void
 }): React.ReactElement {
   const {
     React: R,
@@ -181,9 +186,10 @@ export function PreviewPane(props: {
     columns,
     rows,
     onWheel,
+    onPreviewContextMenu,
   } = props
   const { Box, Text } = ui
-  const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
+  const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps & ContextBoxProps>
   // First render after Alt+P: park the cursor (and the window) on the
   // anchor message's header line — the render-phase adjust pattern, so the
   // anchored frame is the committed one and nothing flickers.
@@ -230,15 +236,22 @@ export function PreviewPane(props: {
             the path's end — survives any terminal width. */}
         <Text dimColor>{` ${tailWidth(session.path, Math.max(0, columns - 4))}`}</Text>
       </Box>
-      <WheelBox flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" onWheel={onWheel}>
+      <WheelBox
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        overflow="hidden"
+        onWheel={onWheel}
+        {...(onPreviewContextMenu !== undefined ? { onContextMenu: onPreviewContextMenu } : {})}
+      >
         {visible.map((line, offset) => {
           const lineAt = view.start + offset
           if (line.kind === 'header') {
             // The header row carries the list's selection vocabulary —
             // marker arrow plus selectionBg for the cursor's message —
-            // the ROLE_MARK glyph/colour, and a warning `◆` marking the
-            // session's hits (a hit tool row would otherwise share the
-            // tool role's own warning colour).
+            // the ROLE_MARK glyph with its generation-resolved colour, and
+            // a warning `◆` marking the session's hits (a hit tool row
+            // would otherwise share the tool role's own warning colour).
             const isCursorMessage = line.messageIndex === cursorMessage
             const mark = ROLE_MARK[line.role]
             const label =
@@ -258,7 +271,7 @@ export function PreviewPane(props: {
                 {...(isCursorMessage ? { backgroundColor: 'selectionBg' } : {})}
               >
                 <Text color={isCursorMessage ? 'suggestion' : 'subtle'}>{selectionMarker(isCursorMessage)}</Text>
-                <Text color={mark.color}>{clippedRole}</Text>
+                <Text color={roleMarkColor(ui, line.role)}>{clippedRole}</Text>
                 {clippedTime.length > 0 ? <Text dimColor>{clippedTime}</Text> : null}
                 {hasVisibleHit ? <Text color="warning" bold> ◆</Text> : null}
               </Box>

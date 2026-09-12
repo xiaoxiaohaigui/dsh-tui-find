@@ -25,10 +25,33 @@ export type TextColor = NonNullable<React.ComponentProps<Ui['Text']>['color']>
  * The installed dsh-tui 0.9.3 declarations predate `onWheel`, although its
  * runtime dispatcher already routes wheel events to handler props. Keep the
  * widening local to the find scene instead of weakening the injected ui surface.
+ *
+ * 0.10+ThemedBox 官方类型已含 onWheel/onContextMenu，本交叉类型对 0.10.1 冗余
+ * 但无害（0.9.3 基线必需）；待 peer 下限提升到 >=0.10.0 时退役。
  */
 export type WheelEventLike = { readonly deltaY: number; readonly deltaX?: number }
 export type WheelBoxProps = React.ComponentProps<Ui['Box']> & {
   onWheel?: (event: WheelEventLike) => void
+}
+
+/**
+ * The 0.10+ context-menu event, structurally: 0.9.3's Box declarations (and
+ * its runtime dispatcher) predate right-click delivery entirely, so the
+ * find scene attaches `onContextMenu` only when the generation probe below
+ * passes. The real event carries more (modifier bits, button byte); these
+ * are the fields the menu needs — absolute pointer cell for anchoring the
+ * popup, per-handler local cell for mapping a preview row to its message,
+ * and the bubble-stop the item handlers use to keep the backdrop closed.
+ */
+export type ContextMenuEventLike = {
+  readonly col: number
+  readonly row: number
+  readonly localCol: number
+  readonly localRow: number
+  stopImmediatePropagation(): void
+}
+export type ContextBoxProps = React.ComponentProps<Ui['Box']> & {
+  onContextMenu?: (event: ContextMenuEventLike) => void
 }
 
 export type Mode = 'list' | 'preview' | 'confirm' | 'help'
@@ -78,11 +101,51 @@ export const PARTIAL_FLUSH_MS = 100
 export const PARTIAL_FLUSH_MAX_MS = 800
 
 /** Role glyph and colour for a preview entry, the host preview's vocabulary
- *  (user ❯, assistant ✦) plus a tool marker for tool-call rows. */
-export const ROLE_MARK: Record<'user' | 'assistant' | 'tool', { glyph: string; color: TextColor }> = {
+ *  (user ❯, assistant ✦) plus a tool marker for tool-call rows. The assistant
+ *  colour here is the 0.9-generation brand key `claude`; render sites resolve
+ *  the generation-correct key through {@link roleMarkColor} — 0.10 renamed
+ *  the same mist blue to `accent`. */
+export const ROLE_MARK: Record<'user' | 'assistant' | 'tool', { glyph: string; color: SceneColor }> = {
   user: { glyph: '❯', color: 'suggestion' },
   assistant: { glyph: '✦', color: 'claude' },
   tool: { glyph: '⚙', color: 'warning' },
+}
+
+/** Text colour vocabulary extended with the two generation brand keys —
+ *  `claude` (0.9.x, the 0.9.3 build baseline's own theme key) and `accent`
+ *  (0.10+, renamed in place with identical palette values). Neither key
+ *  exists in the other generation's Text vocabulary, so the record's colour
+ *  field carries this local union and the render sites resolve it back to
+ *  TextColor through {@link roleMarkColor}'s runtime probe. */
+type SceneColor = TextColor | 'claude' | 'accent'
+
+/**
+ * Whether the injected ui kit is the 0.10 generation: the 0.10 kit ships
+ * terminal-image hooks the 0.9 kit never had, and the host passes scenes
+ * the full ui module namespace, so the hook's presence is a structural
+ * generation marker. Shared by every generation-gated capability (the
+ * assistant role colour, the right-click context menu). A wrong probe
+ * degrades — an uncoloured role mark, an unattached menu — never a crash.
+ */
+export function hasTerminalImageHooks(ui: Ui): boolean {
+  return typeof (ui as Ui & { useTerminalImages?: unknown }).useTerminalImages === 'function'
+}
+
+/**
+ * The assistant role's colour, resolved per host generation. 0.10 renamed the
+ * mist brand key `claude` → `accent` (identical palette values) and both kits
+ * resolve colour props by plain table lookup, so the wrong key renders
+ * silently without colour — no error, just a lost tint. The sanctioned
+ * surface exposes no palette accessor (`useTheme()` returns the theme NAME on
+ * both generations), so the generation is probed structurally off the
+ * injected ui kit — see {@link hasTerminalImageHooks}. If that marker is
+ * ever absent from a kit that no longer speaks `claude` either, the host
+ * lookup degrades to no colour — the chain's dim end.
+ */
+export function roleMarkColor(ui: Ui, role: 'user' | 'assistant' | 'tool'): TextColor {
+  if (role !== 'assistant') return ROLE_MARK[role].color as TextColor
+  const accent: SceneColor = 'accent'
+  return hasTerminalImageHooks(ui) ? (accent as TextColor) : (ROLE_MARK.assistant.color as TextColor)
 }
 
 /**

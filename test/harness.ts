@@ -64,6 +64,8 @@ export async function mount(
     scanner?: {
       scan(options: { onSession?: (session: ScannedSession) => void }): Promise<readonly ScannedSession[]>
     }
+    /** Scene-level notifier spy — the toast-channel tests assert dispatch. */
+    notify?: (text: string, tone: 'info' | 'error') => void
   } = {},
 ): Promise<Harness> {
   const columns = options.columns ?? 80
@@ -115,6 +117,7 @@ export async function mount(
     config: resolveConfig({ defaultScope: 'all' }),
     scanner,
     initialQuery: () => options.query ?? 'needle',
+    notify: options.notify,
   }
   const instance = await hostUi.render(React.createElement(FindScene, props), {
     stdout,

@@ -33,14 +33,19 @@ import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { copyToClipboard } from './clipboard.js'
 import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
+import type { Notifier } from './notify.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
 import { compileRegex, searchSessions, sessionCwdMatches, type MessageHit, type SearchScope } from './core/search.js'
-import { spreadRow, truncateWidth } from './width.js'
+import { messageAtLine } from './preview.js'
+import { displayWidth, spreadRow, truncateWidth } from './width.js'
 import { HelpOverlay } from './help.js'
 import {
   CHROME_LINES,
   PREVIEW_HITS,
+  hasTerminalImageHooks,
   wheelStep,
+  type ContextBoxProps,
+  type ContextMenuEventLike,
   type CopyEntry,
   type FlatRow,
   type Mode,
@@ -48,19 +53,40 @@ import {
   type TimeFilter,
   type WheelEventLike,
 } from './find-types.js'
+import {
+  highlightedItem,
+  moveHighlight,
+  openMenu,
+  type ContextMenuState,
+  type MenuItem,
+} from './find-menu.js'
 import { ConfirmPane, HintLine, SearchCard, composeListHint } from './find-chrome.js'
 import { ListView } from './find-list.js'
 import { PreviewPane, usePreviewModel } from './find-preview.js'
 import { useFindInput } from './find-input.js'
 import { useSessionSweep } from './find-sweep.js'
 
+/** The scene's open menu: the pure anchored list plus the action each item
+ *  runs (bound at open time — the actions close over the row/message the
+ *  menu was opened on). */
+type SceneMenuItem = MenuItem & { action: () => void }
+type SceneMenuState = ContextMenuState<SceneMenuItem>
+
+/** A no-op notifier: the scene's own footer feedback stands alone when the
+ *  host has no toast service (0.9.x) or none was passed. */
+const noopNotify: Notifier = () => {}
+
 export function FindScene(props: TuiSceneProps & {
   config: ResolvedConfig
   /** Plugin-scoped scanner (created in main.tsx): its decode cache outlives the scene. */
   scanner: SessionScanner
   initialQuery: () => string
+  /** Host toast surface (0.10+, structural soft-probe in notify.ts); the
+   *  footer status stays the primary in-scene feedback either way. */
+  notify?: Notifier
 }): React.ReactElement {
   const { React, ui, channel, close, config, scanner } = props
+  const notify = props.notify ?? noopNotify
   const { Box, Text, useTerminalSize } = ui
   const { useState, useEffect, useMemo, useRef, useCallback } = React
 
@@ -75,6 +101,7 @@ export function FindScene(props: TuiSceneProps & {
   const [selected, setSelected] = useState(0)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [status, setStatus] = useState<StatusNote | undefined>(undefined)
+  const [menu, setMenu] = useState<SceneMenuState | undefined>(undefined)
   const { columns, rows } = useTerminalSize()
 
   // React batches every parsed key from one stdin chunk, so the input
@@ -95,6 +122,8 @@ export function FindScene(props: TuiSceneProps & {
   const titleOnlyRef = useRef(titleOnly)
   titleOnlyRef.current = titleOnly
   const actionPendingRef = useRef(false)
+  const menuRef = useRef<SceneMenuState | undefined>(undefined)
+  menuRef.current = menu
 
   useSessionSweep(React, { scanner, config, setSessions, setProgress, setStatus })
 
@@ -224,10 +253,14 @@ export function FindScene(props: TuiSceneProps & {
       try {
         copyToClipboard(body, process.stdout)
         setStatus({ text: t('copied', { chars: body.length }), tone: 'info' })
+        notify(t('copied', { chars: body.length }), 'info')
       } catch {
         setStatus({ text: t('copy-failed'), tone: 'error' })
+        notify(t('copy-failed'), 'error')
       }
     },
+    // The notifier is stable per activation; it deliberately stays out of
+    // the deps so the copy identity the list and preview share never churns.
     [],
   )
 
@@ -249,21 +282,117 @@ export function FindScene(props: TuiSceneProps & {
       const result = await channel.resumeTo(target.id)
       if (result.ok) {
         setStatus({ text: t('resumed'), tone: 'info' })
+        // The toast outlives the closing scene — the footer note would not.
+        notify(t('resumed'), 'info')
         close()
         return
       }
-      if (result.reason === 'working') setStatus({ text: t('resume-working'), tone: 'error' })
-      else if (result.reason === 'cancelled') setStatus({ text: t('resume-cancelled'), tone: 'info' })
-      else if (result.reason === 'unavailable') setStatus({ text: t('resume-unavailable'), tone: 'error' })
-      else setStatus({ text: t('resume-failed', { error: result.error }), tone: 'error' })
+      if (result.reason === 'working') {
+        setStatus({ text: t('resume-working'), tone: 'error' })
+        notify(t('resume-working'), 'error')
+      } else if (result.reason === 'cancelled') {
+        setStatus({ text: t('resume-cancelled'), tone: 'info' })
+        notify(t('resume-cancelled'), 'info')
+      } else if (result.reason === 'unavailable') {
+        setStatus({ text: t('resume-unavailable'), tone: 'error' })
+        notify(t('resume-unavailable'), 'error')
+      } else {
+        setStatus({ text: t('resume-failed', { error: result.error }), tone: 'error' })
+        notify(t('resume-failed', { error: result.error }), 'error')
+      }
     } catch (error) {
-      setStatus({
-        text: t('resume-failed', { error: error instanceof Error ? error.message : String(error) }),
-        tone: 'error',
-      })
+      const detail = error instanceof Error ? error.message : String(error)
+      setStatus({ text: t('resume-failed', { error: detail }), tone: 'error' })
+      notify(t('resume-failed', { error: detail }), 'error')
     }
     setMode('list')
   }, [resumeTarget, channel, close])
+
+  /** Copy one session's log path — the context menu's path entry and any
+   *  future caller share the same feedback vocabulary as message copies. */
+  const copySessionPath = useCallback(
+    (session: ScannedSession) => {
+      try {
+        copyToClipboard(session.path, process.stdout)
+        setStatus({ text: t('copied-path'), tone: 'info' })
+        notify(t('copied-path'), 'info')
+      } catch {
+        setStatus({ text: t('copy-failed'), tone: 'error' })
+        notify(t('copy-failed'), 'error')
+      }
+    },
+    // Deliberately no notify dep — stable per activation, as in copyMessage.
+    [],
+  )
+
+  // ── context menu (right-click; attached only on 0.10+ kits) ───────────
+  const closeMenu = useCallback(() => setMenu(undefined), [])
+  const moveMenuHighlight = useCallback((delta: number) => {
+    setMenu(current => (current === undefined ? undefined : moveHighlight(current, delta)))
+  }, [])
+  const activateMenu = useCallback(() => {
+    const current = menuRef.current
+    if (current === undefined) return
+    const item = highlightedItem(current)
+    if (item === undefined) return
+    setMenu(undefined)
+    item.action()
+  }, [])
+
+  /** Right-click on a list row: the row selects (mirroring hover), and the
+   *  menu offers the row's vocabulary — a hit row adds its message copy; a
+   *  card offers path + resume. Resume mirrors Enter (the confirm pane). */
+  const openRowMenu = useCallback(
+    (rowIndex: number, event: ContextMenuEventLike) => {
+      if (modeRef.current !== 'list' || actionPendingRef.current) return
+      const row = flat[rowIndex]
+      if (row === undefined) return
+      const session = row.kind === 'session' ? row.session : row.hit.session
+      const items: SceneMenuItem[] = []
+      if (row.kind === 'message') {
+        items.push({ id: 'copy-message', label: t('menu-copy-message'), action: () => copyMessage(row.message) })
+      }
+      items.push(
+        { id: 'copy-log', label: t('menu-copy-log'), action: () => copySessionPath(session) },
+        {
+          id: 'resume',
+          label: t('menu-resume'),
+          action: () => {
+            setSelected(rowIndex)
+            modeRef.current = 'confirm'
+            setMode('confirm')
+          },
+        },
+      )
+      setSelected(rowIndex)
+      setMenu(openMenu(event.col, event.row, items))
+    },
+    [flat, copyMessage, copySessionPath],
+  )
+
+  /** Right-click in the preview: copy the message under the POINTER (the
+   *  WheelBox's local row maps through the scroll window to a message). */
+  const openPreviewMenu = useCallback(
+    (event: ContextMenuEventLike) => {
+      if (modeRef.current !== 'preview' || actionPendingRef.current) return
+      const session = previewSession
+      if (session === undefined) return
+      const lineAt = previewWindowStart + event.localRow
+      const messageIndex = messageAtLine(previewLines, lineAt)
+      const message = messageIndex === undefined ? undefined : session.messages[messageIndex]
+      if (message === undefined) return
+      setMenu(
+        openMenu(event.col, event.row, [
+          { id: 'copy-message', label: t('menu-copy-message'), action: () => copyMessage(message) },
+        ]),
+      )
+    },
+    [previewSession, previewLines, previewWindowStart, copyMessage],
+  )
+
+  // The right-click vocabulary rides the 0.10 kit generation probe (0.9.x
+  // hosts have no context-menu dispatch — the handlers are never attached).
+  const contextMenuCapable = hasTerminalImageHooks(ui)
 
   useFindInput({
     ui,
@@ -274,6 +403,7 @@ export function FindScene(props: TuiSceneProps & {
     useRegexRef,
     titleOnlyRef,
     actionPendingRef,
+    menuRef,
     setQuery,
     setScope,
     setTimeFilter,
@@ -284,6 +414,9 @@ export function FindScene(props: TuiSceneProps & {
     setSelected,
     setPreviewCursor,
     setStatus,
+    closeMenu,
+    moveMenuHighlight,
+    activateMenu,
     flatLength: flat.length,
     rows,
     selectedRow,
@@ -334,6 +467,61 @@ export function FindScene(props: TuiSceneProps & {
 
   const listHint = composeListHint(columns)
 
+  // The open menu's overlay: a full-viewport backdrop (click/right-click
+  // anywhere outside closes) with the clamped anchored panel on top. The
+  // panel's width budget mirrors the list's own truncation discipline.
+  const menuOverlay = (() => {
+    if (menu === undefined) return undefined
+    const MenuBox = Box as unknown as React.ComponentType<ContextBoxProps>
+    const width =
+      menu.items.length === 0 ? 0 : Math.max(...menu.items.map(item => displayWidth(item.label))) + 4
+    const left = Math.max(0, Math.min(menu.anchorCol, Math.max(0, columns - width - 1)))
+    const top = Math.max(0, Math.min(menu.anchorRow, Math.max(0, rows - menu.items.length - 3)))
+    return (
+      <MenuBox
+        position="absolute"
+        top={0}
+        left={0}
+        width={columns}
+        height={rows}
+        onClick={event => {
+          event.stopImmediatePropagation()
+          closeMenu()
+        }}
+        onContextMenu={event => {
+          event.stopImmediatePropagation()
+          closeMenu()
+        }}
+      >
+        <MenuBox
+          position="absolute"
+          top={top}
+          left={left}
+          flexDirection="column"
+          borderStyle="round"
+          onClick={event => event.stopImmediatePropagation()}
+          onContextMenu={event => event.stopImmediatePropagation()}
+        >
+          {menu.items.map((item, index) => (
+            <MenuBox
+              key={item.id}
+              flexShrink={0}
+              onClick={event => {
+                event.stopImmediatePropagation()
+                setMenu(undefined)
+                item.action()
+              }}
+            >
+              <Text {...(index === menu.highlight ? { backgroundColor: 'selectionBg' as const } : {})}>
+                {` ${item.label} `}
+              </Text>
+            </MenuBox>
+          ))}
+        </MenuBox>
+      </MenuBox>
+    )
+  })()
+
   /** Mouse selection mirrors the browser: hover moves focus. */
   const selectRow = useCallback(
     (rowIndex: number) => {
@@ -379,23 +567,27 @@ export function FindScene(props: TuiSceneProps & {
   if (mode === 'preview' && selectedRow !== undefined) {
     const session = selectedRow.kind === 'session' ? selectedRow.session : selectedRow.hit.session
     return (
-      <PreviewPane
-        React={React}
-        ui={ui}
-        session={session}
-        lines={previewLines}
-        weights={previewWeights}
-        bodyWidth={previewBodyWidth}
-        cursor={previewCursor}
-        windowStart={previewWindowStart}
-        setCursor={setPreviewCursor}
-        setWindowStart={setPreviewWindowStart}
-        anchorRef={previewAnchorRef}
-        status={status}
-        columns={columns}
-        rows={rows}
-        onWheel={stepPreview}
-      />
+      <>
+        <PreviewPane
+          React={React}
+          ui={ui}
+          session={session}
+          lines={previewLines}
+          weights={previewWeights}
+          bodyWidth={previewBodyWidth}
+          cursor={previewCursor}
+          windowStart={previewWindowStart}
+          setCursor={setPreviewCursor}
+          setWindowStart={setPreviewWindowStart}
+          anchorRef={previewAnchorRef}
+          status={status}
+          columns={columns}
+          rows={rows}
+          onWheel={stepPreview}
+          {...(contextMenuCapable ? { onPreviewContextMenu: openPreviewMenu } : {})}
+        />
+        {menuOverlay}
+      </>
     )
   }
 
@@ -462,6 +654,7 @@ export function FindScene(props: TuiSceneProps & {
             onRowClick={clickRow}
             onRowHover={selectRow}
             onWheel={stepRows}
+            {...(contextMenuCapable ? { onRowContextMenu: openRowMenu } : {})}
           />
         )}
       </Box>
@@ -481,6 +674,7 @@ export function FindScene(props: TuiSceneProps & {
           <HintLine React={React} ui={ui} text={listHint} />
         </Text>
       </Box>
+      {menuOverlay}
     </Box>
   )
 }

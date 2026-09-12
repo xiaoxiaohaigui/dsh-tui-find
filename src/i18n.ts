@@ -160,6 +160,7 @@ export const dict = {
 
   // ── toasts & failures ────────────────────────────────────────────────
   'copied': { zh: '已复制 {{chars}} 字符到剪贴板', en: 'Copied {{chars}} chars to clipboard' },
+  'copied-path': { zh: '已复制会话日志路径', en: 'Session log path copied' },
   'copy-failed': { zh: '复制失败', en: 'Copy failed' },
   'resume-working': { zh: '恢复失败：当前会话仍在工作中', en: 'Resume failed: the current session is still working' },
   'resume-unavailable': { zh: '恢复失败：会话存储不可用', en: 'Resume failed: session store unavailable' },
@@ -167,6 +168,21 @@ export const dict = {
   'resume-failed': { zh: '恢复失败：{{error}}', en: 'Resume failed: {{error}}' },
   'resumed': { zh: '已恢复会话', en: 'Session resumed' },
   'scan-failed': { zh: '扫描失败：{{error}}', en: 'Scan failed: {{error}}' },
+  // The host toast surface (0.10+) mirrors the logger's shortcut-rejection
+  // warnings, which a TUI user cannot see in the logs.
+  'toast-shortcut-fallback': {
+    zh: '快捷键 {{combo}} 被宿主拒绝，已回退 {{fallback}}',
+    en: 'Shortcut {{combo}} rejected by the host; using {{fallback}}',
+  },
+  'toast-shortcut-keep': {
+    zh: '快捷键 {{combo}} 被宿主拒绝，保持原绑定',
+    en: 'Shortcut {{combo}} rejected by the host; keeping the previous binding',
+  },
+
+  // ── context menu (right-click, 0.10+ hosts only) ─────────────────────
+  'menu-copy-message': { zh: '复制消息文本', en: 'Copy message text' },
+  'menu-copy-log': { zh: '复制会话日志路径', en: 'Copy session log path' },
+  'menu-resume': { zh: '恢复该会话', en: 'Resume this session' },
 
   // ── help overlay (Alt+H) ─────────────────────────────────────────────
   // The keys column of the help sheet is language-free (src/help.tsx owns
@@ -198,6 +214,7 @@ export const dict = {
   'help-mouse-click': { zh: '选中并打开确认', en: 'Select and open the confirm' },
   'help-mouse-hover': { zh: '移动选择', en: 'Move the selection' },
   'help-mouse-wheel': { zh: '按条目移动（预览内按行滚动）', en: 'Move by row (scroll by line in the preview)' },
+  'help-mouse-context': { zh: '打开上下文菜单（0.10+ 宿主）', en: 'Open the context menu (0.10+ hosts)' },
   // The overlay's own footer hint (HintLine `**key**` vocabulary).
   'help-footer': { zh: '**Esc** 返回', en: '**Esc** back' },
   // New list hint segment for the main scene's hint line (Alt+H wiring).

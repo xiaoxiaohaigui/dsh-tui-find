@@ -45,6 +45,7 @@
     "pretest": "npm run build && npm run fixtures",
     "test": "vitest run",
     "fixtures": "node scripts/make-fixtures.mjs",
+    "verify:hosts": "node scripts/verify-host-matrix.mjs",
     "prepack": "npm run build && npm test",
     "prepublishOnly": "npm run build && npm test"
   },

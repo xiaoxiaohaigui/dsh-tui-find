@@ -109,6 +109,7 @@ export function helpSections(columns: number): readonly HelpSection[] {
         { keys: 'Click', action: t('help-mouse-click') },
         { keys: 'Hover', action: t('help-mouse-hover') },
         { keys: 'Wheel', action: t('help-mouse-wheel') },
+        { keys: 'Right-click', action: t('help-mouse-context') },
       ],
     },
   ]

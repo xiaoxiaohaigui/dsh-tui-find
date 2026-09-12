@@ -26,6 +26,7 @@ import {
   type TimeFilter,
   type Ui,
 } from './find-types.js'
+import type { ContextMenuState } from './find-menu.js'
 
 /** Only a modifier-free Enter may commit a modal (the host's #110 rule:
  *  Option/Shift/Ctrl+Enter arrive as return+modifier and must not). */
@@ -47,6 +48,13 @@ export interface FindInputDeps {
   /** Locks the resume pipeline so a repeated Enter cannot start the same
    *  async operation twice before the mode change renders. */
   actionPendingRef: { current: boolean }
+  /** The open context menu (undefined when closed). While one is up the
+   *  dispatcher becomes the menu's keyboard: ↑↓/Enter/Esc only, everything
+   *  else swallowed — typing must never leak into the query behind it. */
+  menuRef: { current: ContextMenuState | undefined }
+  closeMenu: () => void
+  moveMenuHighlight: (delta: number) => void
+  activateMenu: () => void
   setQuery: (next: string | ((current: string) => string)) => void
   setScope: (next: SearchScope | ((current: SearchScope) => SearchScope)) => void
   setTimeFilter: (next: TimeFilter | ((current: TimeFilter) => TimeFilter)) => void
@@ -82,6 +90,10 @@ export function useFindInput(deps: FindInputDeps): void {
     useRegexRef,
     titleOnlyRef,
     actionPendingRef,
+    menuRef,
+    closeMenu,
+    moveMenuHighlight,
+    activateMenu,
     setQuery,
     setScope,
     setTimeFilter,
@@ -123,6 +135,17 @@ export function useFindInput(deps: FindInputDeps): void {
       // The typing path below still consumes the raw input untouched.
       const lower = input.toLowerCase()
 
+      // The context menu is the topmost layer across every mode: while it
+      // stands, its own vocabulary (↑↓ highlight, Enter activate, Esc
+      // dismiss) is the whole keyboard. It precedes the shared escape branch
+      // so Esc closes only the menu, never the query or the screen.
+      if (menuRef.current !== undefined) {
+        if (key.escape) closeMenu()
+        else if (key.upArrow) moveMenuHighlight(-1)
+        else if (key.downArrow) moveMenuHighlight(1)
+        else if (isPlainReturn(key)) activateMenu()
+        return
+      }
       if (key.escape) {
         if (modeRef.current === 'list') {
           if (queryRef.current.length > 0) setQuery('')

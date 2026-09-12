@@ -32,7 +32,8 @@ import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { Config, DEFAULT_SHORTCUT, resolveConfig, resolveShortcut, type Config as PluginConfig, type ResolvedConfig } from './config.js'
 import { SessionScanner } from './core/scan.js'
-import { setLangOverride } from './i18n.js'
+import { setLangOverride, t } from './i18n.js'
+import { makeNotifier } from './notify.js'
 import { FindScene } from './scene.js'
 import { registerSeamWithRetry } from './seam.js'
 import { registerSettingsSection } from './settings.js'
@@ -118,6 +119,11 @@ function watermarkJournalPath(): string | undefined {
 export function apply(ctx: Context, config: PluginConfig = {}): void {
   const resolved = resolveActivationConfig(config)
   let runtimeConfig = resolved
+  // Additive toast feedback (0.10+ `tuiToast`, structural soft-probe): the
+  // shortcut-rejection warnings below and the scene's copy/resume results
+  // also surface on the host's notification frame. A 0.9.x host has no
+  // service — the notifier no-ops and every existing channel stands alone.
+  const notify = makeNotifier(ctx)
   // The global-entry combo gets its own resolution so a typo can be
   // reported (resolveConfig folds it silently; the warn below restores the
   // signal). Same pure function, so both paths agree.
@@ -152,6 +158,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         {...props}
         config={runtimeConfig}
         scanner={scanner}
+        notify={notify}
         initialQuery={() => {
           const value = pendingQuery
           pendingQuery = ''
@@ -307,6 +314,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
           ctx.logger.warn(
             `dsh-tui-find: shortcut '${source}' was rejected by the host; using the default ${DEFAULT_SHORTCUT}`,
           )
+          notify(t('toast-shortcut-fallback', { combo: candidate, fallback: DEFAULT_SHORTCUT }), 'error')
           return fallback
         }
       }
@@ -322,6 +330,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       const dispose = registerCandidate()
       if (dispose === undefined) {
         ctx.logger.warn(`dsh-tui-find: shortcut '${source}' was rejected by the host; keeping the previous binding`)
+        notify(t('toast-shortcut-keep', { combo: candidate }), 'error')
         return
       }
       attach(dispose)
@@ -331,6 +340,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         ctx.logger.warn(
           `dsh-tui-find: shortcut '${source}' registration failed (${detail}); keeping the previous binding`,
         )
+        notify(t('toast-shortcut-keep', { combo: candidate }), 'error')
         return
       }
       registerSeamWithRetry(

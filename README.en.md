@@ -105,8 +105,9 @@ Mouse:
 | Left-click a row | Select it and open the same resume confirmation as `↵` |
 | Hover a row | Move the selection and highlight the row |
 | Wheel | Move the selection one row up or down (in the preview, scrolls the reader line by line) |
+| Right-click a row | Open the context menu (0.10+ hosts only): copy message text / copy session log path / resume this session; in the preview, copy the message under the pointer |
 
-> Mouse support depends on dsh-TUI's fullscreen mouse tracking. The dsh-TUI 0.9.3 published package exposes left-click, hover, and wheel events, but does not expose a right-button `onContextMenu` event, so this version does not show a context menu; keyboard shortcuts remain the complete action surface.
+> Mouse support depends on dsh-TUI's fullscreen mouse tracking. 0.9.x hosts dispatch no right-button events, so the context menu is attached only on 0.10+ hosts (probed structurally off the injected ui kit); keyboard shortcuts remain the complete action surface.
 
 > In the list, bare letters always type into the query and actions live on `Alt+` chords only; bare `n`/`N` are used for hit jumping in the preview alone, where every other key stays swallowed.
 
@@ -193,9 +194,10 @@ npm install        # dev dependencies (build & test)
 npm run build      # tsc → dist/
 npm run fixtures   # synthesize session fixtures (zstd chains + plain + corruption cases)
 npm test           # vitest: frames / scanner / search / event sanitization / display width / admission & mount
+npm run verify:hosts  # dual-host compatibility matrix: isolated-copy package swap, one build+test each on 0.9.3 and 0.10.x
 ```
 
-Test coverage (221 tests):
+Test coverage (231 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), zero decode on a same-size touch (boundary-verified), the offset-watermark suite (zstd/plain appends decode only the new frames, torn-tail completion without duplication, detected shrink and same-boundary equal-length rewrites fall back to a full decode, journal 0600/0700 posture and cold-start full decode), corruption tolerance, the indexTools/indexThinking switches, AbortSignal, `onSession` incremental delivery (per-session callbacks sharing the final result's objects, cache hits included, stopped by abort, MRU comparator stability).
@@ -203,6 +205,7 @@ Test coverage (221 tests):
 - **Preview reader**: line layout and per-message attribution (CJK widths included), cursor-line ↔ message mapping, message-step scrolling, hit jumping (forward/backward/circular), scroll-window following, hit-range wrap mapping (`wrapWidthRanges` byte-equivalent to `wrapWidth`).
 - **Keyboard help**: section assembly and narrow-column truncation, the Alt+H open/close wiring.
 - **Scene wiring (real host renderer)**: preview key layering and typing swallow, circular n/N jumps and copy, PgDn page math, narrow single-row header truncation, help panel toggling, streaming results (entries appear before the sweep completes), the scan-in-flight empty state (a reading notice instead of a misleading "no matches" in query mode), the Alt+N title-only toggle and back.
+- **Host-generation dispatch**: the assistant role's colour key is probed structurally off the injected ui kit (0.9.x `claude` / 0.10+ `accent`, a rename with identical palette values); the other roles' keys are generation-stable.
 - **Event sanitization**: terminal control-byte and C1/DEL stripping, CR/tab folding, control-only message drops, header cwd and session-title sanitization.
 - **Display width**: CJK/emoji double-width, head/tail truncation, spread rows, physical-line scroll windows (two-line card budget), hit-line flattening/windowing/range mapping.
 - **Admission**: the manifest parses and projects under the host's own `@dsh-std/manifest` v0.15 parser with exact contract declarations; real cordis fibers mount the plugin (scene register/open/close, settings card, mediated-command degradation path) and the language pin reverts on deactivation.
@@ -210,7 +213,7 @@ Test coverage (221 tests):
 
 ## Requirements
 
-- dsh-TUI v0.9+ (v0.15 community-draft plugin system)
+- dsh-TUI v0.9+ (v0.15 community-draft plugin system). Both the 0.9.x and 0.10.x lines are verified (`npm run verify:hosts`); 0.10-only capabilities soft-probe and degrade gracefully — no forced host upgrade.
 - Node `^22.19 || >=24`
 - Windows / macOS / Linux (frame walking is pure Buffer math — platform independent)
 
