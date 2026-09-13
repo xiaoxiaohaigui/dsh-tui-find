@@ -2,7 +2,7 @@
 
 ![dsh-tui-find cover](./assets/dsh-tui-find-cover-title.png)
 
-**Cross-session full-text search for dsh-TUI** — turn "I remember discussing/generating X in some session" into "found it, readable, copyable, resumable" within seconds.
+**Cross-session full-text search for dsh-TUI** — instant incremental search across all local dsh sessions (zstd frame chains + plain JSONL): read the context, copy the text, resume the session.
 
 [中文说明](./README.md) · MIT · Zero runtime dependencies
 
@@ -11,124 +11,64 @@
 
 ## What it is
 
-[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) (`@deepseek-harness-tui/dsh-tui`) ships a resume browser, in-session `/` search, and Ctrl+R input history — but **no cross-session content search**. Once a conversation scrolls out of the current window it becomes an unsearchable archive.
+[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) ships a resume browser, in-session `/` search and Ctrl+R input history — but no cross-session content search: once a conversation scrolls out of the window it becomes an unsearchable archive. This plugin closes that gap:
 
-`dsh-tui-find` closes that gap: instant incremental content search across **all local dsh sessions** (the default zstd frame-chain storage plus plain JSONL), with read-only context preview, one-key copy, and session resume.
+- **Instant**: fzf-style in-memory filtering with results streaming in; multi-term AND, JS regex, pinyin (full readings / initials), title-only mode, time windows.
+- **Readable & copyable**: a read-only preview anchored on the hit with highlighting, one-key copy of the text or the log path.
+- **Resumable**: `↵` resumes the session with double confirmation; context menu on right-click (0.10+ hosts only).
 
 ## Install
 
-> **Development notice**: the project is in its 0.x stage; interfaces and config keys may change between versions. See upgrade/uninstall below.
-
-**Option 1: from npm (published)**
-
 ```bash
 dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 ```
 
-`dsh plugin ... add` forwards its arguments to pnpm inside the profile directory (`--profile` is required; `-w` allows operating on the profile root directly) and picks up the package's bundled `cordis.patch.yml` automatically as a composition layer — no config editing needed.
+Replace `dsh-tui` with your actual profile name (a directory under `$DSH_HOME/profiles/`; the default root is `~/.dsh` when `DSH_HOME` is unset). The CLI registers the package into the profile's bundle list and applies the bundled `cordis.patch.yml` automatically — no config editing needed; restart dsh-TUI (or run `/restart`) after install / upgrade / removal — the host's `/reload` never reloads plugin code.
 
-**Option 2: local tarball (development/self-use; never install the source directory directly)**
+Local development install: `npm install && npm pack` (the prepack hook builds and runs the full test suite), then `dsh plugin --profile dsh-tui add -w ./dsh-tui-find-<version>.tgz`; never install the source directory directly.
 
-```bash
-cd /path/to/dsh-tui-find
-npm install        # first time only
-npm pack           # the prepack hook builds and runs the full test suite
-dsh plugin --profile dsh-tui add -w ./dsh-tui-find-<version>.tgz
-```
+## Upgrade & uninstall
 
-Replace `dsh-tui` in `--profile` with your actual profile name (a directory under `$DSH_HOME/profiles/`; when `DSH_HOME` is unset the default root is `~/.dsh`).
+Upgrade: re-run the install command (idempotent); if the version doesn't move, `npm cache clean --force`, then verify via `/plugins` after a restart.
 
-### Mounting mechanics
-
-After `dsh plugin ... add`, the CLI registers the package into the profile's `package.json → dsh.profile.bundles` list; the package's own `cordis.patch.yml` is applied as a composition layer in bundle order: `dsh-base → other bundles → dsh-tui-find patch → user profile patch`. No manual config editing is required under normal circumstances. Installs, upgrades and removals change the profile's composition tree — restart dsh-TUI (or run `/restart`) for new code to load or removed code to unload; the host's `/reload` only re-reads preference files, never plugin code.
-
-## Upgrade
-
-Re-run the install command pinned to `@latest` (`dsh plugin ... add` is idempotent):
-
-```bash
-dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
-```
-
-If the new version does not appear, refresh the npm cache first: `npm cache clean --force`. Restart dsh-TUI (or run `/restart`) to load the new version, then verify via `/plugins` (or `/plugins check`) inside the TUI.
-
-## Uninstall
-
-Three steps, all reversible, none touch the host core; restart dsh-TUI (or run `/restart`) for them to take effect:
-
-1. **Remove the package** (this also drops the bundle from the resolution tree):
-
-```bash
-dsh plugin --profile dsh-tui remove -w dsh-tui-find
-```
-
-2. **Confirm the bundle list is clean**: if `dsh-tui-find` still appears in the `dsh.profile.bundles` array of `$DSH_HOME/profiles/dsh-tui/package.json` (CLI version differences), delete that entry manually.
-
-3. **(Optional) clean up settings residue**: values saved through `/settings` live in the host settings service's user layer (settings.yaml); they survive uninstall and keep applying after a reinstall (same layering rules). For a fully clean slate, delete the `dsh-tui-find` namespace keys from that file.
-
-> Manual mounts (a row inserted into the profile's `cordis.patch.yml` by hand): remove the package as in step 1 first, then delete the inserted row.
-
-Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.dsh-tui`, the plugin is strictly read-only, and your search history disappears with it — sessions themselves are untouched. The only file it writes is the watermark journal (`~/.dsh-tui/dsh-tui-find/watermark.json`, file metadata only, see the next section); delete the whole `~/.dsh-tui/dsh-tui-find/` directory for a fully clean slate.
+Uninstall: `dsh plugin --profile dsh-tui remove -w dsh-tui-find`, then restart. If the profile's `package.json → dsh.profile.bundles` still lists the entry (CLI version differences), delete it manually; settings saved through `/settings` stay in settings.yaml and reapply after a reinstall — delete the `dsh-tui-find` namespace keys for a clean slate. Uninstalling only affects this plugin: session data is strictly read-only and untouched.
 
 ## Usage
 
 | Action | Description |
 |---|---|
-| `/find <query>` | Jump straight to results (e.g. `/find backoff`; space-separate multiple terms) |
+| `/find <query>` | Jump straight to results (space-separate multiple terms) |
 | `/find` | Open the full-screen search scene |
-| `Alt+F` | Global shortcut entry (default; remap or disable via the `shortcut` config) |
-
-> In the `/` suggestion list, the `/find` row carries a zh/en description that follows the UI language (via the host `tuiCommandTrees` command-tree provider, supported since 0.9.x).
-
-> **Background warm-up index**: about 10 seconds after startup the plugin pre-builds the index in the background with the same scanner `/find` uses, so the first `/find` open only verifies the cache and lists instantly (disable via the `warmup` config). On 0.10+ hosts a one-line "indexing n/m" progress appears above the prompt — click it to cancel the warm-up; 0.9.x hosts warm up silently. The index lives only in memory and is rebuilt every boot — the warm-up does not reduce total decoding, it moves the unavoidable cold decode out of your first search's foreground stall into the idle time after startup.
+| `Alt+F` | Global shortcut entry (remap or `off` via the `shortcut` config) |
 
 Keys inside the scene:
 
 | Key | Action |
 |---|---|
-| any character | Instant filtering (fzf-style, purely in-memory, zero I/O); with an empty query, recent sessions are listed |
-| `Tab` | Toggle scope: this repo ⇄ all sessions |
-| `Alt+R` | Toggle regex matching (JS syntax; an invalid pattern shows a notice and matches nothing) |
-| `Alt+T` | Cycle the time window: all ⇄ last 7 days ⇄ last 30 days (by session modification time) |
-| `Alt+N` | Toggle title-only search: session titles only (message bodies are not searched) |
-| `↑` `↓` / `PgUp` `PgDn` | Move between entries / page |
-| `Alt+P` | Read-only preview: a scrollable full-conversation reader anchored on the hit (cards start at the conversation head), with hit highlighting and the session log path |
-| `Alt+C` | Copy the hit's original text (role + timestamp included); in the preview, copies the message under the cursor |
-| `Alt+E` | Expand / collapse all hits of the selected session |
-| In preview `↑` `↓` | Step by message segment (the cursor lands on the adjacent message's header; it holds at both ends) |
-| In preview `PgUp` `PgDn` / wheel | Scroll the conversation (the cursor row follows and pages automatically) |
-| In preview `n` / `N` | Jump to the next / previous hit, wrapping around at both ends (the status line shows "hit i/total") |
-| `Alt+H` | Toggle the keyboard-help panel |
-| `↵` | Resume session (**double confirmation**; loud warning while the live session is working) |
-| `Esc` | Clear query / go back / close the scene |
+| any character | Instant filtering; an empty query lists recent sessions |
+| `Tab` / `Alt+T` | Scope (this repo ⇄ all) / time window (all ⇄ last 7 days ⇄ last 30 days) |
+| `Alt+R` / `Alt+N` | Regex matching / title-only search |
+| `↑↓` / `PgUp` `PgDn` | Move between entries / page |
+| `Alt+P` | Read-only preview: anchored on the hit, highlighted, shows the log path; in the preview `↑↓` steps by message, `n`/`N` jump between hits (wrapping), `PgUp`/`PgDn`/wheel scroll |
+| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message under the cursor) / expand, collapse the session's hits |
+| `Alt+H` | Keyboard-help panel |
+| `↵` / `Esc` | Resume session (double confirmation) / clear the query, go back, exit |
 
-Mouse:
+Mouse: left-click selects, hover highlights, the wheel moves the selection (scrolls the preview); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session — in the preview, copy the message under the pointer.
 
-| Action | Behavior |
-|---|---|
-| Left-click a row | Select it and open the same resume confirmation as `↵` |
-| Hover a row | Move the selection and highlight the row |
-| Wheel | Move the selection one row up or down (in the preview, scrolls the reader line by line) |
-| Right-click a row | Open the context menu (0.10+ hosts only): copy message text / copy session log path / resume this session; in the preview, copy the message under the pointer |
+> Results are grouped per session, the first 3 hits show per session (`(+N)` hint), most-recent-first; the scan starts the moment the scene opens and results stream in, with live progress in the header.
 
-> Mouse support depends on dsh-TUI's fullscreen mouse tracking. 0.9.x hosts dispatch no right-button events, so the context menu is attached only on 0.10+ hosts (probed structurally off the injected ui kit); keyboard shortcuts remain the complete action surface.
+> About 10 seconds after startup the plugin pre-builds the index in the background (disable via the `warmup` config), so the first `/find` opens instantly; 0.10+ hosts show an "indexing n/m" row above the prompt — click it to cancel. The warm-up only moves the cold decode into idle time; it does not reduce total decoding.
 
-> In the list, bare letters always type into the query and actions live on `Alt+` chords only; bare `n`/`N` are used for hit jumping in the preview alone, where every other key stays swallowed.
-
-> **Why the default is not `Ctrl+Shift+F`**: mainstream terminals (Windows Terminal, VS Code, GNOME Terminal, …) reserve that chord for their own find UI, intercepting the keypress before dsh-TUI ever sees it. The default is now `Alt+F` to avoid QQ's `Ctrl+Alt+F` conflict; if your terminal happens to use it, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`.
-
-Results are grouped per session, hits are highlighted, each session shows its first 3 hits (`(+N)` hint), most-recent-first. The scan starts the moment the scene opens and results **stream in** as sessions resolve (the header tracks the sweep's progress) — no waiting for the whole library before the list starts filling.
+> The default is `Alt+F`, not `Ctrl+Shift+F`: mainstream terminals reserve that chord for their own find UI and intercept it. On a conflict, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`.
 
 ## Search semantics
 
-- **Indexed**: user messages, assistant text, and session titles; tool-call summaries (`[name] arguments`) are included when `indexTools` is enabled.
-- **Not indexed by default**: thinking text (opt-in via config).
-- **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); `Alt+R` switches to JS regex mode (case sensitivity follows the case-sensitive switch; invalid, oversized, or potentially catastrophic patterns are rejected and show a notice).
-- **Multi-term AND**: non-regex queries split on whitespace; a message (or title) matches only when it contains EVERY term (fzf-style semantics). Double-quoted fragments keep their inner spaces (e.g. `auth "retry logic"`); an unclosed quote runs to the end of the query; at most 16 terms, duplicates deduped. In regex mode the whole query stays ONE pattern — a space is pattern syntax there, not a separator.
-- **Pinyin matching** (on by default, disable via `pinyin`): a query term made only of ASCII letters also matches Chinese characters through their pinyin on top of the literal substring — full toneless syllables (`zhangsan` → 张三), the default-reading chain (`zhongqing` → 重庆, `changsha` → 长沙) and initials (`zs` → 张三, `cq` → 重庆); full-reading matches start at a syllable boundary and may use a prefix of that syllable, but never join the tail of one syllable to the initial of the next, and initials do not cross Chinese word boundaries. Polyphones participate with every reading (`chongqing` and `zhongqing` both find 重庆), and ü is written as the keyboard form v (`lvse` finds 绿色). A 3500-character table (《现代汉语常用字表》, generated from pinyin-pro, reproducible via `scripts/make-pinyin-data.mjs`) ships built in; characters outside it fold to themselves and never break the rest of the matching. Highlights land on the original characters. "Case-sensitive" applies to the literal English path only — Chinese readings always match case-insensitively; regex mode is never pinyin-expanded.
-- **Title-only search** (off by default, `titleOnly` sets the default, `Alt+N` toggles it live): matching restricts to session titles (`session/title`, last write wins) — message bodies are not searched, for "find that session" rather than "find that passage". Sessions without a title cannot match (the cwd/id display fallback is display-only, never indexed); the per-document AND, pinyin and regex semantics are unchanged on titles; the empty-query recent list is unaffected.
-- **Time window**: `Alt+T` filters by session modification time (all ⇄ last 7 days ⇄ last 30 days), applying to both search results and the empty-query recent list; the initial window comes from the `defaultTime` config (default all).
-- **Default scope**: current repo (session cwd matched against the live channel cwd — the same semantics as the resume browser, subdirectory sessions included).
+- **Indexed**: user messages, assistant text, session titles; tool-call summaries with `indexTools`, thinking text with `indexThinking`.
+- **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); multi-term AND (double-quoted phrases keep their inner spaces, at most 16 terms); regex mode treats the whole query as ONE pattern — no term splitting.
+- **Pinyin** (on by default, disable via `pinyin`): letter-only terms also match Chinese — full readings (`zhangsan` → 张三), default-reading chains (`zhongqing` → 重庆), initials (`zs` → 张三); polyphones use every reading, ü is written as v; a 3500-character reading table ships built in, out-of-table characters fold to themselves; regex mode is never pinyin-expanded.
+- **Title-only** (`Alt+N` toggles live): session titles only, message bodies excluded — for "find that session"; untitled sessions cannot match.
+- **Default scope**: current repo (session cwd matched against the live channel cwd, the resume browser's semantics, subdirectory sessions included).
 
 ## Configuration
 
@@ -150,79 +90,37 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       maxMessageChars: 4000      # per-message index character budget
       warmup: true               # background warm-up index (default on; off = /find scans on open)
       lang: 'auto'               # zh | en | auto (follow the host language)
-      shortcut: 'alt+f'           # global entry combo (ctrl or alt required; 'off' disables the entry)
+      shortcut: 'alt+f'          # global entry combo (ctrl or alt required; 'off' disables the entry)
 ```
 
-`lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` env → `~/.dsh-tui/lang.json` → OS locale → zh. A `/lang` switch updates the plugin copy immediately.
+Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. Booleans/selects save on the spot, text drafts confirm with Enter — into the host settings service's user layer, overriding the plugin-row defaults by layering; the card copy follows the TUI language.
 
-### Editing in the `/settings` screen
+`lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → OS locale → zh; a `/lang` switch applies immediately.
 
-Every option above except `lang` can also be changed inside the TUI: open `/settings` and enter the **dsh-tui-find (session search)** card.
-
-| Option | Values |
-|---|---|
-| Default scope | This repo (default) ⇄ All sessions |
-| Default time window | All time (default) ⇄ Last 7 days ⇄ Last 30 days |
-| Case-sensitive | on / off (default off) |
-| Regex matching | on / off (default off; `Alt+R` toggles it live in the scene) |
-| Pinyin matching | on / off (default on; letter-only terms match Chinese via full readings + initials) |
-| Title-only search | on / off (default off; `Alt+N` toggles it live in the scene) |
-| Index tool calls | on / off (default off) |
-| Index thinking | on / off (default off) |
-| Session root override | text; blank falls back to the resolution chain below |
-| Per-message index budget | number (200–65536, step 100, default 4000) |
-| Background warm-up index | on / off (default on; off = the first `/find` waits for the scan) |
-| Global shortcut | text; the combo must carry `Ctrl` or `Alt`, `off` disables; default `Alt+F` (an invalid draft falls back to the default with a warning) |
-
-Edits save immediately (booleans/selects write on the spot, text drafts confirm with Enter) into the host settings service's user layer, which overrides the plugin-row defaults by layering; the card copy follows the TUI language setting (zh / en).
-
-## Session root resolution
-
-Probed in this order (first hit wins):
-
-1. Config `sessionRoot` (explicit, exclusive override)
-2. `DSH_TUI_SESSION_ROOT` env var
-3. `$DSH_HOME || ~/.dsh` + `/sessions`
-4. `~/.dsh-tui/sessions`
+Session root is probed in order (first hit wins): the `sessionRoot` config (exclusive override) → the `DSH_TUI_SESSION_ROOT` env var → `$DSH_HOME || ~/.dsh` + `/sessions` → `~/.dsh-tui/sessions`.
 
 ## Privacy & safety
 
-- **Read-only end to end**: session logs are opened 'r' only; the history lock is never touched and history is never rewritten.
-- **Minimal disk footprint**: conversation content lives only in memory (behind an mtime+size cache); no copies of your conversations are ever written. The single exception is the watermark journal `~/.dsh-tui/dsh-tui-find/watermark.json` — it records log paths plus byte counts, mtimes and offsets as file metadata, **never conversation text**; 0700 directory / 0600 file, tmp+rename atomic write, and `DSH_TUI_FIND_WATERMARK=off` disables it entirely. It is an observation record for incremental decoding: a cold start still decodes every prefix, and the journal never drives decode decisions.
-- **Incremental decode**: after a session log grows, only the new frames are decoded (offset watermark + append-only boundary proof); a same-size touch decodes nothing, while a shrink, a detected rewrite, or an encoding flip falls back to a full decode. The prefix check covers every byte before the watermark.
-- **Tolerant**: a torn final frame (crash mid-flush) is recognized structurally per RFC 8878 and skipped — never fatal, never leaves residue; frames the writer completes after the crash are picked up by the incremental path, neither duplicated nor lost.
-- **Resume needs confirmation**: resuming discards the current context, so `↵` asks twice, with a loud warning while the live session is still working.
+- **Read-only end to end**: logs are opened read-only; the history lock is never touched, history is never rewritten.
+- **Minimal disk footprint**: conversation content lives only in memory, never on disk. The single written file is the watermark journal `~/.dsh-tui/dsh-tui-find/watermark.json` — paths plus byte/mtime/offset metadata only, never conversation text (0700/0600 + tmp+rename atomic write; `DSH_TUI_FIND_WATERMARK=off` disables it).
+- **Incremental decode & tolerance**: appends decode only new frames, a same-size touch decodes nothing, shrink/rewrite/encoding flips fall back to a full decode; a torn final frame is recognized per RFC 8878 and skipped — never fatal, never residue.
+- **Resume needs confirmation**: resuming discards the current context; `↵` asks twice, with a loud warning while the live session is still working.
 
 ## Development
 
 ```bash
-npm install        # dev dependencies (build & test)
-npm run build      # tsc → dist/
-npm run fixtures   # synthesize session fixtures (zstd chains + plain + corruption cases)
-npm test           # vitest: frames / scanner / search / event sanitization / display width / admission & mount
-npm run verify:hosts  # dual-host compatibility matrix: isolated-copy package swap, one build+test each on 0.9.3 and 0.10.x
+npm install          # dev dependencies
+npm run build        # tsc → dist/
+npm test             # pretest builds and generates fixtures, then runs the full vitest suite
+npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (283 tests):
-
-- **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
-- **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), zero decode on a same-size touch (boundary-verified), the offset-watermark suite (zstd/plain appends decode only the new frames, torn-tail completion without duplication, detected shrink and same-boundary equal-length rewrites fall back to a full decode, journal 0600/0700 posture and cold-start full decode), corruption tolerance, the indexTools/indexThinking switches, AbortSignal, `onSession` incremental delivery (per-session callbacks sharing the final result's objects, cache hits included, stopped by abort, MRU comparator stability).
-- **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid/oversized/unsafe patterns rejected, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence, multi-term AND queries (whitespace tokenizing, quoted phrases, dedupe and the 16-term cap, range-union merging, whole-pattern regex, scope/time-window interplay), pinyin matching (full readings / default-reading chain / initials, polyphone dual chains, ü→v, out-of-table fallback, highlight mapping onto characters, toggle-off regression, regex isolation, case-sensitivity semantics, table integrity), title-only matching (title documents alone, untitled sessions never match, AND/pinyin/regex semantics preserved on titles).
-- **Preview reader**: line layout and per-message attribution (CJK widths included), cursor-line ↔ message mapping, message-step scrolling, hit jumping (forward/backward/circular), scroll-window following, hit-range wrap mapping (`wrapWidthRanges` byte-equivalent to `wrapWidth`).
-- **Keyboard help**: section assembly and narrow-column truncation, the Alt+H open/close wiring.
-- **Scene wiring (real host renderer)**: preview key layering and typing swallow, circular n/N jumps and copy, PgDn page math, narrow single-row header truncation, help panel toggling, streaming results (entries appear before the sweep completes), the scan-in-flight empty state (a reading notice instead of a misleading "no matches" in query mode), the Alt+N title-only toggle and back, right-click menu wiring (right-press opens the menu and selects the row, hover moves the highlight, the ↑↓/Enter/Esc keyboard path, backdrop close without pass-through, item click activation, merged key-block activation (↓↓+Enter arriving in one chunk still activates the moved highlight), the 0.9 generation gate — pointer cases ride the host AlternateScreen with injected SGR mouse sequences; the right-click dispatch cases run only on 0.10+ hosts and are skipped on 0.9).
-- **Host-generation dispatch**: the assistant role's colour key is probed structurally off the injected ui kit (0.9.x `claude` / 0.10+ `accent`, a rename with identical palette values); the other roles' keys are generation-stable.
-- **Event sanitization**: terminal control-byte and C1/DEL stripping, CR/tab folding, control-only message drops, header cwd and session-title sanitization.
-- **Display width**: CJK/emoji double-width, head/tail truncation, spread rows, physical-line scroll windows (two-line card budget), hit-line flattening/windowing/range mapping.
-- **Admission**: the manifest parses and projects under the host's own `@dsh-std/manifest` v0.15 parser with exact contract declarations; real cordis fibers mount the plugin (scene register/open/close, settings card, mediated-command degradation path) and the language pin reverts on deactivation.
-- **Boot-race hardening**: the guarded-seam retry helper (retry landing, bounded give-up, timer cleanup on deactivation); a forced cold-start interleaving against the real host `TuiSceneRuntime` where a bare register is rejected by the liveness gate (canary assertion pins the race) while the plugin lands its scene via the retry, and the healthy interleaving keeps registering synchronously.
-- **Background warm-up index**: the delayed start (the config row re-read at fire time, an already-open scene never starts, options passed through mirroring the scene sweep), the progress store's stable-snapshot semantics (same-value ticks never re-render, settle returns to idle), scene-open supersede (abort signal + a trailing progress tick cannot resurrect), the click-to-cancel path, disposal before and mid-sweep, a failed sweep degrading to one warning; the `tuiStatus` structural soft probe (no service / 0.9.x-shaped runtime no-ops, a boot-window refusal retries and lands, a permanent refusal burns the bounded budget without blocking the sweep), and the 0.10 progress view rendered against the real host kit (bilingual row, differential-frame following, zero output while idle).
+Test coverage (283 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader, keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 
-- dsh-TUI v0.9+ (v0.15 community-draft plugin system). Both the 0.9.x and 0.10.x lines are verified (`npm run verify:hosts`); 0.10-only capabilities soft-probe and degrade gracefully — no forced host upgrade.
-- Node `^22.19 || >=24`
-- Windows / macOS / Linux (frame walking is pure Buffer math — platform independent)
+- dsh-TUI v0.9+ (v0.15 community-draft plugin system). Both 0.9.x and 0.10.x are verified (`npm run verify:hosts`); 0.10-only capabilities soft-probe and degrade gracefully — no forced host upgrade.
+- Node `^22.19 || >=24`; Windows / macOS / Linux.
 
 ## License
 
