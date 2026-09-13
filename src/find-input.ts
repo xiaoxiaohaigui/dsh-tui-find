@@ -283,8 +283,14 @@ export function useFindInput(deps: FindInputDeps): void {
           // Split: Alt+P hands focus to the reader — no open/close, no
           // re-anchor (the reader follows the selection while it is on the
           // list, and manual scrolls in the reader are its own business).
-          modeRef.current = 'preview'
-          setMode('preview')
+          // With nothing selected the reader has nothing to anchor to, so
+          // the chord stays inert like the classic branch below (R-057): a
+          // focus handoff onto a dismissed pane would flip the hint line to
+          // the reader vocabulary and redefine Esc with nothing to show.
+          if (selectedRow !== undefined) {
+            modeRef.current = 'preview'
+            setMode('preview')
+          }
           return
         }
         const row = selectedRow

@@ -314,6 +314,12 @@ export function FindScene(props: TuiSceneProps & {
 
   const beginResume = useCallback(() => {
     if (resumeTarget === undefined) return
+    // Mirror write first: Enter's call sites sit inside the keyboard
+    // dispatcher's batch, and a later key of the same stdin chunk reads
+    // modeRef to pick its branch — render-time sync alone leaves that key
+    // on the stale mode (the Esc-after-Enter chunk fell through to the
+    // list-mode Esc and closed the whole scene; REVIEW R-055).
+    modeRef.current = 'confirm'
     setMode('confirm')
   }, [resumeTarget])
 
@@ -402,12 +408,23 @@ export function FindScene(props: TuiSceneProps & {
     item.action()
   }, [])
 
+  /** Whether the rendered list column answers the pointer right now: list
+   *  focus in both layouts, plus the split reader focus — the list stays
+   *  visible there and already answers the wheel (stepRows), so hover,
+   *  click and the row menu answer it too (REVIEW R-056). The classic
+   *  preview and the confirm/help screens render no list at all, so the
+   *  mode gate is defense-in-depth there. */
+  const listPointerLive = useCallback(() => {
+    if (actionPendingRef.current) return false
+    return modeRef.current === 'list' || (splitActive && modeRef.current === 'preview')
+  }, [splitActive])
+
   /** Right-click on a list row: the row selects (mirroring hover), and the
    *  menu offers the row's vocabulary — a hit row adds its message copy; a
    *  card offers path + resume. Resume mirrors Enter (the confirm pane). */
   const openRowMenu = useCallback(
     (rowIndex: number, event: ContextMenuEventLike) => {
-      if (modeRef.current !== 'list' || actionPendingRef.current) return
+      if (!listPointerLive()) return
       const row = flat[rowIndex]
       if (row === undefined) return
       const session = rowSession(row)
@@ -439,7 +456,7 @@ export function FindScene(props: TuiSceneProps & {
       menuRef.current = opened
       setMenu(opened)
     },
-    [flat, copyMessage, copySessionPath],
+    [flat, copyMessage, copySessionPath, listPointerLive],
   )
 
   /** Right-click in the reader: copy the message under the POINTER (the
@@ -619,16 +636,16 @@ export function FindScene(props: TuiSceneProps & {
   /** Mouse selection mirrors the browser: hover moves focus. */
   const selectRow = useCallback(
     (rowIndex: number) => {
-      if (modeRef.current !== 'list' || actionPendingRef.current) return
+      if (!listPointerLive()) return
       setSelected(Math.min(Math.max(0, rowIndex), Math.max(0, flat.length - 1)))
       setStatus(undefined)
     },
-    [flat.length],
+    [flat.length, listPointerLive],
   )
   /** A row click follows the browser's open path, including confirmation. */
   const clickRow = useCallback(
     (rowIndex: number) => {
-      if (modeRef.current !== 'list' || actionPendingRef.current) return
+      if (!listPointerLive()) return
       const row = flat[rowIndex]
       if (row === undefined) return
       setSelected(rowIndex)
@@ -636,7 +653,7 @@ export function FindScene(props: TuiSceneProps & {
       modeRef.current = 'confirm'
       setMode('confirm')
     },
-    [flat],
+    [flat, listPointerLive],
   )
   const stepRows = useCallback(
     (event: WheelEventLike) => {

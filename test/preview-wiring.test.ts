@@ -203,6 +203,68 @@ describe('help panel wiring', () => {
   })
 })
 
+describe('resume confirm wiring', () => {
+  it('swallows an arrow that follows Enter in the same stdin block', async () => {
+    // Enter opens the resume confirm; a later key of the same chunk must
+    // read the mode Enter already chose (the modeRef mirror write) and hit
+    // the confirm branch's swallow, not the list branch behind the pane
+    // (REVIEW R-055; same merged-block class as the R-054 menu case). The
+    // ESC-prefixed arrow parses fully within the chunk, so the two keys
+    // provably share one batch — the Esc variant lives in the sibling case.
+    const harness = await mount(sessionWithMessages(['intro', 'needle one', 'tail']))
+    try {
+      // The sweep streams sessions in: wait until the card row exists, or
+      // Enter lands on an empty list and beginResume legitimately no-ops.
+      await waitForMatch(() => harness.all(), /Preview\s*wiring/)
+      harness.send('\r\u001b[B')
+      await waitFor()
+      // The confirm pane did open — guards against a vacuous pass where
+      // Enter never reached beginResume at all.
+      expect(harness.all()).toMatch(/Resum[^?\r]{0,20}session\?/)
+      harness.send('\u001b')
+      await waitFor()
+      harness.resize(81, 12)
+      await waitFor()
+      expect(harness.latest()).toMatch(/❯\s*Preview\s*wiring/)
+      expect(harness.latest()).not.toMatch(/❯\s*#2\s*AI/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('backs out of the confirm when Esc follows Enter in the same stdin block', async () => {
+    // The review's R-055 scenario: the chunk's Esc must read the mode Enter
+    // already chose (the modeRef mirror write) and take the confirm branch's
+    // back-out — a render-synced mirror still reads 'list' and takes the
+    // list-mode Esc, which clears the query and strands the confirm pane.
+    // Shape notes (probed against the host tokenizer): a lone trailing ESC
+    // is held out of the batch entirely, and CR absorbs a following
+    // printable into one mangled token that is neither Return nor text — so
+    // a plain '\r\u001b' or '\rx' cannot express this bug. The second ESC
+    // forces the first out as a real Escape key and the '[B' suffix
+    // completes that second sequence: all three keys land in one batch.
+    const harness = await mount(sessionWithMessages(['intro', 'needle one', 'tail']))
+    try {
+      // The sweep streams sessions in: wait until the card row exists, or
+      // Enter lands on an empty list and beginResume legitimately no-ops.
+      await waitForMatch(() => harness.all(), /Preview\s*wiring/)
+      harness.send('\r\u001b\u001b[B')
+      await waitFor()
+      harness.resize(81, 12)
+      await waitFor()
+      // Esc backed out of the confirm — the batched confirm→list transition
+      // settles on the list root and the pane never paints...
+      expect(harness.latest()).not.toMatch(/Resum[^?\r]{0,20}session\?/)
+      // ...the query survived, and the chunk's ↓ legitimately moved the
+      // selection onto the hit row in the restored list focus.
+      expect(harness.latest()).toMatch(/⌕\s*needle/)
+      expect(harness.latest()).toMatch(/❯\s*#2\s*AI/)
+    } finally {
+      harness.dispose()
+    }
+  })
+})
+
 describe('search filter and scan streaming wiring', () => {
   it('narrows matches to session titles with Alt+N and back', async () => {
     const base = sessionWithMessages(['needle one', 'needle two'])
@@ -275,12 +337,27 @@ describe('search filter and scan streaming wiring', () => {
       // failure instead of a load-dependent flake.
       firstGate.resolve()
       await waitForMatch(() => harness.all(), /Second\s*session/)
-      expect(harness.all()).toMatch(/Second\s*session/)
+      // The streamed row rides a diff frame, and a torn diff capture can
+      // drop interior cells from the cumulative stream ('Second session' →
+      // 'Second sesion' flaked once in the 09-13 review round; the
+      // split-wiring header records the same quirk for first frames). The
+      // presence assertion rides a resize-forced full repaint, which
+      // rewrites every cell and cannot carry a tear. No fixed wait covers
+      // the poll itself, so a deadline miss still resolves here and the
+      // frame assertion below turns it into a normal diff failure.
+      harness.resize(80, 12)
+      await waitFor()
+      expect(harness.latest()).toMatch(/Second\s*session/)
       secondGate.resolve()
-      // The completed sweep replaces the accumulation; the streamed rows stay.
+      // The completed sweep replaces the accumulation; the streamed rows
+      // stay — asserted on the final full-repaint frame, i.e. the replaced
+      // list state itself rather than the pre-replacement frames all()
+      // would also accept.
       await waitForMatch(() => harness.all(), /First\s*session/)
-      expect(harness.all()).toMatch(/First\s*session/)
-      expect(harness.all()).toMatch(/Second\s*session/)
+      harness.resize(81, 12)
+      await waitFor()
+      expect(harness.latest()).toMatch(/First\s*session/)
+      expect(harness.latest()).toMatch(/Second\s*session/)
     } finally {
       harness.dispose()
     }

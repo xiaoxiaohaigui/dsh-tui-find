@@ -118,7 +118,7 @@ npm test             # pretest builds and generates fixtures, then runs the full
 npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (298 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader, keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
+Test coverage (302 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader, keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 

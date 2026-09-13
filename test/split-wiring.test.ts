@@ -5,10 +5,11 @@
  * rendering with the reader anchored to the selection, the deduplicated
  * selection→reader anchoring (manual scrolls survive unrelated repaints),
  * the Alt+P focus handoff with the full reader vocabulary, the area-local
- * wheel, the pane's right-click copy (0.10+ hosts only), and the width /
- * config fallbacks. The classic form is pinned by every existing scene,
- * preview and menu test mounting at the default 80 columns — zero of their
- * assertions changed, which is the no-regression proof.
+ * wheel, the list's pointer wiring from reader focus (wheel/hover/click,
+ * REVIEW R-056), the pane's right-click copy (0.10+ hosts only), and the
+ * width / config fallbacks. The classic form is pinned by every existing
+ * scene, preview and menu test mounting at the default 80 columns — zero of
+ * their assertions changed, which is the no-regression proof.
  */
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
@@ -186,6 +187,40 @@ describe('split focus handoff', () => {
       harness.dispose()
     }
   })
+
+  it('keeps Alt+P inert on an empty list, matching the classic no-op', async () => {
+    const harness = await mount(splitSession(), wide)
+    try {
+      // The sweep streams sessions in: wait until the card row exists so
+      // the 'x' empties a REAL results list (and, later, Esc restores one).
+      await waitForMatch(() => harness.all(), /Preview\s*wiring/)
+      // 'x' empties the results and dismisses the reader with the selection.
+      harness.send('x')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
+      // Nothing is selected, so the chord must not flip into the reader
+      // focus (the classic branch no-ops the same way, REVIEW R-057): the
+      // hint line keeps the list vocabulary...
+      harness.send('\u001bp')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(harness.latest()).not.toMatch(/back\s*to\s*list/)
+      // ...and Esc is therefore the list-mode Esc: it clears the query and
+      // the reader returns with the recent list — instead of backing out of
+      // a focus handoff that never happened, which would keep the empty
+      // query and the reader dismissed.
+      harness.send('\u001b')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+    } finally {
+      harness.dispose()
+    }
+  })
 })
 
 describe.skipIf(!generation10)('split wheel locality', () => {
@@ -239,6 +274,55 @@ describe.skipIf(!generation10)('split pane context menu', () => {
       const [text, tone] = notify.mock.calls[0] ?? []
       expect(text).toBe('Copied 15 chars to clipboard')
       expect(tone).toBe('info')
+    } finally {
+      harness.dispose()
+    }
+  })
+})
+
+describe.skipIf(!generation10)('split pointer into the list from reader focus', () => {
+  it('answers wheel, hover and click on the list while the reader holds the keyboard', async () => {
+    const harness = await mount(splitSession(), { ...wide, fullscreen: true })
+    try {
+      // The sweep streams sessions in: wait until the card row exists, so
+      // the Alt+P handoff has a selection to hand over.
+      await waitForMatch(() => harness.all(), /Preview\s*wiring/)
+      harness.send('\u001bp') // reader focus
+      await waitFor()
+      // The wheel already answered the list from reader focus (the
+      // area-local wheel): one notch over the list column steps the
+      // selection off the card onto the first hit row...
+      harness.send(wheelAt(30, 7, 65))
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/❯\s*#2\s*AI/)
+      expect(harness.latest()).not.toMatch(/❯\s*Preview\s*wiring/)
+      // ...hover follows the pointer onto the second hit row (the list
+      // rows span the list column, so row 8 = the #9 hit row) — the reader
+      // re-anchors to the new target, and the marker leaves #2 (REVIEW
+      // R-056: hover/click used to be mode-gated off while the wheel was
+      // already live)...
+      harness.movePointer(30, 8)
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/You\s*#9\s*◆/)
+      expect(harness.latest()).not.toMatch(/❯\s*#2\s*AI/)
+      // ...and a click takes the row's open path into the resume confirm.
+      harness.clickAt(30, 8)
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/Resum[^?\r]{0,20}session\?/)
+      // Esc backs out of the confirm; the split root with the reader
+      // returns and the scene never closed.
+      harness.send('\u001b')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.closed()).toBe(0)
     } finally {
       harness.dispose()
     }
