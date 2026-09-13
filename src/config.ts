@@ -107,6 +107,10 @@ export type Config = {
   sessionRoot?: string
   /** Per-message index budget in characters. Default 4000. */
   maxMessageChars?: number
+  /** Background warm-up index: one delayed sweep after startup (on the same
+   *  scanner the scene uses) so the first /find open pays per-file stats
+   *  instead of a cold decode. Default ON. */
+  warmup?: boolean
   /** UI language: `auto` (default) follows the host language contract. */
   lang?: 'auto' | 'zh' | 'en'
   /** Global-entry combo for the search scene; must carry ctrl or alt
@@ -128,6 +132,7 @@ export const Config: Schemastery<Config> = z.object({
   indexThinking: z.boolean().default(false),
   sessionRoot: z.string().required(false),
   maxMessageChars: z.number().step(100).min(200).max(65536).default(4000),
+  warmup: z.boolean().default(true),
   lang: z.union(['auto', 'zh', 'en']).default('auto'),
   shortcut: z.string().default(DEFAULT_SHORTCUT),
 })
@@ -144,6 +149,7 @@ export interface ResolvedConfig {
   readonly indexThinking: boolean
   readonly sessionRoot: string | undefined
   readonly maxMessageChars: number
+  readonly warmup: boolean
   readonly lang: 'auto' | 'zh' | 'en'
   /** Normalized global-entry combo; undefined = disabled (`off`). */
   readonly shortcut: string | undefined
@@ -170,6 +176,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
       typeof value.maxMessageChars === 'number' && Number.isFinite(value.maxMessageChars)
         ? Math.min(Math.max(Math.trunc(value.maxMessageChars), 200), 65536)
         : 4000,
+    warmup: value.warmup !== false,
     lang: value.lang === 'zh' || value.lang === 'en' ? value.lang : 'auto',
     shortcut: resolveShortcut(value.shortcut).combo,
   }

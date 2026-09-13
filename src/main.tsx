@@ -14,6 +14,13 @@
  *   re-checks user remaps and refuses reserved combos with a warning.
  * - `tuiSettingsSections.register` — the plugin's settings card (mirrors
  *   the row config onto the host settings service namespace).
+ * - `tuiCommandTrees.register` — suggestion-overlay metadata for the
+ *   `/find` root row (localized descriptions; empty children — the command
+ *   takes a free-text query), via `src/command-tree.ts`.
+ * - `tuiStatus.registerView` (0.10+, structural soft probe) — the
+ *   background warm-up index's progress row above the prompt, via
+ *   `src/warmup.tsx`; the warm-up sweep itself rides the plugin-scoped
+ *   scanner so the first /find open pays per-file stats, not a cold decode.
  *
  * Every registration is scoped with `ctx.effect` so deactivation unwinds
  * them all; guarded registrations tolerate the host's cold-boot liveness
@@ -31,12 +38,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { Config, DEFAULT_SHORTCUT, resolveConfig, resolveShortcut, type Config as PluginConfig, type ResolvedConfig } from './config.js'
+import { registerCommandTree } from './command-tree.js'
 import { SessionScanner } from './core/scan.js'
-import { setLangOverride, t } from './i18n.js'
+import { dict, setLangOverride, t } from './i18n.js'
 import { makeNotifier } from './notify.js'
 import { FindScene } from './scene.js'
-import { registerSeamWithRetry } from './seam.js'
+import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 import { registerSettingsSection } from './settings.js'
+import { setupWarmup } from './warmup.js'
 
 export const name = 'dsh-tui-find'
 
@@ -143,9 +152,17 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // nothing (compositions without `agents` stay pending; see `inject`).
   const host = ctx.get('tuiPluginHost', false)
 
-  // The search scene itself.
+  // The search scene itself. The profile loader can interleave rows: this
+  // apply can run before the TUI runtimes mount (observed on a real
+  // 0.10.1 + engine rc.2 boot, where the soft-probe below returned
+  // undefined and the scene silently never registered — every /find then
+  // failed to open). A bare soft-probe therefore is not enough: when the
+  // service is not up yet, take the same late-mount path the shortcut
+  // uses — the `whenSeamMounted` poll (src/seam.ts), never `ctx.inject`
+  // (a registration made inside an inject callback is owned by a foreign
+  // activation; see seam.ts for the mechanism).
   const scenesRuntime = ctx.get('tuiScenes', false)
-  if (scenesRuntime !== undefined) {
+  const setupScenes = (runtime: NonNullable<typeof scenesRuntime>): void => {
     // One scanner per plugin activation (scan.ts's lifecycle contract): the
     // per-file decode cache survives scene close/open, so re-opening /find
     // after a warm sweep pays only per-file stats — grown logs resume from
@@ -167,7 +184,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       />
     )
     try {
-      const dispose = scenesRuntime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx)
+      const dispose = runtime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx)
       ctx.effect(() => dispose)
     } catch (error) {
       // The host's liveness gate can reject registrations made during the
@@ -178,12 +195,35 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       registerSeamWithRetry(
         ctx,
         'scene',
-        () => scenesRuntime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx),
+        () => runtime.register({ id: SCENE_ID, title: 'dsh-tui-find', component }, ctx),
         dispose => ctx.effect(() => dispose),
         error,
       )
     }
+
+    // Background warm-up index (batch 4): one delayed sweep on the SAME
+    // scanner, so the first /find open pays per-file stats instead of the
+    // cold decode. Progress rides tuiStatus.registerView when the host has
+    // it; 0.9.x warms up silently. Design and trade-offs:
+    // docs/decisions/2026-09-12-background-warmup-index.md
+    setupWarmup(ctx, {
+      scanner,
+      config: () => runtimeConfig,
+      // Called from the warmup's deferred timer, outside any live Cordis
+      // activation: the caller-bound `active` getter throws there (the
+      // liveness gate sees no activation token). Degrade to "not open" —
+      // safe by design, because an actually-open scene aborts the warm-up
+      // through the scene-open path (让位), not through this probe.
+      isSceneOpen: () => {
+        try {
+          return ctx.get('tuiScenes', false)?.active?.id === SCENE_ID
+        } catch {
+          return false
+        }
+      },
+    })
   }
+  whenSeamMounted(ctx, 'tuiScenes', () => ctx.get('tuiScenes', false), setupScenes)
 
   // /find — declared as contribution `dsh-tui-find.find` in the manifest.
   //
@@ -197,7 +237,10 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // logged warning; the scene and shortcut keep working.
   const commandDefinition: CommandDefinition = {
     name: COMMAND_NAME,
-    description: 'Search all local dsh sessions (cross-session full-text)',
+    // The suggestion overlay's fallback text for external commands; the
+    // command-tree provider carries the same string as its `en` entry so
+    // the fallback and the localized descriptions cannot drift apart.
+    description: dict['cmd-desc-find'].en,
     input: { hint: '<keywords>' },
     // Opening the scene is UI state, not conversation content — keep
     // the raw input out of the session log.
@@ -258,13 +301,22 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     }
   }
 
+  // Suggestion-overlay metadata for the /find root row (tuiCommandTrees,
+  // mounted by both 0.9.x and 0.10.x compositions): provider-owned localized
+  // descriptions; the tree itself is empty — /find takes a free-text query,
+  // not subcommands. No-ops on compositions without the service row. The
+  // descriptions are the same dict entry the CommandDefinition's fallback
+  // description (line ~223) comes from, so the two cannot drift apart.
+  registerCommandTree(ctx, { root: COMMAND_NAME, descriptions: dict['cmd-desc-find'] })
+
   // Settings are optional at runtime; when present they become the source for
   // future scene mounts and for the replaceable global shortcut binding.
   let shortcutDispose: (() => void) | undefined
   let shortcutCombo: string | undefined
   // `tuiShortcuts` is optional during a profile's cold boot. Keep the
-  // reference mutable so the injected binding callback can attach once the
-  // service is mounted instead of permanently capturing `undefined`.
+  // reference mutable so the late-mount poll callback (whenSeamMounted) can
+  // attach once the service is mounted instead of permanently capturing
+  // `undefined`.
   let shortcutsRuntime = ctx.get('tuiShortcuts', false)
   const bindShortcut = (candidate: string | undefined, source: string): void => {
     if (shortcutsRuntime === undefined) return
@@ -290,7 +342,17 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         },
         ctx,
       )
-      const accepted = shortcutsRuntime.list().some((entry: { combo: string }) => entry.combo === combo)
+      // The registry's list() is caller-scoped and goes through the host's
+      // liveness gate, which can transiently reject a call made in the same
+      // tick the service mounted (observed on a real 0.10.1 boot). register()
+      // returning a disposer is the acceptance contract — treat a rejected
+      // verification read as accepted rather than disposing a live binding.
+      let accepted: boolean
+      try {
+        accepted = shortcutsRuntime.list().some((entry: { combo: string }) => entry.combo === combo)
+      } catch {
+        accepted = true
+      }
       if (!accepted) {
         dispose()
         return undefined
@@ -356,16 +418,6 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       )
     }
   }
-  const bindWhenShortcutsReady = (shortcutsCtx: Context): void => {
-    shortcutsRuntime = shortcutsCtx.get('tuiShortcuts', false)
-    bindShortcut(runtimeConfig.shortcut, runtimeConfig.shortcut ?? 'off')
-    shortcutsCtx.effect(() => () => {
-      shortcutDispose?.()
-      shortcutDispose = undefined
-      shortcutCombo = undefined
-      shortcutsRuntime = undefined
-    })
-  }
   if (shortcutsRuntime !== undefined) {
     bindShortcut(shortcut.combo, config?.shortcut ?? DEFAULT_SHORTCUT)
     ctx.effect(() => () => {
@@ -375,10 +427,25 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       shortcutsRuntime = undefined
     })
   } else {
-    // The service may be mounted after this plugin's apply (the normal
-    // profile loader can interleave rows during startup). `inject` waits for
-    // it and runs the same binding path in a live activation fiber.
-    ctx.inject?.(['tuiShortcuts'], bindWhenShortcutsReady)
+    // Same late-mount poll as the scenes: a registration made inside an
+    // inject callback would be owned by a foreign activation.
+    whenSeamMounted(ctx, 'shortcuts', () => ctx.get('tuiShortcuts', false), runtime => {
+      shortcutsRuntime = runtime
+      // Bind the LIVE runtimeConfig, not the apply-time `shortcut`: the
+      // settings service can mount first and restore the saved combo
+      // (including 'off') while tuiShortcuts is still missing — that
+      // restore updates runtimeConfig but its own bindShortcut call
+      // early-returns on the unmounted runtime. Binding the frozen
+      // row-config value here would silently override the user's saved
+      // setting for the whole session.
+      bindShortcut(runtimeConfig.shortcut, runtimeConfig.shortcut ?? 'off')
+      ctx.effect(() => () => {
+        shortcutDispose?.()
+        shortcutDispose = undefined
+        shortcutCombo = undefined
+        shortcutsRuntime = undefined
+      })
+    })
   }
 
   // Settings card over the host settings service.

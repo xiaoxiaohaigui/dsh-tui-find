@@ -1,10 +1,12 @@
 /**
  * The preview reader: a scrollable full-conversation view over one session.
  * `usePreviewModel` owns the cursor/window/anchor state and derives the
- * line list, weights and hit tables; `PreviewPane` renders the fixed chrome
- * around the fitted scroll window and consumes the pending anchor during
- * render (the render-phase adjust pattern the ListView scroll window already
- * uses, so the anchored frame is the committed one and nothing flickers).
+ * line list, weights and hit tables; it also consumes the pending anchor
+ * and follows the scroll window during the SCENE's own render — the
+ * render-phase adjust pattern (a component adjusting its own state while
+ * rendering is legal, so the anchored frame is the committed one and
+ * nothing flickers). `PreviewPane` is pure display over the already
+ * adjusted cursor/window.
  *
  * @module dsh-tui-find/find-preview
  */
@@ -45,9 +47,10 @@ import {
  *  line list; the window start follows it through fitScrollWindow over
  *  1-weight lines. Both are discarded on exit: every Alt+P re-anchors (the
  *  hit message's header line, or the head for cards and title hits),
- *  delivered through anchorRef and consumed on the preview's first render.
- *  The ref/setter types stay structural so the scene's own useState/useRef
- *  values flow in regardless of the host React typings' version. */
+ *  delivered through anchorRef and consumed by the model during the
+ *  scene's render. The ref/setter types stay structural so the scene's own
+ *  useState/useRef values flow in regardless of the host React typings'
+ *  version. */
 export interface PreviewModel {
   cursor: number
   setCursor: (next: number | ((current: number) => number)) => void
@@ -71,10 +74,12 @@ export function usePreviewModel(
     modeRef: { current: Mode }
     selectedRow: FlatRow | undefined
     columns: number
+    /** Terminal height, for the scroll window's viewport budget. */
+    rows: number
   },
 ): PreviewModel {
   const { useState, useRef, useMemo, useCallback } = React
-  const { mode, modeRef, selectedRow, columns } = options
+  const { mode, modeRef, selectedRow, columns, rows } = options
   const [cursor, setCursor] = useState(0)
   const [windowStart, setWindowStart] = useState(0)
   const anchorRef = useRef<number | undefined>(undefined)
@@ -148,7 +153,44 @@ export function usePreviewModel(
     },
     [lines.length, modeRef],
   )
-  return { cursor, setCursor, windowStart, setWindowStart, anchorRef, session, hitStarts, lines, weights, bodyWidth, stepByWheel }
+  // First render after Alt+P: park the cursor (and the window) on the
+  // anchor message's header line, then keep the window glued to the cursor
+  // — the render-phase adjust pattern, legal HERE because the state belongs
+  // to the component whose render is running (the scene calling this hook).
+  // PreviewPane must not do it itself: a child calling the parent's setters
+  // during its own render trips React's cross-component update warning and
+  // has no guarantee under concurrent rendering. The adjusted values are
+  // returned directly, so the committed frame is the anchored one.
+  let adjustedCursor = cursor
+  let adjustedWindow = windowStart
+  if (mode === 'preview') {
+    const anchored = anchorRef.current
+    if (anchored !== undefined) {
+      const start = messageHeaderLine(lines, anchored)
+      anchorRef.current = undefined
+      setCursor(start)
+      setWindowStart(start)
+      adjustedCursor = start
+      adjustedWindow = start
+    }
+    adjustedCursor = Math.min(Math.max(0, adjustedCursor), Math.max(0, lines.length - 1))
+    const view = fitScrollWindow(weights, adjustedCursor, Math.max(1, rows - PREVIEW_CHROME_LINES), adjustedWindow)
+    if (view.start !== adjustedWindow) setWindowStart(view.start)
+    adjustedWindow = view.start
+  }
+  return {
+    cursor: adjustedCursor,
+    setCursor,
+    windowStart: adjustedWindow,
+    setWindowStart,
+    anchorRef,
+    session,
+    hitStarts,
+    lines,
+    weights,
+    bodyWidth,
+    stepByWheel,
+  }
 }
 
 export function PreviewPane(props: {
@@ -158,11 +200,10 @@ export function PreviewPane(props: {
   lines: readonly PreviewLine[]
   weights: readonly number[]
   bodyWidth: number
+  /** Already anchor-adjusted and window-followed by usePreviewModel — the
+   *  pane is pure display and never writes scene state. */
   cursor: number
   windowStart: number
-  setCursor: (next: number | ((current: number) => number)) => void
-  setWindowStart: (next: number | ((current: number) => number)) => void
-  anchorRef: { current: number | undefined }
   status: StatusNote | undefined
   columns: number
   rows: number
@@ -179,9 +220,6 @@ export function PreviewPane(props: {
     bodyWidth,
     cursor,
     windowStart,
-    setCursor,
-    setWindowStart,
-    anchorRef,
     status,
     columns,
     rows,
@@ -190,27 +228,14 @@ export function PreviewPane(props: {
   } = props
   const { Box, Text } = ui
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps & ContextBoxProps>
-  // First render after Alt+P: park the cursor (and the window) on the
-  // anchor message's header line — the render-phase adjust pattern, so the
-  // anchored frame is the committed one and nothing flickers.
-  let anchored: number | undefined = anchorRef.current
-  if (anchored !== undefined) {
-    const start = messageHeaderLine(lines, anchored)
-    anchorRef.current = undefined
-    setCursor(start)
-    setWindowStart(start)
-    anchored = start
-  }
-  const cursorLine = Math.min(Math.max(0, anchored ?? cursor), Math.max(0, lines.length - 1))
+  const cursorLine = Math.min(Math.max(0, cursor), Math.max(0, lines.length - 1))
   const cursorMessage = messageAtLine(lines, cursorLine) ?? 0
-  const windowPrevious = anchored ?? windowStart
   const view = fitScrollWindow(
     weights,
     cursorLine,
     Math.max(1, rows - PREVIEW_CHROME_LINES),
-    windowPrevious,
+    windowStart,
   )
-  if (view.start !== windowPrevious) setWindowStart(view.start)
   const visible = lines.slice(view.start, view.end)
   return (
     // Root pinned to the full viewport (the list root's own rule): fixed

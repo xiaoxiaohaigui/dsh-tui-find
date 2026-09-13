@@ -19,7 +19,7 @@ import z from '@deepseek-ai/schemastery'
 import type { TuiSettingsSection } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 import type { ResolvedConfig } from './config.js'
 import { DEFAULT_SHORTCUT, resolveConfig } from './config.js'
-import { registerSeamWithRetry } from './seam.js'
+import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 
 /** Settings namespace owned by this plugin. */
 export const SETTINGS_NS = 'dsh-tui-find'
@@ -137,6 +137,14 @@ function section(): TuiSettingsSection {
         placeholder: '4000',
       },
       {
+        path: ['warmup'],
+        label: 'Background warm-up index',
+        descriptions: zh('后台预热索引'),
+        hint: 'Index sessions in the background after startup so /find opens instantly (default on)',
+        hintDescriptions: zh('启动后在后台预建会话索引，让 /find 秒开（默认开启）'),
+        kind: 'boolean',
+      },
+      {
         path: ['shortcut'],
         label: 'Global shortcut',
         descriptions: zh('全局快捷键'),
@@ -159,23 +167,25 @@ export function registerSettingsSection(
   onResolvedConfig?: (next: ResolvedConfig, raw: ConfigValue) => void,
 ): void {
   const sectionsRuntime = ctx.get('tuiSettingsSections', false)
-  if (sectionsRuntime === undefined) return
-  try {
-    const dispose = sectionsRuntime.register(section())
-    ctx.effect(() => dispose)
-  } catch (error) {
-    // A boot-window liveness rejection must retry, not degrade: a plain warn
-    // would silently drop the settings card for the whole session (see
-    // seam.ts for the mechanism). Permanent failures (e.g. a duplicate ns)
-    // burn the bounded budget and warn once — acceptable for a card.
-    registerSeamWithRetry(
-      ctx,
-      'settings section',
-      () => sectionsRuntime.register(section()),
-      dispose => ctx.effect(() => dispose),
-      error,
-    )
+  const registerCard = (cardRuntime: NonNullable<typeof sectionsRuntime>): void => {
+    try {
+      const dispose = cardRuntime.register(section())
+      ctx.effect(() => dispose)
+    } catch (error) {
+      // A boot-window liveness rejection must retry, not degrade: a plain warn
+      // would silently drop the settings card for the whole session (see
+      // seam.ts for the mechanism). Permanent failures (e.g. a duplicate ns)
+      // burn the bounded budget and warn once — acceptable for a card.
+      registerSeamWithRetry(
+        ctx,
+        'settings section',
+        () => cardRuntime.register(section()),
+        dispose => ctx.effect(() => dispose),
+        error,
+      )
+    }
   }
+  whenSeamMounted(ctx, 'settings sections', () => ctx.get('tuiSettingsSections', false), registerCard)
 
   // Namespace registration is best-effort: without it the card renders
   // unavailable instead of editable, which is the documented degradation.
@@ -203,6 +213,7 @@ export function registerSettingsSection(
           .min(200)
           .max(65536)
           .default(resolved.maxMessageChars),
+        warmup: z.boolean().default(resolved.warmup),
         // 'off' (the disabled state of resolved.shortcut) is the namespace
         // default; combo validation stays with the shortcut registry at
         // apply time — the namespace only carries the string.
@@ -239,6 +250,7 @@ type ConfigValue = {
   indexThinking?: boolean
   sessionRoot?: string
   maxMessageChars?: number
+  warmup?: boolean
   shortcut?: string
 }
 

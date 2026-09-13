@@ -43,9 +43,17 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       indexThinking: false,
       sessionRoot: undefined,
       maxMessageChars: 4000,
+      warmup: true,
       lang: 'auto',
       shortcut: 'alt+f',
     })
+  })
+
+  it('warmup defaults on and only an explicit false disables it', () => {
+    expect(resolveConfig({}).warmup).toBe(true)
+    expect(resolveConfig({ warmup: true }).warmup).toBe(true)
+    expect(resolveConfig({ warmup: false }).warmup).toBe(false)
+    expect(resolveConfig({ warmup: 'no' as never }).warmup).toBe(true)
   })
 
   it('titleOnly defaults off and only an explicit true enables it', () => {

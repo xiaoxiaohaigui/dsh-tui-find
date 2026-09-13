@@ -78,6 +78,10 @@ Uninstalling only affects this plugin: session data lives under `~/.dsh` / `~/.d
 | `/find` | Open the full-screen search scene |
 | `Alt+F` | Global shortcut entry (default; remap or disable via the `shortcut` config) |
 
+> In the `/` suggestion list, the `/find` row carries a zh/en description that follows the UI language (via the host `tuiCommandTrees` command-tree provider, supported since 0.9.x).
+
+> **Background warm-up index**: about 10 seconds after startup the plugin pre-builds the index in the background with the same scanner `/find` uses, so the first `/find` open only verifies the cache and lists instantly (disable via the `warmup` config). On 0.10+ hosts a one-line "indexing n/m" progress appears above the prompt — click it to cancel the warm-up; 0.9.x hosts warm up silently. The index lives only in memory and is rebuilt every boot — the warm-up does not reduce total decoding, it moves the unavoidable cold decode out of your first search's foreground stall into the idle time after startup.
+
 Keys inside the scene:
 
 | Key | Action |
@@ -144,6 +148,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       indexThinking: false       # index thinking text (default off)
       sessionRoot: ''            # manual session root override
       maxMessageChars: 4000      # per-message index character budget
+      warmup: true               # background warm-up index (default on; off = /find scans on open)
       lang: 'auto'               # zh | en | auto (follow the host language)
       shortcut: 'alt+f'           # global entry combo (ctrl or alt required; 'off' disables the entry)
 ```
@@ -166,6 +171,7 @@ Every option above except `lang` can also be changed inside the TUI: open `/sett
 | Index thinking | on / off (default off) |
 | Session root override | text; blank falls back to the resolution chain below |
 | Per-message index budget | number (200–65536, step 100, default 4000) |
+| Background warm-up index | on / off (default on; off = the first `/find` waits for the scan) |
 | Global shortcut | text; the combo must carry `Ctrl` or `Alt`, `off` disables; default `Alt+F` (an invalid draft falls back to the default with a warning) |
 
 Edits save immediately (booleans/selects write on the spot, text drafts confirm with Enter) into the host settings service's user layer, which overrides the plugin-row defaults by layering; the card copy follows the TUI language setting (zh / en).
@@ -197,19 +203,20 @@ npm test           # vitest: frames / scanner / search / event sanitization / di
 npm run verify:hosts  # dual-host compatibility matrix: isolated-copy package swap, one build+test each on 0.9.3 and 0.10.x
 ```
 
-Test coverage (231 tests):
+Test coverage (282 tests):
 
 - **Frame chain**: multi-frame walk, torn tails, coincidental-magic rejection, reserved-block rejection, RLE blocks, single-segment/checksum header shapes, the 64 MB decode cap, plain-JSONL fallback.
 - **Scanner**: zstd/plain content parity, mtime cache reuse (second sweep decodes nothing), zero decode on a same-size touch (boundary-verified), the offset-watermark suite (zstd/plain appends decode only the new frames, torn-tail completion without duplication, detected shrink and same-boundary equal-length rewrites fall back to a full decode, journal 0600/0700 posture and cold-start full decode), corruption tolerance, the indexTools/indexThinking switches, AbortSignal, `onSession` incremental delivery (per-session callbacks sharing the final result's objects, cache hits included, stopped by abort, MRU comparator stability).
 - **Search**: case folding + highlight ranges, CJK substrings, regex mode (per-match ranges, case-sensitivity follow, invalid/oversized/unsafe patterns rejected, zero-width safety), the `sinceMs` time window (boundary included), tool summaries, repo/all scope filtering (subdirectory sessions and container boundaries included), result idempotence, multi-term AND queries (whitespace tokenizing, quoted phrases, dedupe and the 16-term cap, range-union merging, whole-pattern regex, scope/time-window interplay), pinyin matching (full readings / default-reading chain / initials, polyphone dual chains, ü→v, out-of-table fallback, highlight mapping onto characters, toggle-off regression, regex isolation, case-sensitivity semantics, table integrity), title-only matching (title documents alone, untitled sessions never match, AND/pinyin/regex semantics preserved on titles).
 - **Preview reader**: line layout and per-message attribution (CJK widths included), cursor-line ↔ message mapping, message-step scrolling, hit jumping (forward/backward/circular), scroll-window following, hit-range wrap mapping (`wrapWidthRanges` byte-equivalent to `wrapWidth`).
 - **Keyboard help**: section assembly and narrow-column truncation, the Alt+H open/close wiring.
-- **Scene wiring (real host renderer)**: preview key layering and typing swallow, circular n/N jumps and copy, PgDn page math, narrow single-row header truncation, help panel toggling, streaming results (entries appear before the sweep completes), the scan-in-flight empty state (a reading notice instead of a misleading "no matches" in query mode), the Alt+N title-only toggle and back.
+- **Scene wiring (real host renderer)**: preview key layering and typing swallow, circular n/N jumps and copy, PgDn page math, narrow single-row header truncation, help panel toggling, streaming results (entries appear before the sweep completes), the scan-in-flight empty state (a reading notice instead of a misleading "no matches" in query mode), the Alt+N title-only toggle and back, right-click menu wiring (right-press opens the menu and selects the row, hover moves the highlight, the ↑↓/Enter/Esc keyboard path, backdrop close without pass-through, item click activation, the 0.9 generation gate — pointer cases ride the host AlternateScreen with injected SGR mouse sequences; the right-click dispatch cases run only on 0.10+ hosts and are skipped on 0.9).
 - **Host-generation dispatch**: the assistant role's colour key is probed structurally off the injected ui kit (0.9.x `claude` / 0.10+ `accent`, a rename with identical palette values); the other roles' keys are generation-stable.
 - **Event sanitization**: terminal control-byte and C1/DEL stripping, CR/tab folding, control-only message drops, header cwd and session-title sanitization.
 - **Display width**: CJK/emoji double-width, head/tail truncation, spread rows, physical-line scroll windows (two-line card budget), hit-line flattening/windowing/range mapping.
 - **Admission**: the manifest parses and projects under the host's own `@dsh-std/manifest` v0.15 parser with exact contract declarations; real cordis fibers mount the plugin (scene register/open/close, settings card, mediated-command degradation path) and the language pin reverts on deactivation.
 - **Boot-race hardening**: the guarded-seam retry helper (retry landing, bounded give-up, timer cleanup on deactivation); a forced cold-start interleaving against the real host `TuiSceneRuntime` where a bare register is rejected by the liveness gate (canary assertion pins the race) while the plugin lands its scene via the retry, and the healthy interleaving keeps registering synchronously.
+- **Background warm-up index**: the delayed start (the config row re-read at fire time, an already-open scene never starts, options passed through mirroring the scene sweep), the progress store's stable-snapshot semantics (same-value ticks never re-render, settle returns to idle), scene-open supersede (abort signal + a trailing progress tick cannot resurrect), the click-to-cancel path, disposal before and mid-sweep, a failed sweep degrading to one warning; the `tuiStatus` structural soft probe (no service / 0.9.x-shaped runtime no-ops, a boot-window refusal retries and lands, a permanent refusal burns the bounded budget without blocking the sweep), and the 0.10 progress view rendered against the real host kit (bilingual row, differential-frame following, zero output while idle).
 
 ## Requirements
 

@@ -117,35 +117,161 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
   })
 
   it('binds after tuiShortcuts mounts later in the profile boot', async () => {
-    const root = new Context()
-    root.reflect.provide('agents', {})
+    // The late-mount path is the whenSeamMounted poll (seam.ts): the
+    // plugin's apply can win the race against the TUI runtime's own startup,
+    // and a bare soft-probe would silently skip the binding for the whole
+    // session. The bind contract is pinned against a stub registry under
+    // fake timers — the real extensions registry routes every seam call
+    // through the host's caller-fiber liveness gate, which transiently
+    // rejects timer-originated calls in a bare-cordis test environment
+    // (register() swallows the rejection into a no-op disposer, list()
+    // throws), so the live registry cannot deterministically exercise the
+    // poll here; the real boot was verified on an actual 0.10.1 host.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const root = new Context()
+      root.reflect.provide('agents', {})
 
-    // Start the plugin before dsh-tui-extensions. The first activation cannot
-    // read the optional service synchronously; its injected binding callback
-    // must attach when the service is provided below.
-    const first = root.plugin(
-      { name: plugin.name, inject: plugin.inject, apply: plugin.apply },
-      { shortcut: 'alt+f' },
-    )
-    await first
+      // Start the plugin before the shortcuts service exists. The first
+      // activation cannot read the optional service synchronously; its
+      // late-mount poll must attach once the service is provided below.
+      const first = root.plugin(
+        { name: plugin.name, inject: plugin.inject, apply: plugin.apply },
+        { shortcut: 'alt+f' },
+      )
+      await first
 
-    const extensions = root.plugin({ name: extensionsName, apply: extensionsApply })
-    await extensions
-    await vi.waitFor(() => expect(root.get('tuiShortcuts', false)).toBeDefined(), { timeout: 5000, interval: 10 })
-    await sleep(50)
+      // Host duplicate rule: a second register of a live combo is refused
+      // with a no-op disposer, not an error.
+      const registered: string[] = []
+      const service = {
+        register(combo: string): () => void {
+          if (registered.includes(combo)) return () => {}
+          registered.push(combo)
+          return () => {
+            const index = registered.indexOf(combo)
+            if (index >= 0) registered.splice(index, 1)
+          }
+        },
+        list(): Array<{ combo: string; description: string }> {
+          return registered.map(combo => ({ combo, description: 'stub' }))
+        },
+      }
+      root.reflect.provide('tuiShortcuts', service)
+      await Promise.resolve()
 
-    // A second activation with the same combo is a probe: if the late bind
-    // succeeded it is rejected as a duplicate and this activation's list is
-    // empty; with the old captured-undefined bug it would claim alt+f itself.
-    const observed: string[] = []
-    const probe = root.plugin({
-      name: 'dsh-tui-find-shortcut-probe',
-      apply: (ctx: Context) => {
-        apply(ctx, { shortcut: 'alt+f' })
-        observed.push(...(ctx.get('tuiShortcuts', false)?.list().map(entry => entry.combo) ?? []))
-      },
-    })
-    await probe
-    expect(observed).toEqual([])
+      // One poll tick past the mount must land the bind.
+      vi.advanceTimersByTime(30)
+      expect(registered).toEqual(['alt+f'])
+
+      // A second activation with the same combo is a probe: the host refuses
+      // the duplicate and the plugin must not claim the combo again.
+      const probe = root.plugin({
+        name: 'dsh-tui-find-shortcut-probe',
+        apply: (ctx: Context) => {
+          apply(ctx, { shortcut: 'alt+f' })
+        },
+      })
+      await probe
+      expect(registered).toEqual(['alt+f'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('binds the settings-restored combo when the settings service mounts first', async () => {
+    // R-048 regression. The settings restore (`ctx.inject(['settings'])` →
+    // `apply(scope.get())`) can run while tuiShortcuts is still missing —
+    // cordis runs the injected callback inline once its dependencies exist,
+    // and the restore's own bindShortcut call early-returns on the unmounted
+    // runtime. The late-mount poll must then bind the LIVE runtimeConfig
+    // value: binding the apply-time row-config combo would silently override
+    // the user's saved setting for the whole session.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const root = new Context()
+      root.reflect.provide('agents', {})
+      // Settings already mounted, carrying a persisted shortcut that differs
+      // from the row config below.
+      root.reflect.provide('settings', {
+        register(): {
+          get(): Record<string, unknown>
+          watch(callback: (next: unknown, prev: unknown) => void): () => void
+        } {
+          return { get: () => ({ shortcut: 'alt+g' }), watch: () => () => {} }
+        },
+      })
+
+      const registered: string[] = []
+      await root.plugin(
+        { name: plugin.name, inject: plugin.inject, apply: plugin.apply },
+        { shortcut: 'alt+f' },
+      )
+      root.reflect.provide('tuiShortcuts', {
+        register(combo: string): () => void {
+          if (registered.includes(combo)) return () => {}
+          registered.push(combo)
+          return () => {
+            const index = registered.indexOf(combo)
+            if (index >= 0) registered.splice(index, 1)
+          }
+        },
+        list(): Array<{ combo: string }> {
+          return registered.map(combo => ({ combo }))
+        },
+      })
+      await Promise.resolve()
+
+      // One poll tick past the mount must land the SAVED combo, not the
+      // row-config one.
+      vi.advanceTimersByTime(30)
+      expect(registered).toEqual(['alt+g'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the global entry unbound when the saved setting is off and settings mounts first', async () => {
+    // The same ordering as above with a persisted `off`: the restore is
+    // dropped on the unmounted runtime and the poll must not resurrect the
+    // row-config combo.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const root = new Context()
+      root.reflect.provide('agents', {})
+      root.reflect.provide('settings', {
+        register(): {
+          get(): Record<string, unknown>
+          watch(callback: (next: unknown, prev: unknown) => void): () => void
+        } {
+          return { get: () => ({ shortcut: 'off' }), watch: () => () => {} }
+        },
+      })
+
+      const registered: string[] = []
+      await root.plugin(
+        { name: plugin.name, inject: plugin.inject, apply: plugin.apply },
+        { shortcut: 'alt+f' },
+      )
+      root.reflect.provide('tuiShortcuts', {
+        register(combo: string): () => void {
+          if (registered.includes(combo)) return () => {}
+          registered.push(combo)
+          return () => {
+            const index = registered.indexOf(combo)
+            if (index >= 0) registered.splice(index, 1)
+          }
+        },
+        list(): Array<{ combo: string }> {
+          return registered.map(combo => ({ combo }))
+        },
+      })
+      await Promise.resolve()
+
+      vi.advanceTimersByTime(30)
+      expect(registered).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

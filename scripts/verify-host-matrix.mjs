@@ -10,15 +10,20 @@
  * ref anywhere in the resolution tree poisons later `npm i` runs), so each
  * verification starts from that baseline rather than a fresh install.
  *
- * Why the host package is swapped with `npm install --no-save` instead of
- * extracting its tarball: the published tarball declares bundled dependencies
- * but ships none of their files, so a bare extraction leaves the host's own
- * imports (`react-reconciler`, …) unresolved. npm re-materializes those from
- * the registry; the tree keeps `--no-save` so the workspace baseline in
- * package.json is untouched. Should the install trip over a stray
- * `workspace:*` ref (the EUNSUPPORTEDPROTOCOL trap HANDOFF.md documents),
- * the script applies the documented recovery — drop the lockfile, patch
- * every package.json under node_modules — and retries once.
+ * How the host package is swapped: `swapHost` extracts the published
+ * tarball over node_modules/@deepseek-harness-tui/dsh-tui, then
+ * materializes the host's declared runtime dependencies with an INNER
+ * install — npm runs inside the host package directory (`--no-save
+ * --omit=dev --legacy-peer-deps`), never at the root, where an install
+ * would reify the whole tree and prune the host-monorepo orphans the
+ * known-good baseline depends on. The tarball declares its dependencies
+ * but ships none of their files, so a bare extraction alone would leave
+ * the host's own imports (`react-reconciler`, …) unresolved — hence the
+ * inner install. Before that first install, stray `workspace:*` refs in
+ * the extracted host package (the EUNSUPPORTEDPROTOCOL trap HANDOFF.md
+ * documents) are patched to `*` — inside that directory only, never
+ * across node_modules. Should the inner install fail, the recovery is
+ * narrow: drop the host directory's own package-lock.json and retry once.
  *
  * Usage:
  *   node scripts/verify-host-matrix.mjs                 # both pinned hosts
@@ -65,9 +70,26 @@ function parseArgs(argv) {
   return { hosts: hosts.length > 0 ? hosts : DEFAULT_HOSTS, keep }
 }
 
-/** Spawn with live output; returns the exit code. npm/tar need a shell on Windows. */
+/** Quote one argument for a cmd.exe command line (Windows): no argv array
+ *  crosses a shell there, so the line is quoted by hand. */
+function quoteWin32Argument(arg) {
+  return `"${arg.replaceAll('"', '""')}"`
+}
+
+/** Spawn with live output; returns the exit code. npm/tar need a shell on
+ *  Windows (npm resolves through npm.cmd there), where the command line is
+ *  built by hand — an args array under `shell: true` trips Node's DEP0190
+ *  deprecation. POSIX spawns directly: no shell, no quoting, so the args
+ *  must stay quote-free (they are literals and pack output names). */
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' })
+  const result =
+    process.platform === 'win32'
+      ? spawnSync(`${command} ${args.map(quoteWin32Argument).join(' ')}`, {
+          cwd,
+          stdio: 'inherit',
+          shell: true,
+        })
+      : spawnSync(command, args, { cwd, stdio: 'inherit' })
   if (result.error) throw result.error
   return result.status ?? 1
 }
@@ -116,7 +138,7 @@ function makeCopy(parent) {
 function extractTarball(version, hostDir) {
   const packDir = mkdtempSync(join(tmpdir(), `dsh-tui-find-pack-${version}-`))
   try {
-    if (run('npm', ['pack', `"${PACKAGE}@${version}"`, '--pack-destination', '"."'], packDir) !== 0) {
+    if (run('npm', ['pack', `${PACKAGE}@${version}`, '--pack-destination', '.'], packDir) !== 0) {
       throw new Error(`npm pack ${PACKAGE}@${version} failed`)
     }
     const [tarball] = readdirSync(packDir).filter(name => name.endsWith('.tgz'))

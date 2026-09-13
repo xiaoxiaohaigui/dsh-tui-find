@@ -1,8 +1,7 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
-import { PARTIAL_FLUSH_MAX_MS } from '../src/find-types.js'
-import { mount, sessionWithMessages, waitFor } from './harness.js'
+import { mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
 
 setLangOverride('en')
 // One language for the whole file (every frame assertion below is en), and
@@ -266,18 +265,20 @@ describe('search filter and scan streaming wiring', () => {
       await waitFor()
       expect(harness.latest()).toMatch(/First\s*session/)
       expect(harness.all()).not.toMatch(/Second\s*session/)
-      // The doubled flush gap (PARTIAL_FLUSH_MS) can lag the arrival's
-      // render behind the gate by a frame — the gap doubles per flush up to
-      // PARTIAL_FLUSH_MAX_MS, and a parallel run or a cold working tree
-      // (the host-matrix copies) slows the write-out further. Wait past the
-      // ceiling the scene itself guarantees before asserting on the
-      // cumulative stream.
+      // The doubled flush gap (PARTIAL_FLUSH_MS in find-types.ts, doubling
+      // per flush up to PARTIAL_FLUSH_MAX_MS) can lag the arrival's render
+      // behind the gate by a frame, and a parallel run or a cold working
+      // tree (the host-matrix copies) slows the write-out further. No fixed
+      // sleep covers that — a wide one slows every passing run and still
+      // loses under load — so poll the cumulative stream against a deadline;
+      // the expects after the waits turn a deadline miss into a normal diff
+      // failure instead of a load-dependent flake.
       firstGate.resolve()
-      await waitFor(PARTIAL_FLUSH_MAX_MS + 200)
+      await waitForMatch(() => harness.all(), /Second\s*session/)
       expect(harness.all()).toMatch(/Second\s*session/)
       secondGate.resolve()
-      await waitFor(PARTIAL_FLUSH_MAX_MS + 200)
       // The completed sweep replaces the accumulation; the streamed rows stay.
+      await waitForMatch(() => harness.all(), /First\s*session/)
       expect(harness.all()).toMatch(/First\s*session/)
       expect(harness.all()).toMatch(/Second\s*session/)
     } finally {

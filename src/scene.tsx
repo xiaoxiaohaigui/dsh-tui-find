@@ -12,14 +12,16 @@
  * stream in while the sweep is still running (see find-sweep.ts).
  *
  * This module is the orchestrator: it owns the scene state and the search
- * derivations, and delegates to the find-* siblings — find-input.tsx (the
+ * derivations, and delegates to the find-* siblings — find-input.ts (the
  * keyboard dispatcher: typing always edits the query; Enter opens the
  * resume confirm, Tab toggles the scope, Alt+R regex, Alt+T time window,
  * Alt+N title-only, ↑↓/PgUp/PgDn move, Esc backs out one layer; Alt+P opens
  * the scrollable conversation reader, Alt+C copies, Alt+E expands; Alt+H
- * help), find-preview.tsx (the reader pane and its model), find-list.tsx
- * (the two-line-per-session list), find-chrome.tsx (search card, hints,
- * confirm pane), find-types.ts (shared vocabulary).
+ * help), find-sweep.ts (the progressive scan hook that streams sessions in),
+ * find-menu.ts (the right-click menu's pure model), find-preview.tsx (the
+ * reader pane and its model), find-list.tsx (the two-line-per-session
+ * list), find-chrome.tsx (search card, hints, confirm pane), find-types.ts
+ * (shared vocabulary).
  *
  * All React usage goes through the HOST-injected `React` and `ui` kit —
  * the plugin never imports its own React copy (see scenes.ts discipline).
@@ -54,6 +56,7 @@ import {
   type WheelEventLike,
 } from './find-types.js'
 import {
+  highlightAt,
   highlightedItem,
   moveHighlight,
   openMenu,
@@ -75,6 +78,11 @@ type SceneMenuState = ContextMenuState<SceneMenuItem>
 /** A no-op notifier: the scene's own footer feedback stands alone when the
  *  host has no toast service (0.9.x) or none was passed. */
 const noopNotify: Notifier = () => {}
+
+/** The session a list row belongs to — both row kinds carry one. */
+function rowSession(row: FlatRow): ScannedSession {
+  return row.kind === 'session' ? row.session : row.hit.session
+}
 
 export function FindScene(props: TuiSceneProps & {
   config: ResolvedConfig
@@ -215,7 +223,6 @@ export function FindScene(props: TuiSceneProps & {
     cursor: previewCursor,
     setCursor: setPreviewCursor,
     windowStart: previewWindowStart,
-    setWindowStart: setPreviewWindowStart,
     anchorRef: previewAnchorRef,
     session: previewSession,
     hitStarts: previewHitStarts,
@@ -223,7 +230,12 @@ export function FindScene(props: TuiSceneProps & {
     weights: previewWeights,
     bodyWidth: previewBodyWidth,
     stepByWheel: stepPreview,
-  } = usePreviewModel(React, { mode, modeRef, selectedRow, columns })
+    // The anchor consumption and window following run inside usePreviewModel,
+    // i.e. during THIS component's render — the render-phase adjust pattern
+    // is legal on a component's own state, so PreviewPane stays pure display
+    // (a child writing the parent's state mid-render warns and is
+    // concurrency-unsafe; see REVIEW R-039).
+  } = usePreviewModel(React, { mode, modeRef, selectedRow, columns, rows })
 
   // Reset selection when the query, scope, time window or match mode changes shape.
   useEffect(() => {
@@ -330,6 +342,11 @@ export function FindScene(props: TuiSceneProps & {
   const moveMenuHighlight = useCallback((delta: number) => {
     setMenu(current => (current === undefined ? undefined : moveHighlight(current, delta)))
   }, [])
+  /** The mouse path over the open menu's rows — hover moves the highlight,
+   *  mirroring the list's own hover-moves-focus rule. */
+  const hoverMenuHighlight = useCallback((index: number) => {
+    setMenu(current => (current === undefined ? undefined : highlightAt(current, index)))
+  }, [])
   const activateMenu = useCallback(() => {
     const current = menuRef.current
     if (current === undefined) return
@@ -347,7 +364,7 @@ export function FindScene(props: TuiSceneProps & {
       if (modeRef.current !== 'list' || actionPendingRef.current) return
       const row = flat[rowIndex]
       if (row === undefined) return
-      const session = row.kind === 'session' ? row.session : row.hit.session
+      const session = rowSession(row)
       const items: SceneMenuItem[] = []
       if (row.kind === 'message') {
         items.push({ id: 'copy-message', label: t('menu-copy-message'), action: () => copyMessage(row.message) })
@@ -356,9 +373,16 @@ export function FindScene(props: TuiSceneProps & {
         { id: 'copy-log', label: t('menu-copy-log'), action: () => copySessionPath(session) },
         {
           id: 'resume',
+          // Resume the session the menu was OPENED on, not whatever row
+          // occupies that index when the item activates — a background sweep
+          // flush can reshuffle or shrink the list while the menu sits open.
+          // The row is re-located by session id at activation time; a session
+          // no longer listed has nothing to confirm, so the item no-ops.
           label: t('menu-resume'),
           action: () => {
-            setSelected(rowIndex)
+            const at = flat.findIndex(candidate => rowSession(candidate).id === session.id)
+            if (at === -1) return
+            setSelected(at)
             modeRef.current = 'confirm'
             setMode('confirm')
           },
@@ -467,9 +491,22 @@ export function FindScene(props: TuiSceneProps & {
 
   const listHint = composeListHint(columns)
 
-  // The open menu's overlay: a full-viewport backdrop (click/right-click
-  // anywhere outside closes) with the clamped anchored panel on top. The
-  // panel's width budget mirrors the list's own truncation discipline.
+  // The open menu's overlay: a full-viewport click-catcher (click/right-click
+  // anywhere outside closes) plus the clamped anchored panel — as SIBLINGS,
+  // deliberately not nested. Any menu-internal change (hover moving the
+  // highlight, keyboard ↑↓) dirties every DOM ancestor of the changed row,
+  // and a dirty full-viewport absolute node makes the host renderer damage
+  // the entire screen for that frame: the node's own clear is recorded as an
+  // absolute clear, which suppresses every clean subtree's prevScreen blit
+  // row-wise, and the frame outside the menu comes up empty (the 0.10.1
+  // real-machine white-screen). As siblings the dirty chain stops at the
+  // panel — the backdrop stays clean and its blit is a harmless copy.
+  // The panel is `opaque`: the host fills its interior with blank cells
+  // before the items paint, so the list text underneath cannot bleed
+  // through between the labels. Highlight rides the ROW box (the list's own
+  // selected-row idiom): the host's box fill spans the full interior width,
+  // and hover moves it like the list does. The panel's width budget mirrors
+  // the list's own truncation discipline.
   const menuOverlay = (() => {
     if (menu === undefined) return undefined
     const MenuBox = Box as unknown as React.ComponentType<ContextBoxProps>
@@ -478,27 +515,29 @@ export function FindScene(props: TuiSceneProps & {
     const left = Math.max(0, Math.min(menu.anchorCol, Math.max(0, columns - width - 1)))
     const top = Math.max(0, Math.min(menu.anchorRow, Math.max(0, rows - menu.items.length - 3)))
     return (
-      <MenuBox
-        position="absolute"
-        top={0}
-        left={0}
-        width={columns}
-        height={rows}
-        onClick={event => {
-          event.stopImmediatePropagation()
-          closeMenu()
-        }}
-        onContextMenu={event => {
-          event.stopImmediatePropagation()
-          closeMenu()
-        }}
-      >
+      <>
+        <MenuBox
+          position="absolute"
+          top={0}
+          left={0}
+          width={columns}
+          height={rows}
+          onClick={event => {
+            event.stopImmediatePropagation()
+            closeMenu()
+          }}
+          onContextMenu={event => {
+            event.stopImmediatePropagation()
+            closeMenu()
+          }}
+        />
         <MenuBox
           position="absolute"
           top={top}
           left={left}
           flexDirection="column"
           borderStyle="round"
+          opaque
           onClick={event => event.stopImmediatePropagation()}
           onContextMenu={event => event.stopImmediatePropagation()}
         >
@@ -506,19 +545,19 @@ export function FindScene(props: TuiSceneProps & {
             <MenuBox
               key={item.id}
               flexShrink={0}
+              {...(index === menu.highlight ? { backgroundColor: 'selectionBg' as const } : {})}
+              onMouseEnter={() => hoverMenuHighlight(index)}
               onClick={event => {
                 event.stopImmediatePropagation()
                 setMenu(undefined)
                 item.action()
               }}
             >
-              <Text {...(index === menu.highlight ? { backgroundColor: 'selectionBg' as const } : {})}>
-                {` ${item.label} `}
-              </Text>
+              <Text>{` ${item.label} `}</Text>
             </MenuBox>
           ))}
         </MenuBox>
-      </MenuBox>
+      </>
     )
   })()
 
@@ -577,9 +616,6 @@ export function FindScene(props: TuiSceneProps & {
           bodyWidth={previewBodyWidth}
           cursor={previewCursor}
           windowStart={previewWindowStart}
-          setCursor={setPreviewCursor}
-          setWindowStart={setPreviewWindowStart}
-          anchorRef={previewAnchorRef}
           status={status}
           columns={columns}
           rows={rows}

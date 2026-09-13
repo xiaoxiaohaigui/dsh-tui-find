@@ -1,11 +1,12 @@
 /**
  * The context menu's pure model: opening anchors and highlights the first
- * item, highlight movement clamps into the item range, and activation
- * yields the highlighted entry. The scene wiring (which actions run) is
- * bound at open time; these tests pin the state machine those closures ride.
+ * item, highlight movement clamps into the item range, hover points the
+ * highlight straight at a row, and activation yields the highlighted entry.
+ * The scene wiring (which actions run) is bound at open time; these tests
+ * pin the state machine those closures ride.
  */
 import { describe, expect, it } from 'vitest'
-import { highlightedItem, moveHighlight, openMenu, type MenuItem } from '../src/find-menu.js'
+import { highlightAt, highlightedItem, moveHighlight, openMenu, type MenuItem } from '../src/find-menu.js'
 
 const items: readonly MenuItem[] = [
   { id: 'copy-message', label: 'Copy message text' },
@@ -44,5 +45,26 @@ describe('moveHighlight', () => {
     const menu = openMenu(0, 0, [])
     expect(highlightedItem(menu)).toBeUndefined()
     expect(moveHighlight(menu, 1)).toBe(menu)
+  })
+})
+
+describe('highlightAt (hover path)', () => {
+  it('points the highlight straight at the hovered row', () => {
+    let menu = openMenu(0, 0, items)
+    menu = highlightAt(menu, 2)
+    expect(highlightedItem(menu)?.id).toBe('resume')
+    menu = highlightAt(menu, 0)
+    expect(highlightedItem(menu)?.id).toBe('copy-message')
+  })
+
+  it('ignores out-of-range rows instead of corrupting the state', () => {
+    const menu = openMenu(0, 0, items)
+    expect(highlightAt(menu, -1)).toBe(menu)
+    expect(highlightAt(menu, items.length)).toBe(menu)
+  })
+
+  it('is inert on an empty menu', () => {
+    const menu = openMenu(0, 0, [])
+    expect(highlightAt(menu, 0)).toBe(menu)
   })
 })

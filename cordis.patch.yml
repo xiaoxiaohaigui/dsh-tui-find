@@ -16,6 +16,7 @@
       # indexThinking: boolean         — index thinking text (default false)
       # sessionRoot: string            — manual session-root override
       # maxMessageChars: number        — per-message index character budget
+      # warmup: boolean                — background warm-up index (default true)
       # lang: 'auto' | 'zh' | 'en'     — UI language (auto follows the host)
       # shortcut: string               — global entry combo, ctrl/alt required
       #                                  ('off' disables; default 'alt+f')

@@ -184,6 +184,20 @@ export const dict = {
   'menu-copy-log': { zh: '复制会话日志路径', en: 'Copy session log path' },
   'menu-resume': { zh: '恢复该会话', en: 'Resume this session' },
 
+  // ── background warm-up index (0.10+ status view; 0.9.x stays silent) ──
+  'warmup-progress': { zh: '后台索引 {{resolved}}/{{total}}', en: 'Indexing {{resolved}}/{{total}}' },
+  'warmup-initial': { zh: '后台索引中…', en: 'Indexing…' },
+
+  // ── command tree provider (`tuiCommandTrees` suggestion metadata) ─────
+  // The zh/en pair is handed to the host wholesale and picked by the HOST's
+  // language at render time (never through t()); the en text mirrors the
+  // CommandDefinition/manifest description, which is the overlay's fallback
+  // for external commands (see src/command-tree.ts).
+  'cmd-desc-find': {
+    zh: '跨会话全文检索所有本地会话',
+    en: 'Search all local dsh sessions (cross-session full-text)',
+  },
+
   // ── help overlay (Alt+H) ─────────────────────────────────────────────
   // The keys column of the help sheet is language-free (src/help.tsx owns
   // those strings); only the action column is localized here.

@@ -1,9 +1,10 @@
 /**
  * The shared scene harness: mounts a real FindScene against the real host
- * ui kit with fake stdin/stdout streams, exposing key sending, frame
- * capture and close counting. Used by every scene-level wiring test —
- * preview-wiring.test.ts and scene.test.ts speak the same harness so their
- * frames are captured and stripped identically.
+ * ui kit with fake stdin/stdout streams, exposing key sending, pointer
+ * (mouse) injection, frame capture and close counting. Used by every
+ * scene-level wiring test — preview-wiring.test.ts and menu-wiring.test.ts
+ * speak the same harness so their frames are captured and stripped
+ * identically.
  */
 import { PassThrough, Writable } from 'node:stream'
 import React from 'react'
@@ -18,6 +19,16 @@ process.env['SSH_CONNECTION'] ??= 'scene-harness'
 
 export type Harness = {
   send(input: string): void
+  /** Pointer move (no-button motion) at a 1-indexed terminal cell — the
+   *  SGR form mode-1003 hover emits; drives onMouseEnter/onMouseLeave. */
+  movePointer(col: number, row: number): void
+  /** Left click (press + release) at a 1-indexed terminal cell. The host
+   *  dispatches the DOM click on the RELEASE event. */
+  clickAt(col: number, row: number): void
+  /** Right click (press + release) at a 1-indexed terminal cell. The host
+   *  dispatches the context menu on the PRESS event (DOM mousedown
+   *  semantics, 0.10+ kits only). */
+  rightClickAt(col: number, row: number): void
   all(): string
   latest(): string
   closed(): number
@@ -35,6 +46,20 @@ export function stripAnsi(value: string): string {
 
 export function waitFor(ms = 100): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Poll the cumulative stream until `pattern` appears or the deadline lapses.
+ *  Stream arrival is arrival-driven (flush gaps double up to their ceiling,
+ *  parallel workers and cold working-tree copies add scheduling delay), so
+ *  no fixed sleep is a guarantee — a wide one just slows every passing run
+ *  and still loses under load. Callers keep their `expect` after the wait:
+ *  a deadline miss surfaces as a normal assertion diff, not a helper error. */
+export async function waitForMatch(stream: () => string, pattern: RegExp, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!pattern.test(stream())) {
+    if (Date.now() >= deadline) return
+    await waitFor(50)
+  }
 }
 
 export function sessionWithMessages(texts: readonly string[]): ScannedSession {
@@ -66,6 +91,11 @@ export async function mount(
     }
     /** Scene-level notifier spy — the toast-channel tests assert dispatch. */
     notify?: (text: string, tone: 'info' | 'error') => void
+    /** Mount inside the host's AlternateScreen (as the real host mounts
+     *  plugin scenes), enabling alt-screen mouse dispatch: click/hover/
+     *  context-menu delivery is gated on altScreenActive in the host ink,
+     *  so pointer-driven wiring tests need this. */
+    fullscreen?: boolean
   } = {},
 ): Promise<Harness> {
   const columns = options.columns ?? 80
@@ -119,24 +149,51 @@ export async function mount(
     initialQuery: () => options.query ?? 'needle',
     notify: options.notify,
   }
-  const instance = await hostUi.render(React.createElement(FindScene, props), {
-    stdout,
-    stdin,
-    stderr: process.stderr,
-    patchConsole: false,
-    exitOnCtrlC: false,
-  })
+  const instance = await hostUi.render(
+    options.fullscreen === true
+      ? React.createElement(hostUi.AlternateScreen, null, React.createElement(FindScene, props))
+      : React.createElement(FindScene, props),
+    {
+      stdout,
+      stdin,
+      stderr: process.stderr,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
   await waitFor()
+
+  /** One SGR mouse report; col/row are the 1-indexed terminal cells a real
+   *  terminal sends, final byte M for press motion, m for release. */
+  const sgrMouse = (button: number, col: number, row: number, final: 'M' | 'm'): string =>
+    `\u001b[<${button};${col};${row}${final}`
 
   return {
     send(input: string) {
       stdin.write(input)
     },
+    movePointer(col, row) {
+      // Button 35 = no-button motion (mode-1003): the hover path.
+      stdin.write(sgrMouse(35, col, row, 'M'))
+    },
+    clickAt(col, row) {
+      stdin.write(sgrMouse(0, col, row, 'M') + sgrMouse(0, col, row, 'm'))
+    },
+    rightClickAt(col, row) {
+      stdin.write(sgrMouse(2, col, row, 'M') + sgrMouse(2, col, row, 'm'))
+    },
     all() {
       return stripAnsi(output)
     },
     latest() {
-      const start = output.lastIndexOf('\u001b[?2026h')
+      // Frame anchor: the host writes each frame as one buffer headed by
+      // the DEC 2026 begin marker — or, on alt-screen frames when the
+      // terminal env claims no synchronized-output support, by the bare
+      // SGR-reset + OSC-8-close frame head. Taking the later of the two
+      // keeps `latest()` meaning "the last painted frame" in both modes.
+      const syncStart = output.lastIndexOf('\u001b[?2026h')
+      const headStart = output.lastIndexOf('\u001b[0m\u001b]8;;')
+      const start = Math.max(syncStart, headStart)
       return stripAnsi(start < 0 ? output : output.slice(start))
     },
     closed() {

@@ -41,6 +41,15 @@ export function moveHighlight<T extends MenuItem>(menu: ContextMenuState<T>, del
   return { ...menu, highlight: Math.min(last, Math.max(0, menu.highlight + delta)) }
 }
 
+/** Point the highlight straight at a row — the mouse path (hover mirrors the
+ *  list's own hover-moves-focus rule). Out-of-range or empty menus are
+ *  inert; same contract as {@link moveHighlight}. */
+export function highlightAt<T extends MenuItem>(menu: ContextMenuState<T>, index: number): ContextMenuState<T> {
+  const last = menu.items.length - 1
+  if (last < 0 || index < 0 || index > last) return menu
+  return { ...menu, highlight: index }
+}
+
 /** The highlighted item, or undefined on an empty menu. */
 export function highlightedItem<T extends MenuItem>(menu: ContextMenuState<T>): T | undefined {
   return menu.items[menu.highlight]

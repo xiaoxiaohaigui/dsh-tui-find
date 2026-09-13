@@ -34,6 +34,82 @@ export const REGISTER_RETRY_MAX_ATTEMPTS = 20
 /** Retry cadence; the total budget is delay × max attempts (500 ms). */
 export const REGISTER_RETRY_DELAY_MS = 25
 
+/** Late-mount poll budget for a seam service that was not yet mounted at
+ *  apply: 200 × 25 ms = 5 s, orders of magnitude over the observed ~100 ms
+ *  the TUI runtimes need after a plugin's cold-boot apply. */
+export const SEAM_MOUNT_MAX_ATTEMPTS = 200
+export const SEAM_MOUNT_DELAY_MS = 25
+
+/**
+ * Run `use` on a seam service as soon as it exists. The bare soft-probe
+ * (`ctx.get(seam, false)`) silently skips the registration when this plugin's
+ * apply wins the race against the TUI runtime's own startup — every /find
+ * then fails to open for the whole session (observed on a real 0.10.1 boot
+ * with engine rc.2). Poll instead.
+ *
+ * Deliberately NOT `ctx.inject`: cordis binds a service proxy's caller to the
+ * context the `.get()` ran on, and inside an inject callback the host's
+ * liveness token belongs to the injected service's fiber — a registration
+ * made there is owned by a foreign activation, and every later `open()` from
+ * this plugin is rejected ("belongs to another activation"). A plain timer
+ * created during apply carries this activation's own token (or an empty
+ * store, which the gate skips), so the registration stays owned by us.
+ *
+ * `probe` must resolve the seam through the plugin's own context; it runs
+ * synchronously first and then on each tick. Give-up is an info, not a warn:
+ * on a composition that genuinely has no TUI runtimes this is the designed
+ * no-op posture, not a degradation. A throwing `use` is contained to a
+ * single warning — on the poll tick an escape would be an uncaughtException
+ * (the old `ctx.inject` ran its callback inside a managed fiber with
+ * host-level disposal), and on the synchronous path it would fail the whole
+ * activation; present call sites are all guarded, so this is containment
+ * for future ones.
+ */
+export function whenSeamMounted<T>(
+  ctx: Context,
+  label: string,
+  probe: () => T | undefined,
+  use: (seam: T) => void,
+): void {
+  const run = (seam: T): void => {
+    try {
+      use(seam)
+    } catch (error) {
+      ctx.logger.warn(
+        `dsh-tui-find: ${label} setup failed (${error instanceof Error ? error.message : String(error)})`,
+      )
+    }
+  }
+  const first = probe()
+  if (first !== undefined) {
+    run(first)
+    return
+  }
+  let attempts = 0
+  const timer = setInterval(() => {
+    attempts += 1
+    let seam: T | undefined
+    try {
+      seam = probe()
+    } catch {
+      seam = undefined
+    }
+    if (seam === undefined) {
+      if (attempts >= SEAM_MOUNT_MAX_ATTEMPTS) {
+        clearInterval(timer)
+        ctx.logger.info(
+          `dsh-tui-find: ${label} never mounted within the boot window; the feature stays unavailable this session`,
+        )
+      }
+      return
+    }
+    clearInterval(timer)
+    run(seam)
+  }, SEAM_MOUNT_DELAY_MS)
+  // A deactivated/restarted activation must not leave poll timers behind.
+  ctx.effect(() => () => clearInterval(timer))
+}
+
 /** A guarded host-seam registration: returns the contribution's disposer. */
 export type SeamRegistration = () => () => void
 
