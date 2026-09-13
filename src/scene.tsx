@@ -338,20 +338,36 @@ export function FindScene(props: TuiSceneProps & {
   )
 
   // ── context menu (right-click; attached only on 0.10+ kits) ───────────
-  const closeMenu = useCallback(() => setMenu(undefined), [])
+  // Menu mutators write menuRef before setState: a merged stdin block runs
+  // the handler once per key inside one batch, and Enter's activateMenu
+  // reads the mirror — render-time sync alone would activate the highlight
+  // the block's earlier keys moved away from (REVIEW R-054).
+  const closeMenu = useCallback(() => {
+    menuRef.current = undefined
+    setMenu(undefined)
+  }, [])
   const moveMenuHighlight = useCallback((delta: number) => {
-    setMenu(current => (current === undefined ? undefined : moveHighlight(current, delta)))
+    const current = menuRef.current
+    if (current === undefined) return
+    const next = moveHighlight(current, delta)
+    menuRef.current = next
+    setMenu(next)
   }, [])
   /** The mouse path over the open menu's rows — hover moves the highlight,
    *  mirroring the list's own hover-moves-focus rule. */
   const hoverMenuHighlight = useCallback((index: number) => {
-    setMenu(current => (current === undefined ? undefined : highlightAt(current, index)))
+    const current = menuRef.current
+    if (current === undefined) return
+    const next = highlightAt(current, index)
+    menuRef.current = next
+    setMenu(next)
   }, [])
   const activateMenu = useCallback(() => {
     const current = menuRef.current
     if (current === undefined) return
     const item = highlightedItem(current)
     if (item === undefined) return
+    menuRef.current = undefined
     setMenu(undefined)
     item.action()
   }, [])
@@ -389,7 +405,9 @@ export function FindScene(props: TuiSceneProps & {
         },
       )
       setSelected(rowIndex)
-      setMenu(openMenu(event.col, event.row, items))
+      const opened = openMenu(event.col, event.row, items)
+      menuRef.current = opened
+      setMenu(opened)
     },
     [flat, copyMessage, copySessionPath],
   )
@@ -405,11 +423,11 @@ export function FindScene(props: TuiSceneProps & {
       const messageIndex = messageAtLine(previewLines, lineAt)
       const message = messageIndex === undefined ? undefined : session.messages[messageIndex]
       if (message === undefined) return
-      setMenu(
-        openMenu(event.col, event.row, [
-          { id: 'copy-message', label: t('menu-copy-message'), action: () => copyMessage(message) },
-        ]),
-      )
+      const opened = openMenu(event.col, event.row, [
+        { id: 'copy-message', label: t('menu-copy-message'), action: () => copyMessage(message) },
+      ])
+      menuRef.current = opened
+      setMenu(opened)
     },
     [previewSession, previewLines, previewWindowStart, copyMessage],
   )
@@ -549,7 +567,7 @@ export function FindScene(props: TuiSceneProps & {
               onMouseEnter={() => hoverMenuHighlight(index)}
               onClick={event => {
                 event.stopImmediatePropagation()
-                setMenu(undefined)
+                closeMenu()
                 item.action()
               }}
             >

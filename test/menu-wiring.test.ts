@@ -147,6 +147,27 @@ describe.skipIf(!menuCapable)('context menu scene wiring', () => {
     }
   })
 
+  it('activates the moved highlight when ↓↓+Enter arrive merged in one stdin block', async () => {
+    const notify = vi.fn()
+    const harness = await menuHarness(notify)
+    try {
+      harness.rightClickAt(12, 7)
+      await waitFor()
+      // One chunk, three keys: the host tokenizer parses them together and
+      // React runs the handler once per key inside a single batch before
+      // any re-render (scene.tsx's merged-key model). Enter must activate
+      // the highlight the two ↓ moves left behind — a menuRef that only
+      // render-syncs still reads the pre-move item and copies the message
+      // instead of opening the resume confirm (REVIEW R-054).
+      harness.send('\u001b[B\u001b[B\r')
+      await waitFor()
+      expect(notify).not.toHaveBeenCalled()
+      expect(harness.latest()).toMatch(/Resum[^?\r]{0,20}session\?/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('closes on a backdrop click without passing it through to the row beneath', async () => {
     const harness = await menuHarness()
     try {
