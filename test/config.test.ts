@@ -29,12 +29,33 @@ describe('resolveConfig — defaultTime', () => {
   })
 })
 
+describe('resolveConfig — layout', () => {
+  it('defaults to split when unset', () => {
+    expect(resolveConfig(undefined).layout).toBe('split')
+    expect(resolveConfig({}).layout).toBe('split')
+  })
+
+  it('passes classic through', () => {
+    expect(resolveConfig({ layout: 'classic' }).layout).toBe('classic')
+    expect(resolveConfig({ layout: 'split' }).layout).toBe('split')
+  })
+
+  it('coerces unknown values to split instead of leaking through', () => {
+    // The schema validates real rows, but resolveConfig is also fed by tests
+    // and drift — an unknown layout must degrade to the default form, never
+    // to a broken render branch.
+    expect(resolveConfig({ layout: 'wide' as never }).layout).toBe('split')
+    expect(resolveConfig({ layout: 1 as never }).layout).toBe('split')
+  })
+})
+
 describe('resolveConfig — schema defaults stay in sync with the defensive layer', () => {
   it('applies the documented default for every knob', () => {
     const resolved = resolveConfig(undefined)
     expect(resolved).toEqual({
       defaultScope: 'repo',
       defaultTime: 'all',
+      layout: 'split',
       caseSensitive: false,
       regex: false,
       pinyin: true,

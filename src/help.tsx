@@ -90,6 +90,7 @@ export function helpSections(columns: number): readonly HelpSection[] {
         { keys: 'Esc', action: t('help-list-esc') },
         { keys: 'Alt+H', action: t('help-list-help') },
         { keys: 'Alt+F', action: t('help-list-global') },
+        { keys: 'layout', action: t('help-list-layout') },
       ],
     },
     {
@@ -100,6 +101,7 @@ export function helpSections(columns: number): readonly HelpSection[] {
         { keys: 'n/N', action: t('help-preview-hits') },
         { keys: 'Enter', action: t('help-preview-resume') },
         { keys: 'Alt+C', action: t('help-preview-copy') },
+        { keys: 'Alt+P', action: t('help-preview-focus') },
         { keys: 'Esc', action: t('help-preview-esc') },
       ],
     },

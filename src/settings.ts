@@ -71,6 +71,20 @@ function section(): TuiSettingsSection {
         ],
       },
       {
+        path: ['layout'],
+        label: 'Layout',
+        descriptions: zh('界面布局'),
+        hint: 'Split panes (list + reader side by side, needs >= 100 columns) or classic (single list + full-screen preview); default split',
+        hintDescriptions: zh(
+          '分栏（左列表 · 右内容，需终端 ≥ 100 列，不足自动回退）或经典（单栏列表 + 全屏预览）；默认分栏',
+        ),
+        kind: 'select',
+        options: [
+          { value: 'split', label: 'Split panes', descriptions: zh('分栏（左列表 · 右内容）') },
+          { value: 'classic', label: 'Classic', descriptions: zh('经典（单栏列表 + 全屏预览）') },
+        ],
+      },
+      {
         path: ['caseSensitive'],
         label: 'Case-sensitive',
         descriptions: zh('大小写敏感'),
@@ -198,6 +212,7 @@ export function registerSettingsSection(
       const schema = z.object({
         defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
         defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
+        layout: z.union(['split', 'classic']).default(resolved.layout),
         caseSensitive: z.boolean().default(resolved.caseSensitive),
         regex: z.boolean().default(resolved.regex),
         pinyin: z.boolean().default(resolved.pinyin),
@@ -242,6 +257,7 @@ export function registerSettingsSection(
 type ConfigValue = {
   defaultScope?: 'repo' | 'all'
   defaultTime?: 'all' | '7d' | '30d'
+  layout?: 'split' | 'classic'
   caseSensitive?: boolean
   regex?: boolean
   pinyin?: boolean

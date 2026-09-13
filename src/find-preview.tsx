@@ -1,12 +1,14 @@
 /**
- * The preview reader: a scrollable full-conversation view over one session.
- * `usePreviewModel` owns the cursor/window/anchor state and derives the
- * line list, weights and hit tables; it also consumes the pending anchor
- * and follows the scroll window during the SCENE's own render — the
- * render-phase adjust pattern (a component adjusting its own state while
- * rendering is legal, so the anchored frame is the committed one and
- * nothing flickers). `PreviewPane` is pure display over the already
- * adjusted cursor/window.
+ * The preview reader: a scrollable full-conversation view over one session,
+ * mounted in two shapes off the same model and the same row renderer — the
+ * full-screen pane (classic layout, Alt+P) and the split layout's right
+ * column. `usePreviewModel` owns the cursor/window/anchor state and derives
+ * the line list, weights and hit tables; it also consumes the pending
+ * anchor (or, in split mode, the selection-driven anchor) and follows the
+ * scroll window during the SCENE's own render — the render-phase adjust
+ * pattern (a component adjusting its own state while rendering is legal, so
+ * the anchored frame is the committed one and nothing flickers). The panes
+ * are pure display over the already adjusted cursor/window.
  *
  * @module dsh-tui-find/find-preview
  */
@@ -27,7 +29,6 @@ import { HighlightedText, HintLine } from './find-chrome.js'
 import {
   displayTitle,
   formatWhen,
-  PREVIEW_CHROME_LINES,
   ROLE_MARK,
   roleMarkColor,
   selectionMarker,
@@ -35,26 +36,28 @@ import {
   type ContextBoxProps,
   type ContextMenuEventLike,
   type FlatRow,
-  type Mode,
   type StatusNote,
   type Ui,
   type WheelBoxProps,
   type WheelEventLike,
 } from './find-types.js'
 
-/** The preview reader's state and derived tables, shared by the pane and
+/** The preview reader's state and derived tables, shared by both panes and
  *  the input dispatcher. The cursor is a LINE index into the preview's flat
  *  line list; the window start follows it through fitScrollWindow over
- *  1-weight lines. Both are discarded on exit: every Alt+P re-anchors (the
- *  hit message's header line, or the head for cards and title hits),
- *  delivered through anchorRef and consumed by the model during the
- *  scene's render. The ref/setter types stay structural so the scene's own
- *  useState/useRef values flow in regardless of the host React typings'
- *  version. */
+ *  1-weight lines. Both are discarded on re-anchor: every classic Alt+P
+ *  re-anchors (the hit message's header line, or the head for cards and
+ *  title hits), delivered through anchorRef and consumed by the model
+ *  during the scene's render; in split mode the anchor instead follows the
+ *  list selection (deduplicated — see `selectionAnchored`). The ref/setter
+ *  types stay structural so the scene's own useState/useRef values flow in
+ *  regardless of the host React typings' version. */
 export interface PreviewModel {
   cursor: number
   setCursor: (next: number | ((current: number) => number)) => void
   windowStart: number
+  /** End of the fitted visible window — the panes slice `lines` with it. */
+  windowEnd: number
   setWindowStart: (next: number | ((current: number) => number)) => void
   anchorRef: { current: number | undefined }
   session: ScannedSession | undefined
@@ -65,39 +68,67 @@ export interface PreviewModel {
   stepByWheel: (event: WheelEventLike) => void
 }
 
+/** The message a split-mode anchor parks the reader on for a list row: a
+ *  hit row its own message, a results card the session's FIRST message hit,
+ *  a recent card (no hit bundle) the conversation head (-1). */
+function anchorMessageOf(row: FlatRow): number {
+  if (row.kind === 'message') return row.message.sourceIndex ?? -1
+  const hits = row.hits ?? []
+  for (const entry of hits) {
+    if (entry.kind === 'message') return entry.sourceIndex ?? -1
+  }
+  return -1
+}
+
 export function usePreviewModel(
   React: TuiSceneProps['React'],
   options: {
-    mode: Mode
-    /** The scene's mode mirror — the wheel callback must not scroll after
-     *  the mode changed but before the re-render commits. */
-    modeRef: { current: Mode }
+    /** True while a reader surface is actually mounted (split: the pane is
+     *  always up; classic: only the full-screen preview). Gates the session
+     *  derivation, the anchoring and the window following. */
+    readerActive: boolean
+    /** The scene's readerActive mirror — the wheel callback must not scroll
+     *  after the reader unmounted but before the re-render commits, and in
+     *  split mode the wheel works over the pane regardless of which side
+     *  holds the keyboard focus. */
+    readerActiveRef: { current: boolean }
+    /** Split mode: the LIST SELECTION drives the anchor (deduplicated by
+     *  the (sessionId, messageIndex) target — manual scrolling in the pane
+     *  is only ever overridden when the target itself changes). Classic
+     *  keeps the Alt+P anchorRef path instead. */
+    selectionAnchored: boolean
     selectedRow: FlatRow | undefined
-    columns: number
-    /** Terminal height, for the scroll window's viewport budget. */
-    rows: number
+    /** Body wrap width in display columns — the caller's geometry (solo
+     *  viewport vs bordered pane interior), not the model's business. */
+    bodyWidth: number
+    /** Scroll viewport height in terminal rows, likewise the caller's. */
+    viewportHeight: number
   },
 ): PreviewModel {
   const { useState, useRef, useMemo, useCallback } = React
-  const { mode, modeRef, selectedRow, columns, rows } = options
+  const { readerActive, readerActiveRef, selectionAnchored, selectedRow, bodyWidth, viewportHeight } = options
   const [cursor, setCursor] = useState(0)
   const [windowStart, setWindowStart] = useState(0)
   const anchorRef = useRef<number | undefined>(undefined)
+  // The last selection-driven anchor target as "sessionId:messageIndex" —
+  // unrelated re-renders (toasts, progress ticks, wheel scrolls) repeat the
+  // same key and must not yank the cursor back (the manual-scroll truce).
+  const selectionAnchorRef = useRef<string | undefined>(undefined)
   const session = useMemo<ScannedSession | undefined>(() => {
-    if (mode !== 'preview') return undefined
+    if (!readerActive) return undefined
     const row = selectedRow
     if (row === undefined) return undefined
     return row.kind === 'session' ? row.session : row.hit.session
-  }, [mode, selectedRow])
+  }, [readerActive, selectedRow])
   // The session's own MESSAGE hits: the ◆ markers and the n/N jump table
   // come from them (title hits have no message to anchor or mark). Recent
   // mode has no SessionHit, so a recent card's reader simply has none.
   const hits = useMemo<readonly MessageHit[]>(() => {
     const row = selectedRow
-    if (mode !== 'preview' || row === undefined) return []
+    if (!readerActive || row === undefined) return []
     const source = row.kind === 'message' ? row.hit.hits : (row.hits ?? [])
     return source.filter(entry => entry.kind === 'message')
-  }, [mode, selectedRow])
+  }, [readerActive, selectedRow])
   const hitIndices = useMemo(() => {
     const indices = new Set<number>()
     for (const entry of hits) {
@@ -118,9 +149,6 @@ export function usePreviewModel(
     }
     return map
   }, [hits])
-  // Body budget: marker (2) + the deepest continuation indent (4) inside the
-  // terminal width, one column of slack — no line can soft-wrap past it.
-  const bodyWidth = Math.max(1, columns - 5)
   const lines = useMemo<PreviewLine[]>(
     () =>
       session === undefined
@@ -143,7 +171,7 @@ export function usePreviewModel(
   // the window follows it through fitScrollWindow.
   const stepByWheel = useCallback(
     (event: WheelEventLike) => {
-      if (modeRef.current !== 'preview') return
+      if (!readerActiveRef.current) return
       const by = wheelStep(event.deltaY, event.deltaX)
       if (by === 0) return
       setCursor(current => {
@@ -151,37 +179,53 @@ export function usePreviewModel(
         return Math.min(last, Math.max(0, current + by))
       })
     },
-    [lines.length, modeRef],
+    [lines.length, readerActiveRef],
   )
-  // First render after Alt+P: park the cursor (and the window) on the
+  // Render after an anchor change: park the cursor (and the window) on the
   // anchor message's header line, then keep the window glued to the cursor
   // — the render-phase adjust pattern, legal HERE because the state belongs
   // to the component whose render is running (the scene calling this hook).
-  // PreviewPane must not do it itself: a child calling the parent's setters
-  // during its own render trips React's cross-component update warning and
-  // has no guarantee under concurrent rendering. The adjusted values are
-  // returned directly, so the committed frame is the anchored one.
+  // The panes must not do it themselves: a child calling the parent's
+  // setters during its own render trips React's cross-component update
+  // warning and has no guarantee under concurrent rendering. The adjusted
+  // values are returned directly, so the committed frame is the anchored one.
   let adjustedCursor = cursor
   let adjustedWindow = windowStart
-  if (mode === 'preview') {
-    const anchored = anchorRef.current
+  let adjustedWindowEnd = 0
+  if (readerActive) {
+    let anchored: number | undefined
+    if (selectionAnchored) {
+      const row = selectedRow
+      if (row !== undefined) {
+        const target = anchorMessageOf(row)
+        const key = `${session?.id ?? ''}:${target}`
+        if (selectionAnchorRef.current !== key) {
+          selectionAnchorRef.current = key
+          anchored = target
+        }
+      }
+    } else {
+      anchored = anchorRef.current
+      if (anchored !== undefined) anchorRef.current = undefined
+    }
     if (anchored !== undefined) {
       const start = messageHeaderLine(lines, anchored)
-      anchorRef.current = undefined
       setCursor(start)
       setWindowStart(start)
       adjustedCursor = start
       adjustedWindow = start
     }
     adjustedCursor = Math.min(Math.max(0, adjustedCursor), Math.max(0, lines.length - 1))
-    const view = fitScrollWindow(weights, adjustedCursor, Math.max(1, rows - PREVIEW_CHROME_LINES), adjustedWindow)
+    const view = fitScrollWindow(weights, adjustedCursor, Math.max(1, viewportHeight), adjustedWindow)
     if (view.start !== adjustedWindow) setWindowStart(view.start)
     adjustedWindow = view.start
+    adjustedWindowEnd = view.end
   }
   return {
     cursor: adjustedCursor,
     setCursor,
     windowStart: adjustedWindow,
+    windowEnd: adjustedWindowEnd,
     setWindowStart,
     anchorRef,
     session,
@@ -193,17 +237,96 @@ export function usePreviewModel(
   }
 }
 
+/** The reader's visible rows — the ONE renderer both panes draw with, so
+ *  the full-screen preview and the split column never drift apart. Header
+ *  rows carry the list's selection vocabulary (marker arrow + selectionBg
+ *  for the cursor's message), the ROLE_MARK glyph with its generation-
+ *  resolved colour, and a warning `◆` marking the session's hits; body rows
+ *  split indent from content so hit spans can be painted per-segment. */
+function ReaderRows(props: {
+  React: TuiSceneProps['React']
+  ui: Ui
+  lines: readonly PreviewLine[]
+  /** The visible slice [start, end) — fitted by usePreviewModel. */
+  start: number
+  end: number
+  /** Message index the cursor sits on; its header row is highlighted. */
+  cursorMessage: number
+  /** Truncation budget for header rows in display columns. */
+  headerWidth: number
+  /** Body wrap width the lines were built with (HighlightedText re-cuts). */
+  bodyWidth: number
+}): React.ReactElement {
+  const { React: R, ui, lines, start, end, cursorMessage, headerWidth, bodyWidth } = props
+  const { Box, Text } = ui
+  const visible = lines.slice(start, end)
+  return (
+    <>
+      {visible.map((line, offset) => {
+        const lineAt = start + offset
+        if (line.kind === 'header') {
+          const isCursorMessage = line.messageIndex === cursorMessage
+          const mark = ROLE_MARK[line.role]
+          const label =
+            line.role === 'user' ? t('role-user') : line.role === 'tool' ? t('role-tool') : t('role-assistant')
+          const roleText = `${mark.glyph} ${label}${line.seq === undefined ? '' : ` #${line.seq}`}`
+          const timeText = line.at === undefined ? '' : ` · ${formatWhen(line.at)}`
+          const clipped = truncateWidth(`${roleText}${timeText}${line.isHit ? ' ◆' : ''}`, Math.max(0, headerWidth))
+          const hasVisibleHit = line.isHit && clipped.endsWith(' ◆')
+          const clippedBody = hasVisibleHit ? clipped.slice(0, -2) : clipped
+          const clippedRole = clippedBody.slice(0, Math.min(roleText.length, clippedBody.length))
+          const clippedTime = clippedBody.slice(clippedRole.length)
+          return (
+            <Box
+              key={`h${lineAt}`}
+              flexDirection="row"
+              flexShrink={0}
+              {...(isCursorMessage ? { backgroundColor: 'selectionBg' } : {})}
+            >
+              <Text color={isCursorMessage ? 'suggestion' : 'subtle'}>{selectionMarker(isCursorMessage)}</Text>
+              <Text color={roleMarkColor(ui, line.role)}>{clippedRole}</Text>
+              {clippedTime.length > 0 ? <Text dimColor>{clippedTime}</Text> : null}
+              {hasVisibleHit ? <Text color="warning" bold> ◆</Text> : null}
+            </Box>
+          )
+        }
+        return (
+          // Body rows split indent from content so the hit spans can be
+          // painted per-segment: 'warning' bold highlights (the list's
+          // own accent) over plain spans that keep the reader's hierarchy
+          // — assistant bodies dim, user/tool bodies plain text.
+          <Box key={`b${lineAt}`} flexDirection="row" flexShrink={0}>
+            <Text dimColor={line.role === 'assistant'}>{line.bodyIndex === 0 ? '  ' : '    '}</Text>
+            <HighlightedText
+              React={R}
+              ui={ui}
+              text={line.text}
+              ranges={line.ranges}
+              color="warning"
+              width={bodyWidth}
+              plainDim={line.role === 'assistant'}
+            />
+          </Box>
+        )
+      })}
+    </>
+  )
+}
+
+/** The classic full-screen reader (widths budgeted against the terminal).
+ *  Status + hint ride its own chrome; the split layout's pane carries no
+ *  status/hint of its own — the scene's footer keeps those. */
 export function PreviewPane(props: {
   React: TuiSceneProps['React']
   ui: Ui
   session: ScannedSession
   lines: readonly PreviewLine[]
-  weights: readonly number[]
   bodyWidth: number
   /** Already anchor-adjusted and window-followed by usePreviewModel — the
    *  pane is pure display and never writes scene state. */
   cursor: number
   windowStart: number
+  windowEnd: number
   status: StatusNote | undefined
   columns: number
   rows: number
@@ -216,10 +339,10 @@ export function PreviewPane(props: {
     ui,
     session,
     lines,
-    weights,
     bodyWidth,
     cursor,
     windowStart,
+    windowEnd,
     status,
     columns,
     rows,
@@ -230,18 +353,11 @@ export function PreviewPane(props: {
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps & ContextBoxProps>
   const cursorLine = Math.min(Math.max(0, cursor), Math.max(0, lines.length - 1))
   const cursorMessage = messageAtLine(lines, cursorLine) ?? 0
-  const view = fitScrollWindow(
-    weights,
-    cursorLine,
-    Math.max(1, rows - PREVIEW_CHROME_LINES),
-    windowStart,
-  )
-  const visible = lines.slice(view.start, view.end)
   return (
     // Root pinned to the full viewport (the list root's own rule): fixed
     // chrome — title, meta, status, hint — surrounds a flexGrow scroll
-    // region windowed by fitScrollWindow, so the hint row stays on the
-    // bottom edge however far the reader scrolls.
+    // region, so the hint row stays on the bottom edge however far the
+    // reader scrolls.
     <Box flexDirection="column" width={columns} height={rows}>
       <Box flexShrink={0}>
         <Text color="remember" bold>
@@ -269,58 +385,16 @@ export function PreviewPane(props: {
         onWheel={onWheel}
         {...(onPreviewContextMenu !== undefined ? { onContextMenu: onPreviewContextMenu } : {})}
       >
-        {visible.map((line, offset) => {
-          const lineAt = view.start + offset
-          if (line.kind === 'header') {
-            // The header row carries the list's selection vocabulary —
-            // marker arrow plus selectionBg for the cursor's message —
-            // the ROLE_MARK glyph with its generation-resolved colour, and
-            // a warning `◆` marking the session's hits (a hit tool row
-            // would otherwise share the tool role's own warning colour).
-            const isCursorMessage = line.messageIndex === cursorMessage
-            const mark = ROLE_MARK[line.role]
-            const label =
-              line.role === 'user' ? t('role-user') : line.role === 'tool' ? t('role-tool') : t('role-assistant')
-            const roleText = `${mark.glyph} ${label}${line.seq === undefined ? '' : ` #${line.seq}`}`
-            const timeText = line.at === undefined ? '' : ` · ${formatWhen(line.at)}`
-            const clipped = truncateWidth(`${roleText}${timeText}${line.isHit ? ' ◆' : ''}`, Math.max(0, columns - 2))
-            const hasVisibleHit = line.isHit && clipped.endsWith(' ◆')
-            const clippedBody = hasVisibleHit ? clipped.slice(0, -2) : clipped
-            const clippedRole = clippedBody.slice(0, Math.min(roleText.length, clippedBody.length))
-            const clippedTime = clippedBody.slice(clippedRole.length)
-            return (
-              <Box
-                key={`h${lineAt}`}
-                flexDirection="row"
-                flexShrink={0}
-                {...(isCursorMessage ? { backgroundColor: 'selectionBg' } : {})}
-              >
-                <Text color={isCursorMessage ? 'suggestion' : 'subtle'}>{selectionMarker(isCursorMessage)}</Text>
-                <Text color={roleMarkColor(ui, line.role)}>{clippedRole}</Text>
-                {clippedTime.length > 0 ? <Text dimColor>{clippedTime}</Text> : null}
-                {hasVisibleHit ? <Text color="warning" bold> ◆</Text> : null}
-              </Box>
-            )
-          }
-          return (
-            // Body rows split indent from content so the hit spans can be
-            // painted per-segment: 'warning' bold highlights (the list's
-            // own accent) over plain spans that keep the reader's hierarchy
-            // — assistant bodies dim, user/tool bodies plain text.
-            <Box key={`b${lineAt}`} flexDirection="row" flexShrink={0}>
-              <Text dimColor={line.role === 'assistant'}>{line.bodyIndex === 0 ? '  ' : '    '}</Text>
-              <HighlightedText
-                React={R}
-                ui={ui}
-                text={line.text}
-                ranges={line.ranges}
-                color="warning"
-                width={bodyWidth}
-                plainDim={line.role === 'assistant'}
-              />
-            </Box>
-          )
-        })}
+        <ReaderRows
+          React={R}
+          ui={ui}
+          lines={lines}
+          start={windowStart}
+          end={windowEnd}
+          cursorMessage={cursorMessage}
+          headerWidth={columns - 2}
+          bodyWidth={bodyWidth}
+        />
       </WheelBox>
       <Box flexShrink={0}>
         <Text color={status?.tone === 'error' ? 'error' : 'success'}>
@@ -335,6 +409,80 @@ export function PreviewPane(props: {
           <HintLine React={R} ui={ui} text={t('hint-preview')} />
         </Text>
       </Box>
+    </Box>
+  )
+}
+
+/** The split layout's right column: the same reader rows inside the host
+ *  browser's preview frame (round border, permission colour, dimmed, one
+ *  cell of horizontal padding) with its own title/meta head. Wheel and
+ *  context-menu handlers ride the scroll region, so the pointer mapping is
+ *  identical to the full-screen pane's (localRow 0 = first visible line). */
+export function ReaderPane(props: {
+  React: TuiSceneProps['React']
+  ui: Ui
+  session: ScannedSession
+  lines: readonly PreviewLine[]
+  /** Already anchor-adjusted and window-followed by usePreviewModel. */
+  cursor: number
+  windowStart: number
+  windowEnd: number
+  paneWidth: number
+  bodyWidth: number
+  onWheel: (event: WheelEventLike) => void
+  onContextMenu?: (event: ContextMenuEventLike) => void
+}): React.ReactElement {
+  const { React: R, ui, session, lines, cursor, windowStart, windowEnd, paneWidth, bodyWidth, onWheel, onContextMenu } = props
+  const { Box, Text } = ui
+  const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps & ContextBoxProps>
+  const cursorLine = Math.min(Math.max(0, cursor), Math.max(0, lines.length - 1))
+  const cursorMessage = messageAtLine(lines, cursorLine) ?? 0
+  // Interior width = paneWidth - 4 (two border cells + one padding cell per
+  // side); the head rows keep one trailing slack on top of that.
+  const headWidth = Math.max(0, paneWidth - 5)
+  return (
+    <Box
+      flexDirection="column"
+      width={paneWidth}
+      flexShrink={0}
+      overflow="hidden"
+      borderStyle="round"
+      borderColor="permission"
+      borderDimColor
+      paddingX={1}
+    >
+      <Box flexShrink={0}>
+        <Text color="remember" bold>
+          {` ${truncateWidth(t('preview-title', { title: displayTitle(session) }), headWidth)}`}
+        </Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text dimColor>
+          {` ${truncateWidth(
+            `${session.header.cwd ?? ''} · ${formatWhen(session.modifiedAt)} · ${t('msgs-count', { n: session.messages.length })}`,
+            headWidth,
+          )}`}
+        </Text>
+      </Box>
+      <WheelBox
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        overflow="hidden"
+        onWheel={onWheel}
+        {...(onContextMenu !== undefined ? { onContextMenu } : {})}
+      >
+        <ReaderRows
+          React={R}
+          ui={ui}
+          lines={lines}
+          start={windowStart}
+          end={windowEnd}
+          cursorMessage={cursorMessage}
+          headerWidth={Math.max(0, paneWidth - 6)}
+          bodyWidth={bodyWidth}
+        />
+      </WheelBox>
     </Box>
   )
 }

@@ -17,7 +17,6 @@ import type { SearchScope } from './core/search.js'
 import { hitOrdinal, jumpHit, messageAtLine, stepMessage, type PreviewLine } from './preview.js'
 import {
   CHROME_LINES,
-  PREVIEW_CHROME_LINES,
   type CopyEntry,
   type FlatRow,
   type InputKey,
@@ -67,6 +66,13 @@ export interface FindInputDeps {
   setStatus: (next: StatusNote | undefined | ((current: StatusNote | undefined) => StatusNote | undefined)) => void
   flatLength: number
   rows: number
+  /** True while the split layout is live (config layout=split AND the
+   *  terminal is wide enough): Alt+P then HANDS FOCUS between the list and
+   *  the reader instead of opening/closing the full-screen preview. */
+  splitActive: boolean
+  /** The reader's scroll viewport in rows — PgUp/PgDn inside the reader
+   *  pages by it (the classic pane and the split pane differ). */
+  previewPageJump: number
   selectedRow: FlatRow | undefined
   previewLines: readonly PreviewLine[]
   previewCursor: number
@@ -106,6 +112,8 @@ export function useFindInput(deps: FindInputDeps): void {
     setStatus,
     flatLength,
     rows,
+    splitActive,
+    previewPageJump,
     selectedRow,
     previewLines,
     previewCursor,
@@ -151,6 +159,10 @@ export function useFindInput(deps: FindInputDeps): void {
           if (queryRef.current.length > 0) setQuery('')
           else close()
         } else {
+          // Mirror write first: a later key in the same stdin chunk must
+          // read the mode this key already chose (the menu mutators'
+          // focusRef discipline, REVIEW R-054).
+          modeRef.current = 'list'
           setMode('list')
         }
         return
@@ -168,7 +180,10 @@ export function useFindInput(deps: FindInputDeps): void {
         // Alt+H toggles the panel closed (its own row says so); Esc lands in
         // the shared escape branch above. Every other key stays swallowed —
         // the help screen is inert and typing must never leak into the query.
-        if (altOnly && lower === 'h') setMode('list')
+        if (altOnly && lower === 'h') {
+          modeRef.current = 'list'
+          setMode('list')
+        }
         return
       }
       if (modeRef.current === 'preview') {
@@ -184,11 +199,17 @@ export function useFindInput(deps: FindInputDeps): void {
         } else if (key.downArrow) {
           setPreviewCursor(current => stepMessage(previewLines, current, 1))
         } else if (key.pageUp || key.pageDown) {
-          const jump = Math.max(1, rows - PREVIEW_CHROME_LINES)
+          const jump = Math.max(1, previewPageJump)
           setPreviewCursor(current => {
             const next = key.pageUp ? current - jump : current + jump
             return Math.min(lastLine, Math.max(0, next))
           })
+        } else if (altOnly && lower === 'p' && splitActive) {
+          // Split only: hand focus back to the list. The reader pane stays
+          // mounted — classic's full-screen preview exits through Esc, so
+          // this chord must stay swallowed there (behavior unchanged).
+          modeRef.current = 'list'
+          setMode('list')
         } else if (plain && lower === 'n') {
           // Walk the session's own hits (`n` forward, Shift+n back). A
           // recent-session card has an empty hit table and no-ops silently;
@@ -258,12 +279,21 @@ export function useFindInput(deps: FindInputDeps): void {
       // cards too (preview from the head of the conversation); Alt+C needs a
       // concrete hit, while Alt+E toggles every message hit on the card.
       if (altOnly && lower === 'p') {
+        if (splitActive) {
+          // Split: Alt+P hands focus to the reader — no open/close, no
+          // re-anchor (the reader follows the selection while it is on the
+          // list, and manual scrolls in the reader are its own business).
+          modeRef.current = 'preview'
+          setMode('preview')
+          return
+        }
         const row = selectedRow
         if (row !== undefined) {
           // Anchor: a hit row parks the cursor on its own message's header
           // line; a card (or a title hit, which has no message) starts from
           // the head of the conversation.
           previewAnchorRef.current = row.kind === 'message' ? (row.message.sourceIndex ?? -1) : -1
+          modeRef.current = 'preview'
           setMode('preview')
         }
         return
@@ -290,6 +320,7 @@ export function useFindInput(deps: FindInputDeps): void {
         return
       }
       if (altOnly && lower === 'h') {
+        modeRef.current = 'help'
         setMode('help')
         return
       }

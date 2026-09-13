@@ -43,8 +43,11 @@ import { displayWidth, spreadRow, truncateWidth } from './width.js'
 import { HelpOverlay } from './help.js'
 import {
   CHROME_LINES,
+  PREVIEW_CHROME_LINES,
   PREVIEW_HITS,
+  PANE_CHROME_LINES,
   hasTerminalImageHooks,
+  splitLayout,
   wheelStep,
   type ContextBoxProps,
   type ContextMenuEventLike,
@@ -65,7 +68,7 @@ import {
 } from './find-menu.js'
 import { ConfirmPane, HintLine, SearchCard, composeListHint } from './find-chrome.js'
 import { ListView } from './find-list.js'
-import { PreviewPane, usePreviewModel } from './find-preview.js'
+import { PreviewPane, ReaderPane, usePreviewModel } from './find-preview.js'
 import { useFindInput } from './find-input.js'
 import { useSessionSweep } from './find-sweep.js'
 
@@ -219,23 +222,50 @@ export function FindScene(props: TuiSceneProps & {
 
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
+  // The reader's geometry, decided once per render: the split layout is a
+  // config choice gated by terminal width (narrow crossings fall back to the
+  // classic rendering with no notice and no state), and both shapes budget
+  // the reader's wrap width and scroll viewport off their own surface.
+  const listHeight = Math.max(2, rows - CHROME_LINES)
+  const layout = splitLayout(columns)
+  const splitActive = config.layout !== 'classic' && layout.split
+  const readerActive = splitActive ? mode === 'list' || mode === 'preview' : mode === 'preview'
+  const readerActiveRef = useRef(readerActive)
+  readerActiveRef.current = readerActive
+  // Split body budget: the bordered pane's interior is paneWidth - 4; the
+  // classic budget (marker 2 / deepest continuation indent 4 / one column
+  // of slack) applies to that interior, i.e. paneWidth - 9 overall.
+  const readerBodyWidth = splitActive ? Math.max(1, layout.paneWidth - 9) : Math.max(1, columns - 5)
+  const readerViewport = splitActive
+    ? Math.max(1, listHeight - PANE_CHROME_LINES)
+    : Math.max(1, rows - PREVIEW_CHROME_LINES)
+
   const {
     cursor: previewCursor,
     setCursor: setPreviewCursor,
     windowStart: previewWindowStart,
+    windowEnd: previewWindowEnd,
     anchorRef: previewAnchorRef,
     session: previewSession,
     hitStarts: previewHitStarts,
     lines: previewLines,
-    weights: previewWeights,
     bodyWidth: previewBodyWidth,
     stepByWheel: stepPreview,
     // The anchor consumption and window following run inside usePreviewModel,
     // i.e. during THIS component's render — the render-phase adjust pattern
-    // is legal on a component's own state, so PreviewPane stays pure display
+    // is legal on a component's own state, so the panes stay pure display
     // (a child writing the parent's state mid-render warns and is
     // concurrency-unsafe; see REVIEW R-039).
-  } = usePreviewModel(React, { mode, modeRef, selectedRow, columns, rows })
+  } = usePreviewModel(React, {
+    readerActive,
+    readerActiveRef,
+    // Split anchors the reader to the list selection (deduplicated inside
+    // the model); classic keeps the Alt+P anchorRef path.
+    selectionAnchored: splitActive,
+    selectedRow,
+    bodyWidth: readerBodyWidth,
+    viewportHeight: readerViewport,
+  })
 
   // Reset selection when the query, scope, time window or match mode changes shape.
   useEffect(() => {
@@ -412,11 +442,14 @@ export function FindScene(props: TuiSceneProps & {
     [flat, copyMessage, copySessionPath],
   )
 
-  /** Right-click in the preview: copy the message under the POINTER (the
-   *  WheelBox's local row maps through the scroll window to a message). */
+  /** Right-click in the reader: copy the message under the POINTER (the
+   *  WheelBox's local row maps through the scroll window to a message). The
+   *  pane is up in both split focus states, so the split gate is the pane's
+   *  visibility, not which side holds the keyboard. */
   const openPreviewMenu = useCallback(
     (event: ContextMenuEventLike) => {
-      if (modeRef.current !== 'preview' || actionPendingRef.current) return
+      if (actionPendingRef.current) return
+      if (!splitActive && modeRef.current !== 'preview') return
       const session = previewSession
       if (session === undefined) return
       const lineAt = previewWindowStart + event.localRow
@@ -429,7 +462,7 @@ export function FindScene(props: TuiSceneProps & {
       menuRef.current = opened
       setMenu(opened)
     },
-    [previewSession, previewLines, previewWindowStart, copyMessage],
+    [previewSession, previewLines, previewWindowStart, copyMessage, splitActive],
   )
 
   // The right-click vocabulary rides the 0.10 kit generation probe (0.9.x
@@ -461,6 +494,10 @@ export function FindScene(props: TuiSceneProps & {
     activateMenu,
     flatLength: flat.length,
     rows,
+    // Split focus handoff for Alt+P, and the reader-side page jump (the
+    // classic full-screen pane and the split pane have different viewports).
+    splitActive,
+    previewPageJump: readerViewport,
     selectedRow,
     previewLines,
     previewCursor,
@@ -481,11 +518,11 @@ export function FindScene(props: TuiSceneProps & {
     return () => clearTimeout(timer)
   }, [status])
 
-  const listHeight = Math.max(2, rows - CHROME_LINES)
-  const titleWidth = Math.max(1, Math.min(48, columns - 4))
-  // Keep every row's content inside the terminal even when the viewport is
-  // narrower than the desktop prefix budget.
-  const hitWidth = Math.max(1, columns - 4)
+  // Left-column width parameters: derived from the list column (the whole
+  // viewport in classic), keeping every row's content inside its surface
+  // even when the viewport is narrower than the desktop prefix budget.
+  const titleWidth = Math.max(1, Math.min(48, (splitActive ? layout.listWidth : columns) - 4))
+  const hitWidth = Math.max(1, (splitActive ? layout.listWidth : columns) - 4)
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
   // Active non-default filters, shown in the search card (placeholder row
   // when the query is empty, right-aligned badges otherwise).
@@ -603,12 +640,92 @@ export function FindScene(props: TuiSceneProps & {
   )
   const stepRows = useCallback(
     (event: WheelEventLike) => {
-      if (modeRef.current !== 'list' || actionPendingRef.current || flat.length === 0) return
+      // No mode gate: the wheel is area-local (the pane scrolls itself via
+      // stepPreview), and in the split layout the list must keep answering
+      // the wheel while the reader holds the keyboard focus. While a menu
+      // stands the backdrop consumes pointer events anyway, and outside the
+      // list modes the list box is not rendered at all.
+      if (actionPendingRef.current || flat.length === 0) return
       const by = wheelStep(event.deltaY, event.deltaX)
       if (by === 0) return
       setSelected(current => Math.min(Math.max(0, flat.length - 1), Math.max(0, current + by)))
     },
     [flat.length],
+  )
+
+  // The content body shared by both roots: the reading notice while a sweep
+  // is in flight and nothing has been resolved yet — a query-mode user must
+  // not see "no matching sessions" for what is only the scan's head of line
+  // (results stream in as sessions resolve) — the empty states, or the list
+  // windowed to the content row.
+  const listBody =
+    progress !== undefined && sessions.length === 0 ? (
+      <Text dimColor italic>
+        {' '}
+        {t('reading-sessions')}
+      </Text>
+    ) : flat.length === 0 ? (
+      recentMode ? (
+        <Text dimColor italic>
+          {t('no-sessions')}
+        </Text>
+      ) : (
+        <Box flexDirection="column" flexShrink={0}>
+          <Text dimColor italic>
+            {t('no-results')}
+          </Text>
+          {regexInvalid ? (
+            <Text dimColor italic>
+              {t('regex-invalid')}
+            </Text>
+          ) : (
+            <Text dimColor italic>
+              {t('no-results-scope-hint', { scope: scope === 'repo' ? t('scope-repo') : t('scope-all') })}
+            </Text>
+          )}
+        </Box>
+      )
+    ) : (
+      <ListView
+        React={React}
+        ui={ui}
+        rows={flat}
+        selected={selected}
+        height={listHeight}
+        titleWidth={titleWidth}
+        hitWidth={hitWidth}
+        width={splitActive ? layout.listWidth : columns}
+        onRowClick={clickRow}
+        onRowHover={selectRow}
+        onWheel={stepRows}
+        {...(contextMenuCapable ? { onRowContextMenu: openRowMenu } : {})}
+      />
+    )
+
+  // Footer chrome shared by both roots: the notice slot keeps mutation
+  // feedback from shifting the list under the cursor, then one divider and
+  // the dim-italic hint line.
+  const noticeRow = (
+    <Box flexShrink={0}>
+      <Text color={status?.tone === 'error' ? 'error' : 'success'}>
+        {status === undefined
+          ? ' '
+          : ` ${status.tone === 'error' ? '✕' : '✔'} ${truncateWidth(status.text, Math.max(0, columns - 6))}`}
+      </Text>
+    </Box>
+  )
+  const dividerRow = (
+    <Box flexShrink={0}>
+      <Text dimColor>{'─'.repeat(Math.max(0, columns - 1))}</Text>
+    </Box>
+  )
+  const hintRow = (text: string) => (
+    <Box flexShrink={0}>
+      <Text dimColor italic>
+        {' '}
+        <HintLine React={React} ui={ui} text={text} />
+      </Text>
+    </Box>
   )
 
   if (mode === 'help') {
@@ -621,7 +738,7 @@ export function FindScene(props: TuiSceneProps & {
     return <ConfirmPane React={React} ui={ui} session={resumeTarget} working={channel.working} columns={columns} />
   }
 
-  if (mode === 'preview' && selectedRow !== undefined) {
+  if (!splitActive && mode === 'preview' && selectedRow !== undefined) {
     const session = selectedRow.kind === 'session' ? selectedRow.session : selectedRow.hit.session
     return (
       <>
@@ -630,10 +747,10 @@ export function FindScene(props: TuiSceneProps & {
           ui={ui}
           session={session}
           lines={previewLines}
-          weights={previewWeights}
           bodyWidth={previewBodyWidth}
           cursor={previewCursor}
           windowStart={previewWindowStart}
+          windowEnd={previewWindowEnd}
           status={status}
           columns={columns}
           rows={rows}
@@ -642,6 +759,52 @@ export function FindScene(props: TuiSceneProps & {
         />
         {menuOverlay}
       </>
+    )
+  }
+
+  if (splitActive) {
+    // The split root: header + search card + the content row — left list
+    // column and bordered reader pane side by side, the pane's own round
+    // frame separating the two (no gap column) — then the shared footer.
+    // The reader is visible in BOTH focus states: mode only says which side
+    // owns the keyboard, so the hint line switches vocabulary with it.
+    return (
+      <Box flexDirection="column" width={columns} height={rows}>
+        <Box flexShrink={0}>
+          <Text color="remember" bold>
+            {header.left}
+          </Text>
+          <Text dimColor>
+            {header.gap > 0 ? ' '.repeat(header.gap) : ''}
+            {header.right}
+          </Text>
+        </Box>
+        <SearchCard React={React} ui={ui} query={query} scope={scope} filters={activeFilters} columns={columns} />
+        <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+          <Box flexDirection="column" width={layout.listWidth} flexShrink={0}>
+            {listBody}
+          </Box>
+          {previewSession !== undefined && (
+            <ReaderPane
+              React={React}
+              ui={ui}
+              session={previewSession}
+              lines={previewLines}
+              cursor={previewCursor}
+              windowStart={previewWindowStart}
+              windowEnd={previewWindowEnd}
+              paneWidth={layout.paneWidth}
+              bodyWidth={previewBodyWidth}
+              onWheel={stepPreview}
+              {...(contextMenuCapable ? { onContextMenu: openPreviewMenu } : {})}
+            />
+          )}
+        </Box>
+        {noticeRow}
+        {dividerRow}
+        {hintRow(mode === 'preview' ? t('hint-preview') : listHint)}
+        {menuOverlay}
+      </Box>
     )
   }
 
@@ -665,69 +828,11 @@ export function FindScene(props: TuiSceneProps & {
       </Box>
       <SearchCard React={React} ui={ui} query={query} scope={scope} filters={activeFilters} columns={columns} />
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-        {/* While a sweep is in flight and nothing has been resolved yet,
-            both list modes show the reading notice — a query-mode user must
-            not see "no matching sessions" for what is only the scan's head
-            of line (results stream in as sessions resolve). */}
-        {progress !== undefined && sessions.length === 0 ? (
-          <Text dimColor italic>
-            {' '}
-            {t('reading-sessions')}
-          </Text>
-        ) : flat.length === 0 ? (
-          recentMode ? (
-            <Text dimColor italic>
-              {t('no-sessions')}
-            </Text>
-          ) : (
-            <Box flexDirection="column" flexShrink={0}>
-              <Text dimColor italic>
-                {t('no-results')}
-              </Text>
-              {regexInvalid ? (
-                <Text dimColor italic>
-                  {t('regex-invalid')}
-                </Text>
-              ) : (
-                <Text dimColor italic>
-                  {t('no-results-scope-hint', { scope: scope === 'repo' ? t('scope-repo') : t('scope-all') })}
-                </Text>
-              )}
-            </Box>
-          )
-        ) : (
-          <ListView
-            React={React}
-            ui={ui}
-            rows={flat}
-            selected={selected}
-            height={listHeight}
-            titleWidth={titleWidth}
-            hitWidth={hitWidth}
-            columns={columns}
-            onRowClick={clickRow}
-            onRowHover={selectRow}
-            onWheel={stepRows}
-            {...(contextMenuCapable ? { onRowContextMenu: openRowMenu } : {})}
-          />
-        )}
+        {listBody}
       </Box>
-      <Box flexShrink={0}>
-        <Text color={status?.tone === 'error' ? 'error' : 'success'}>
-          {status === undefined
-            ? ' '
-            : ` ${status.tone === 'error' ? '✕' : '✔'} ${truncateWidth(status.text, Math.max(0, columns - 6))}`}
-        </Text>
-      </Box>
-      <Box flexShrink={0}>
-        <Text dimColor>{'─'.repeat(Math.max(0, columns - 1))}</Text>
-      </Box>
-      <Box flexShrink={0}>
-        <Text dimColor italic>
-          {' '}
-          <HintLine React={React} ui={ui} text={listHint} />
-        </Text>
-      </Box>
+      {noticeRow}
+      {dividerRow}
+      {hintRow(listHint)}
       {menuOverlay}
     </Box>
   )

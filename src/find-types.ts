@@ -92,6 +92,25 @@ export const PREVIEW_HITS = 3
  *  + hint. The scroll region gets rows minus these; PgUp/PgDn page by the
  *  same. */
 export const PREVIEW_CHROME_LINES = 5
+/** Terminal width the split layout asks for: at or above it the /find scene
+ *  renders the left list and the right reader side by side (the host
+ *  browser's own threshold), below it the classic rendering takes over —
+ *  a width gate only, no notice, no state. */
+export const SPLIT_MIN_COLUMNS = 100
+/** Fixed chrome rows of the split reader pane: top + bottom border (2) +
+ *  title (1) + meta (1). The scroll region gets the content row's height
+ *  minus these; PgUp/PgDn page by the same. */
+export const PANE_CHROME_LINES = 4
+
+/** Geometry of the split content row (left list + right reader), mirroring
+ *  the host browser's own split arithmetic: the pane caps at 56 columns and
+ *  takes 42% of the viewport, the list keeps the rest. Below the width gate
+ *  there is no split — the caller renders classic. */
+export function splitLayout(columns: number): { split: boolean; listWidth: number; paneWidth: number } {
+  if (columns < SPLIT_MIN_COLUMNS) return { split: false, listWidth: Math.max(0, columns), paneWidth: 0 }
+  const paneWidth = Math.min(56, Math.floor(columns * 0.42))
+  return { split: true, listWidth: Math.max(0, columns - paneWidth), paneWidth }
+}
 /** First gap between progressive-sweep list flushes, doubling per flush up
  *  to {@link PARTIAL_FLUSH_MAX_MS} — see useSessionSweep for why the gap
  *  grows instead of staying fixed. */

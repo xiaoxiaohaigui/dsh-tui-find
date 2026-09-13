@@ -42,7 +42,9 @@ export function ListView(props: {
   height: number
   titleWidth: number
   hitWidth: number
-  columns: number
+  /** The list's own surface width — the terminal width in classic, the left
+   *  column's width in the split layout; card metadata truncates to it. */
+  width: number
   onRowClick: (rowIndex: number) => void
   onRowHover: (rowIndex: number) => void
   onWheel: (event: WheelEventLike) => void
@@ -50,7 +52,7 @@ export function ListView(props: {
    *  runtime dispatches no context-menu events and the prop stays absent). */
   onRowContextMenu?: (rowIndex: number, event: ContextMenuEventLike) => void
 }): React.ReactElement {
-  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, columns, onRowClick, onRowHover, onWheel, onRowContextMenu } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, width, onRowClick, onRowHover, onWheel, onRowContextMenu } = props
   const { Box, Text } = ui
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
   const ContextBox = Box as unknown as React.ComponentType<ContextBoxProps>
@@ -128,7 +130,7 @@ export function ListView(props: {
                       t('msgs-count', { n: session.messages.length }),
                       session.header.cwd?.split(/[\\/]/).pop() ?? session.id.slice(0, 8),
                     ].join(' · '),
-                    Math.max(1, columns - 4),
+                    Math.max(1, width - 4),
                   )}
                 </Text>
               </Box>

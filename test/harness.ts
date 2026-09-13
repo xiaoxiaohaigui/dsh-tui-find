@@ -85,6 +85,9 @@ export async function mount(
     query?: string
     columns?: number
     rows?: number
+    /** Scene layout override — the split-layout tests pin both forms and
+     *  the width fallback (default resolved layout is 'split'). */
+    layout?: 'split' | 'classic'
     /** Scanner override — the progressive-streaming tests gate the sweep. */
     scanner?: {
       scan(options: { onSession?: (session: ScannedSession) => void }): Promise<readonly ScannedSession[]>
@@ -144,7 +147,10 @@ export async function mount(
     close: () => {
       closeCount += 1
     },
-    config: resolveConfig({ defaultScope: 'all' }),
+    config: resolveConfig({
+      defaultScope: 'all',
+      ...(options.layout === undefined ? {} : { layout: options.layout }),
+    }),
     scanner,
     initialQuery: () => options.query ?? 'needle',
     notify: options.notify,

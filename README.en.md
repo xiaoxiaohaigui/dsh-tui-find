@@ -14,7 +14,7 @@
 [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) ships a resume browser, in-session `/` search and Ctrl+R input history — but no cross-session content search: once a conversation scrolls out of the window it becomes an unsearchable archive. This plugin closes that gap:
 
 - **Instant**: fzf-style in-memory filtering with results streaming in; multi-term AND, JS regex, pinyin (full readings / initials), title-only mode, time windows.
-- **Readable & copyable**: a read-only preview anchored on the hit with highlighting, one-key copy of the text or the log path.
+- **Readable & copyable**: the split layout (list on the left, conversation reader on the right, styled after /resume) or a full-screen preview — anchored on the hit with highlighting, one-key copy of the text or the log path.
 - **Resumable**: `↵` resumes the session with double confirmation; context menu on right-click (0.10+ hosts only).
 
 ## Install
@@ -49,12 +49,14 @@ Keys inside the scene:
 | `Tab` / `Alt+T` | Scope (this repo ⇄ all) / time window (all ⇄ last 7 days ⇄ last 30 days) |
 | `Alt+R` / `Alt+N` | Regex matching / title-only search |
 | `↑↓` / `PgUp` `PgDn` | Move between entries / page |
-| `Alt+P` | Read-only preview: anchored on the hit, highlighted, shows the log path; in the preview `↑↓` steps by message, `n`/`N` jump between hits (wrapping), `PgUp`/`PgDn`/wheel scroll |
+| `Alt+P` | Read / preview: anchored on the hit, highlighted; in the reader `↑↓` steps by message, `n`/`N` jump between hits (wrapping), `PgUp`/`PgDn`/wheel scroll; `Alt+P` hands focus between the panes in split, opens the full-screen preview in classic |
 | `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message under the cursor) / expand, collapse the session's hits |
 | `Alt+H` | Keyboard-help panel |
 | `↵` / `Esc` | Resume session (double confirmation) / clear the query, go back, exit |
 
 Mouse: left-click selects, hover highlights, the wheel moves the selection (scrolls the preview); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session — in the preview, copy the message under the pointer.
+
+> The scene layout is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `Alt+P` hands the focus between the panes; narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview.
 
 > Results are grouped per session, the first 3 hits show per session (`(+N)` hint), most-recent-first; the scan starts the moment the scene opens and results stream in, with live progress in the header.
 
@@ -80,6 +82,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       name: 'dsh-tui-find'
       defaultScope: 'all'        # initial scope: repo (default) | all
       defaultTime: 'all'         # initial time window: all (default) | 7d | 30d
+      layout: 'split'            # scene layout: split (default, list + reader, needs >= 100 columns) | classic (single column + full-screen preview)
       caseSensitive: false       # case-sensitive matching (default off)
       regex: false               # start with regex matching on (default off; Alt+R toggles it live)
       pinyin: true               # pinyin matching (default on; letter-only terms also match Chinese via readings + initials)
@@ -115,7 +118,7 @@ npm test             # pretest builds and generates fixtures, then runs the full
 npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (283 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader, keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
+Test coverage (298 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader, keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 

@@ -88,6 +88,12 @@ export type Config = {
   /** Initial time window when /find opens: `all` (default), `7d` or `30d`.
    *  Alt+T still cycles it live in the scene. */
   defaultTime?: 'all' | '7d' | '30d'
+  /** The /find scene's layout form. `split` (default) shows the list and a
+   *  conversation reader side by side when the terminal is at least 100
+   *  columns wide (narrower terminals fall back to the classic rendering
+   *  automatically); `classic` always renders the single-column list with
+   *  the full-screen Alt+P preview. */
+  layout?: 'split' | 'classic'
   /** Case-sensitive matching. Default OFF (spec §6 freeze). */
   caseSensitive?: boolean
   /** Treat queries as JavaScript regular expressions by default. Default
@@ -124,6 +130,7 @@ export type Config = {
 export const Config: Schemastery<Config> = z.object({
   defaultScope: z.union(['repo', 'all']).default('repo'),
   defaultTime: z.union(['all', '7d', '30d']).default('all'),
+  layout: z.union(['split', 'classic']).default('split'),
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
   pinyin: z.boolean().default(true),
@@ -141,6 +148,7 @@ export const Config: Schemastery<Config> = z.object({
 export interface ResolvedConfig {
   readonly defaultScope: 'repo' | 'all'
   readonly defaultTime: 'all' | '7d' | '30d'
+  readonly layout: 'split' | 'classic'
   readonly caseSensitive: boolean
   readonly regex: boolean
   readonly pinyin: boolean
@@ -162,6 +170,9 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
     defaultScope: value.defaultScope === 'all' ? 'all' : 'repo',
     defaultTime:
       value.defaultTime === '7d' || value.defaultTime === '30d' ? value.defaultTime : 'all',
+    // Defensive: any unknown value lands on the split default (the schema
+    // validates real rows; this layer also feeds tests and drift).
+    layout: value.layout === 'classic' ? 'classic' : 'split',
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,
     pinyin: value.pinyin !== false,
