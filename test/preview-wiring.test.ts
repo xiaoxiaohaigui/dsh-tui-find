@@ -284,7 +284,10 @@ describe('search filter and scan streaming wiring', () => {
     } finally {
       harness.dispose()
     }
-  })
+    // 20s vitest budget: the two sequential 5s waitForMatch deadlines plus
+    // mount/repaint overhead must fit inside it, or vitest preempts the
+    // diagnostic expects on a loaded machine and reports a bare timeout.
+  }, 20_000)
 
   it('shows the reading notice while a query sweep has resolved nothing yet', async () => {
     const gate = (): { promise: Promise<void>; resolve: () => void } => {
