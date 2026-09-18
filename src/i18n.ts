@@ -139,12 +139,12 @@ export const dict = {
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
   'hint-preview': {
-    zh: '**↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制顶部 · **Esc** 返回列表',
-    en: '**↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy top · **Esc** back to list',
+    zh: '**↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制当前命中 · **Esc** 返回列表',
+    en: '**↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy hit · **Esc** back to list',
   },
   'hint-preview-split': {
-    zh: '**←** 返回列表 · **↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制顶部',
-    en: '**←** back to list · **↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy top',
+    zh: '**←** 返回列表 · **↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制当前命中',
+    en: '**←** back to list · **↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy hit',
   },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',
@@ -171,6 +171,10 @@ export const dict = {
 
   // ── toasts & failures ────────────────────────────────────────────────
   'copied': { zh: '已复制 {{chars}} 字符到剪贴板', en: 'Copied {{chars}} chars to clipboard' },
+  'copied-hit': {
+    zh: '已复制第 {{index}}/{{total}} 条命中 · {{role}}{{when}}（{{chars}} 字符）',
+    en: 'Copied hit {{index}}/{{total}} · {{role}}{{when}} ({{chars}} chars)',
+  },
   'copied-path': { zh: '已复制会话日志路径', en: 'Session log path copied' },
   'copy-failed': { zh: '复制失败', en: 'Copy failed' },
   'resume-working': { zh: '恢复失败：当前会话仍在工作中', en: 'Resume failed: the current session is still working' },
@@ -238,7 +242,7 @@ export const dict = {
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
   'help-preview-resume': { zh: '恢复该会话（进入确认）', en: 'Resume this session (confirm)' },
-  'help-preview-copy': { zh: '复制视口顶部那条消息', en: 'Copy the message at the top of the view' },
+  'help-preview-copy': { zh: '复制当前命中消息', en: 'Copy the current hit message' },
   'help-preview-focus': { zh: '焦点移回左栏列表', en: 'Move focus back to the list' },
   'help-preview-esc': { zh: '返回列表', en: 'Back to the list' },
   'help-list-layout': {

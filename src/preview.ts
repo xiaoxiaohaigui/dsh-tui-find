@@ -231,6 +231,38 @@ export function jumpHitLine(
 }
 
 /**
+ * The hit message the reader is parked on, for the copy chord: the hit
+ * whose header line is the last one at or above the window's top — the hit
+ * an n/N landing or a scroll left at the reader's position. When the window
+ * sits above every hit (scrolled back to the conversation head), the answer
+ * is the first hit, the one `n` would jump to, so the chord never goes dead
+ * while the session HAS hits. Undefined when it has none at all (a recent
+ * card, a title-only match): the caller keeps its own fallback.
+ */
+export function currentHitMessage(
+  hitStartLines: readonly number[],
+  windowStart: number,
+): number | undefined {
+  let current: number | undefined
+  let currentLine = -1
+  let first: number | undefined
+  let firstLine = Number.POSITIVE_INFINITY
+  for (let at = 0; at < hitStartLines.length; at++) {
+    const line = hitStartLines[at] ?? -1
+    if (line < 0) continue
+    if (line <= windowStart && line > currentLine) {
+      current = at
+      currentLine = line
+    }
+    if (line < firstLine) {
+      first = at
+      firstLine = line
+    }
+  }
+  return current ?? first
+}
+
+/**
  * The 1-based position of `messageIndex` among the hit messages (hits at or
  * before it) and the hit total — the "hit i/total" status pair. When the
  * message is not itself a hit, `index` counts the hits before it.

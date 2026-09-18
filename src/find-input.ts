@@ -14,7 +14,15 @@
 import { t } from './i18n.js'
 import type { ScannedSession } from './core/scan.js'
 import type { SearchScope } from './core/search.js'
-import { hitLanding, hitOrdinal, jumpHitLine, messageAtLine, scrollWindow, type PreviewLine } from './preview.js'
+import {
+  currentHitMessage,
+  hitLanding,
+  hitOrdinal,
+  jumpHitLine,
+  messageAtLine,
+  scrollWindow,
+  type PreviewLine,
+} from './preview.js'
 import {
   CHROME_LINES,
   type CopyEntry,
@@ -98,7 +106,10 @@ export interface FindInputDeps {
   previewAnchorRef: { current: number | undefined }
   beginResume: () => void
   confirmResume: () => Promise<void>
-  copyMessage: (entry: CopyEntry) => void
+  /** Copy one message to the clipboard. The preview's Alt+C passes the hit
+   *  position it resolved so the status can name what was copied; the
+   *  list's Alt+C passes nothing and keeps the plain char-count note. */
+  copyMessage: (entry: CopyEntry, hit?: { index: number; total: number }) => void
   copySelected: () => void
   close: () => void
 }
@@ -217,13 +228,27 @@ export function useFindInput(deps: FindInputDeps): void {
         }
         if (isPlainReturn(key)) beginResume()
         else if (lower === 'c' && altOnly) {
-          // Alt+C copies the message at the TOP of the viewport: with no
-          // cursor, the first line on screen is the reader's only "where am
-          // I" reference, and a scroll just put it there. (A window opened
-          // inside a message's wrapped body copies that message, whatever
-          // line of it is on top.)
-          const entry = previewSession?.messages[messageAtLine(previewLines, previewWindowStart) ?? 0]
-          if (entry !== undefined) copyMessage(entry)
+          // Alt+C copies the reader's CURRENT HIT: the hit whose header sits
+          // last at or above the window's top — the one an n/N landing or a
+          // scroll left at the reader's position — falling back to the first
+          // hit when the window sits above all of them. The reader has no
+          // cursor, so the hit navigator, not whichever line happens to head
+          // the viewport, is what defines "what am I looking at"; the status
+          // names the ordinal, role and time because that text is the only
+          // proof of what was copied. A session with no message hits (recent
+          // cards, title-only matches) keeps the old top-of-viewport
+          // fallback: something for a reader with no hit to stand on.
+          const session = previewSession
+          if (session !== undefined) {
+            const hitIndex = currentHitMessage(previewHitStarts, previewWindowStart)
+            const entry =
+              hitIndex === undefined
+                ? session.messages[messageAtLine(previewLines, previewWindowStart) ?? 0]
+                : session.messages[hitIndex]
+            if (entry !== undefined) {
+              copyMessage(entry, hitIndex === undefined ? undefined : hitOrdinal(previewHitStarts, hitIndex))
+            }
+          }
         } else if (key.upArrow) {
           scrollBy(-1)
         } else if (key.downArrow) {

@@ -63,8 +63,8 @@ describe('preview scene wiring', () => {
   it('walks hits with n/N from the visible window, wrapping at both ends', async () => {
     // Twelve short messages at the 7-row solo viewport: the reader opens on
     // the card's first hit (#2) and each press of n/N scrolls the window to
-    // the next hit — the top of the viewport is the reader's position, so
-    // Alt+C copying a different message is the proof the window moved.
+    // the next hit. Alt+C copies the hit the navigator parked on and names
+    // it in the status, so that note is the proof the target moved with it.
     const harness = await mount(
       sessionWithMessages([
         'one',
@@ -89,27 +89,28 @@ describe('preview scene wiring', () => {
       expect(harness.all()).toMatch(/Hit\s*2\/2/)
       harness.send('\u001bc')
       await waitFor()
-      // '[You]' + newline + 'needle two is longer' = 26.
-      expect(harness.latest()).toMatch(/Copied\s*26\s*chars/)
+      // '[You]' + newline + 'needle two is longer' = 26: the status names
+      // the hit it took, not just its size.
+      expect(harness.latest()).toMatch(/Copied hit 2\/2 · You \(26 chars\)/)
       harness.send('N')
       await waitFor()
       expect(harness.all()).toMatch(/Hit\s*1\/2/)
       harness.send('\u001bc')
       await waitFor()
       // '[AI]' + newline + 'needle one' = 15.
-      expect(harness.latest()).toMatch(/Copied\s*15\s*chars/)
+      expect(harness.latest()).toMatch(/Copied hit 1\/2 · AI \(15 chars\)/)
       harness.send('N')
       await waitFor()
       harness.send('\u001bc')
       await waitFor()
       // N wraps from the first hit back to the last hit.
-      expect(harness.latest()).toMatch(/Copied\s*26\s*chars/)
+      expect(harness.latest()).toMatch(/Copied hit 2\/2 · You \(26 chars\)/)
     } finally {
       harness.dispose()
     }
   })
 
-  it('pages by the viewport with PgUp/PgDn, and Alt+C copies the top message', async () => {
+  it('pages by the viewport with PgUp/PgDn, and Alt+C falls back to the top message without hits', async () => {
     const harness = await mount(
       sessionWithMessages(['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff', 'ggggggg', 'hhhhhhhh']),
       { query: '', rows: 10 },
@@ -126,9 +127,10 @@ describe('preview scene wiring', () => {
       await waitFor()
       harness.resize(81, 10)
       await waitFor()
-      // One row of scrolling from the head opens the window on line 1 —
-      // message #2's body 'bb' — so Alt+C copies THAT message: '[AI]' +
-      // newline + 2 chars = 7.
+      // An empty query has no message hits, so the reader keeps the
+      // top-of-viewport fallback: one row of scrolling from the head opens
+      // the window on line 1 — message #2's body 'bb' — and Alt+C copies
+      // THAT message: '[AI]' + newline + 2 chars = 7.
       expect(harness.latest()).toMatch(/Copied\s*7\s*chars/)
 
       // rows=10 and five fixed preview chrome lines leave a five-line page,

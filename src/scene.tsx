@@ -46,6 +46,7 @@ import {
   PREVIEW_CHROME_LINES,
   PREVIEW_HITS,
   PANE_CHROME_LINES,
+  formatWhen,
   hasTerminalImageHooks,
   splitLayout,
   wheelRows,
@@ -299,17 +300,30 @@ export function FindScene(props: TuiSceneProps & {
   }, [selectedRow])
 
   /** The shared copy body: the list's Alt+C copies the selected hit row,
-   *  the preview's Alt+C copies the message at the top of its window — same
-   *  shape, so both feed this one builder. */
+   *  the preview's Alt+C the reader's current hit (find-input resolves it)
+   *  — same shape, so both feed this one builder. The optional `hit` pair
+   *  makes the note name the message by ordinal/role/time instead of only
+   *  its size: with no cursor in the reader, that text is the proof of what
+   *  was copied. */
   const copyMessage = useCallback(
-    (entry: CopyEntry) => {
+    (entry: CopyEntry, hit?: { index: number; total: number }) => {
       const when = entry.at === undefined ? '' : ` ${new Date(entry.at).toISOString()}`
       const role = entry.role === 'user' ? t('role-user') : entry.role === 'assistant' ? t('role-assistant') : t('role-tool')
       const body = `[${role}${when}]\n${entry.text}`
+      const note =
+        hit === undefined
+          ? t('copied', { chars: body.length })
+          : t('copied-hit', {
+              index: hit.index,
+              total: hit.total,
+              role,
+              when: entry.at === undefined ? '' : ` · ${formatWhen(entry.at)}`,
+              chars: body.length,
+            })
       try {
         copyToClipboard(body, process.stdout)
-        setStatus({ text: t('copied', { chars: body.length }), tone: 'info' })
-        notify(t('copied', { chars: body.length }), 'info')
+        setStatus({ text: note, tone: 'info' })
+        notify(note, 'info')
       } catch {
         setStatus({ text: t('copy-failed'), tone: 'error' })
         notify(t('copy-failed'), 'error')

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { IndexedMessage } from '../src/core/events.js'
 import {
   buildPreviewLines,
+  currentHitMessage,
   hitLanding,
   hitOrdinal,
   jumpHitLine,
@@ -328,6 +329,34 @@ describe('hitOrdinal', () => {
     expect(hitOrdinal(table, 4)).toEqual({ index: 2, total: 2 })
     expect(hitOrdinal(table, 5)).toEqual({ index: 2, total: 2 })
     expect(hitOrdinal([], 0)).toEqual({ index: 0, total: 0 })
+  })
+})
+
+describe('currentHitMessage', () => {
+  // Messages 0..5; hits at 1 (header line 3) and 4 (header line 9).
+  const table = [-1, 3, -1, -1, 9, -1]
+
+  it('answers the hit at or above the window top', () => {
+    // The header exactly on the top row counts as the reader's position.
+    expect(currentHitMessage(table, 3)).toBe(1)
+    // Scrolled into the hit's own body keeps that hit.
+    expect(currentHitMessage(table, 5)).toBe(1)
+    // A window between the hits belongs to the one above it.
+    expect(currentHitMessage(table, 8)).toBe(1)
+    // The next hit's header takes over as soon as it reaches the top.
+    expect(currentHitMessage(table, 9)).toBe(4)
+    // Scrolled past every hit: the last one stays the position.
+    expect(currentHitMessage(table, 12)).toBe(4)
+  })
+
+  it('falls back to the first hit when the window sits above all of them', () => {
+    expect(currentHitMessage(table, 0)).toBe(1)
+    expect(currentHitMessage(table, 2)).toBe(1)
+  })
+
+  it('answers undefined for a session without message hits', () => {
+    expect(currentHitMessage([], 0)).toBeUndefined()
+    expect(currentHitMessage([-1, -1, -1], 5)).toBeUndefined()
   })
 })
 

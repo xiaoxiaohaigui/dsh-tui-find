@@ -357,15 +357,14 @@ describe('split focus handoff', () => {
       expect(pagedPane).not.toMatch(/✦\s*AI\s*#2\s*◆/)
       // ...n takes the first hit BELOW the window. Both hits sit above it (the
       // window opens past #9's line), so n wraps to the session's first hit —
-      // and since the window's top line is now the reader's position, Alt+C
-      // copies exactly the message that line belongs to: #2's
-      // '[AI]\nneedle one' = 15 chars...
+      // and Alt+C copies the hit the navigator parked on, naming it in the
+      // status: #2's '[AI]\nneedle one' = 15 chars...
       harness.send('n')
       await waitFor()
       await waitForMatch(() => harness.all(), /Hit\s*1\/2/)
       harness.send('\u001bc')
       await waitFor()
-      expect(harness.all()).toMatch(/Copied\s*15\s*chars/)
+      expect(harness.all()).toMatch(/Copied hit 1\/2 · AI \(15 chars\)/)
       // ...and a second n finds #9's line below the window's end. The landing
       // is clamped flush with the tail (hitLanding aims at #9; scrollWindow
       // refuses to scroll past the last row), so #9's keyword is on screen —

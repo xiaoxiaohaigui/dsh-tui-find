@@ -51,7 +51,7 @@ Keys inside the scene:
 | `↑↓` / `PgUp` `PgDn` | Move between entries / page |
 | `→` / `←` | Split layout: → focuses the reader pane, ← returns to the list (the pane is always on screen — nothing to open or close) |
 | `Alt+P` | Classic layout: open the full-screen preview (anchored on the hit, highlighted); in the reader `↑↓` scroll line by line, `PgUp`/`PgDn` page, `n`/`N` jump between hits (wrapping), the wheel scrolls by notch |
-| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message at the top of the view) / fold, unfold this session's hits (the row-end `▸ (+N)` badge's own action) |
+| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the current hit: the one n/N is parked on, or the nearest hit above the viewport after free scrolling; falls back to the top message when the session has no hits) / fold, unfold this session's hits (the row-end `▸ (+N)` badge's own action) |
 | `Alt+H` | Keyboard-help panel |
 | `↵` / `Esc` | Resume session (double confirmation) / clear the query, go back, exit |
 
@@ -122,7 +122,7 @@ npm test             # pretest builds and generates fixtures, then runs the full
 npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (325 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin with cross-word initials / title-only / time window / scope filtering), the preview reader (hit-aware anchoring, re-landing as the query is typed, cursor-less line scrolling and window-relative n/N), keyboard help (layout-aware vocabulary, the mouse fold badge), scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the ←/→ focus handoff, selection anchoring, the width fallback, wheel step size, badge folding that never opens the row, and a fold leaving no hover tint on the next card), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
+Test coverage (328 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin with cross-word initials / title-only / time window / scope filtering), the preview reader (hit-aware anchoring, re-landing as the query is typed, cursor-less line scrolling, window-relative n/N, and the current-hit pick behind Alt+C), keyboard help (layout-aware vocabulary, the mouse fold badge), scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the ←/→ focus handoff, selection anchoring, the width fallback, wheel step size, badge folding that never opens the row, and a fold leaving no hover tint on the next card), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 
