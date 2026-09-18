@@ -77,21 +77,21 @@ describe('searchSessions pinyin matching', () => {
   it('matches initials contiguously across word boundaries', () => {
     // Initials are one letter per character, with no separator between
     // words: a multi-character Chinese phrase is searched by the initials a
-    // person would type in an IME (北京大学 → bjdx). An earlier revision
+    // person would type in an IME (城市地铁 → csdt). An earlier revision
     // split the initials folds at ICU word boundaries, which made every
     // phrase ICU segments into short words unmatchable — the daily case,
-    // since proper nouns (北京大学 → 北京|大学) and compounds (无隐藏文字)
-    // segment that way.
-    expect(flat(searchSessions([make('北京大学计算机专业介绍')], 'bjdx', P))).toEqual([
-      ['北京大学计算机专业介绍', '[[0,4]]'],
+    // since two-word terms (城市|地铁|线路|…) and multi-word compounds
+    // (文|档|标题|栏) segment that way.
+    expect(flat(searchSessions([make('城市地铁线路图设计说明')], 'csdt', P))).toEqual([
+      ['城市地铁线路图设计说明', '[[0,4]]'],
     ])
-    expect(flat(searchSessions([make('无隐藏文字')], 'wycwz', P))).toEqual([['无隐藏文字', '[[0,5]]']])
-    expect(flat(searchSessions([make('山东大学')], 'sddx', P))).toEqual([['山东大学', '[[0,4]]']])
+    expect(flat(searchSessions([make('文档标题栏')], 'wdbtl', P))).toEqual([['文档标题栏', '[[0,5]]']])
+    expect(flat(searchSessions([make('年度体检报告')], 'ndtj', P))).toEqual([['年度体检报告', '[[0,4]]']])
     // A cross-word run also matches mid-text, and a compound that ICU does
     // keep as one word keeps working.
-    expect(flat(searchSessions([make('关于电赛报告的想法')], 'dsbg', P))).toEqual([['关于电赛报告的想法', '[[2,6]]']])
-    expect(flat(searchSessions([make('简历错别字检查请求')], 'jlcb', P))).toEqual([
-      ['简历错别字检查请求', '[[0,4]]'],
+    expect(flat(searchSessions([make('关于社区活动的想法')], 'sqhd', P))).toEqual([['关于社区活动的想法', '[[2,6]]']])
+    expect(flat(searchSessions([make('员工排班表核对')], 'ygpb', P))).toEqual([
+      ['员工排班表核对', '[[0,4]]'],
     ])
   })
 
@@ -130,9 +130,9 @@ describe('searchSessions pinyin matching', () => {
   })
 
   it('uses the keyboard ü form (lv/nv) for ü-readings', () => {
-    const pool = [make('绿色通道'), make('女流量')]
+    const pool = [make('绿色蔬菜'), make('女同学')]
     expect(flat(searchSessions(pool, 'lvse', P))).toHaveLength(1)
-    expect(flat(searchSessions(pool, 'nvliu', P))).toHaveLength(1)
+    expect(flat(searchSessions(pool, 'nvtongxue', P))).toHaveLength(1)
   })
 
   it('matches session titles and ANDs pinyin terms with literal terms', () => {
