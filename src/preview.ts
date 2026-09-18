@@ -4,11 +4,11 @@
  *
  * The reader lays out EVERY indexed message — one header line per message
  * (role, seq, time, hit flag) plus the body wrapped to the pane's column
- * budget — and scrolls that flat line list behind a cursor: the visible
- * window is fitted around the cursor line with the same `fitScrollWindow`
- * contract the session list uses, every line weighing one physical terminal
- * row. Long bodies are not cut here: indexing already bounds each message
- * (`maxMessageChars`), and the scroll window is the safety net.
+ * budget — and scrolls that flat line list behind an OFFSET (the top line of
+ * the viewport), not a cursor: a read-only reader has nothing to select, so
+ * arrows and the wheel move the window itself (see scrollWindow). Long
+ * bodies are not cut here: indexing already bounds each message
+ * (`maxMessageChars`), and the window is the safety net.
  *
  * Nothing here imports React or i18n: every function is a data-in / data-out
  * step so the layout and the hit-jump order are unit-testable without
@@ -17,12 +17,12 @@
  * @module dsh-tui-find/preview
  */
 import type { IndexedMessage } from './core/events.js'
-import { fitScrollWindow, wrapWidthRanges } from './width.js'
+import { wrapWidthRanges } from './width.js'
 
 /** One physical line of the built preview. A message renders as its header
  *  line followed by its wrapped body lines; `messageIndex` attributes every
  *  line to its owning message so the scene can highlight, copy and jump by
- *  message while the cursor walks raw lines. */
+ *  message while the scroll window walks raw lines. */
 export type PreviewLine =
   | {
       readonly kind: 'header'
@@ -105,9 +105,8 @@ export function buildPreviewLines(
 }
 
 /**
- * The message a cursor line belongs to (a body line answers its own
- * message). Out-of-range lines clamp into the list; an empty list has no
- * message.
+ * The message a line belongs to (a body line answers its own message).
+ * Out-of-range lines clamp into the list; an empty list has no message.
  */
 export function messageAtLine(
   lines: readonly PreviewLine[],
@@ -121,9 +120,9 @@ export function messageAtLine(
 
 /**
  * The preview line number of the header of the first message at or after
- * `messageIndex` — where a freshly opened preview parks its cursor. An
- * anchor at or below the head lands on line 0; one at or beyond the tail
- * lands on the last header.
+ * `messageIndex` — where a freshly opened preview anchors. An anchor at or
+ * below the head lands on line 0; one at or beyond the tail lands on the
+ * last header.
  */
 export function messageHeaderLine(
   lines: readonly PreviewLine[],
@@ -141,14 +140,13 @@ export function messageHeaderLine(
 }
 
 /**
- * Where an anchor lands the reader: the cursor line and the window start to
- * open on. When the anchored message's hit fits in the viewport below its
- * own header, the reader keeps the header-anchored shape (cursor on the
- * header line, window starting there) and the keyword is simply on screen;
- * otherwise — the everyday case in a long message, where the hit sits far
- * below the header — the reader parks on the hit's own body line and scrolls
- * the window so that line is visible with a little leading context, because
- * a reader that never shows the keyword the query matched is useless.
+ * The line a fresh anchor opens the reader ON — the top line of its window.
+ * When the anchored message's hit fits in the viewport below its own header,
+ * the reader keeps the header-anchored shape (window starting at the header)
+ * and the keyword is simply on screen; otherwise — the everyday case in a
+ * long message, where the hit sits far below the header — the window opens
+ * above the hit's own body line with a little leading context, because a
+ * reader that never shows the keyword the query matched is useless.
  *
  * A message whose hits are not in its indexed body (a title hit, an anchor
  * of -1, a hit range that fell outside this wrap) keeps the header landing.
@@ -158,7 +156,7 @@ export function hitLanding(
   lines: readonly PreviewLine[],
   messageIndex: number,
   viewportHeight: number,
-): { cursor: number; windowStart: number } {
+): number {
   const headerLine = messageHeaderLine(lines, messageIndex)
   const viewport = Math.max(1, Math.floor(viewportHeight))
   let hitLine: number | undefined
@@ -173,61 +171,63 @@ export function hitLanding(
   }
   // Reachable from the header: the anchored frame already shows the keyword
   // (and the message's own head), so nothing about it should move.
-  if (hitLine === undefined || hitLine - headerLine + 1 <= viewport) {
-    return { cursor: headerLine, windowStart: headerLine }
-  }
-  // Unreachable: park on the hit with about a third of the viewport as
+  if (hitLine === undefined || hitLine - headerLine + 1 <= viewport) return headerLine
+  // Unreachable: open above the hit with about a third of the viewport as
   // leading context, never scrolled above the message's own header.
   const lead = Math.max(0, Math.min(Math.floor(viewport / 3), hitLine - headerLine))
-  return { cursor: hitLine, windowStart: Math.max(headerLine, hitLine - lead) }
+  return Math.max(headerLine, hitLine - lead)
 }
 
 /**
- * The start line of the next (`direction` 1) or previous (`direction` -1)
- * hit message relative to `currentMessageIndex`, or undefined when no hit
- * lies that way. `hitStartLines` is indexed BY MESSAGE index: entry m holds
- * the header line of message m when m is a hit, or the -1 sentinel when it
- * is not (the scene derives the table from the built lines' hit headers).
+ * The reader's visible window for a scroll offset: the offset is the top
+ * line, clamped into [0, lineCount - height] so the window never runs off
+ * either end, and the end stops at the content. All preview lines weigh one
+ * terminal row, so the arithmetic is exact.
  */
-export function jumpHit(
-  hitStartLines: readonly number[],
-  currentMessageIndex: number,
-  direction: 1 | -1,
-): number | undefined {
-  const count = hitStartLines.length
-  if (count === 0) return undefined
-  // Walk at most one complete message cycle. Wrapping is intentional: the
-  // reader's n/N vocabulary is a navigator, not a bounded search cursor.
-  const current = Math.min(Math.max(currentMessageIndex, -1), count - 1)
-  for (let step = 1; step <= count; step++) {
-    const raw = current + direction * step
-    const index = ((raw % count) + count) % count
-    const start = hitStartLines[index] ?? -1
-    if (start >= 0) return start
-  }
-  return undefined
+export function scrollWindow(
+  lineCount: number,
+  offset: number,
+  height: number,
+): { start: number; end: number } {
+  const count = Math.max(0, lineCount)
+  const viewport = Math.max(1, Math.floor(height))
+  const maxStart = Math.max(0, count - viewport)
+  const start = Math.min(Math.max(0, Math.floor(offset)), maxStart)
+  return { start, end: Math.min(count, start + viewport) }
 }
 
-/** The header line of the adjacent message, used by preview arrow keys. */
-export function stepMessage(
-  lines: readonly PreviewLine[],
-  currentLine: number,
+/**
+ * The hit `n`/`N` moves to, as the hit message's header line. The reader has
+ * no cursor, so its position is the visible window: `n` (direction 1) takes
+ * the first hit at or below the window's end and `N` (direction -1) the last
+ * one above its top, each wrapping to the opposite end of the hit list —
+ * the n/N vocabulary is a navigator, not a bounded search. Because the
+ * window is what the user sees, a hit that is already on screen is never the
+ * answer (except by wrapping), so a repeat press always moves.
+ *
+ * `hitStartLines` is indexed BY MESSAGE index: entry m holds the header line
+ * of message m when m is a hit, or the -1 sentinel when it is not (the scene
+ * derives the table from the built lines' hit headers).
+ */
+export function jumpHitLine(
+  hitStartLines: readonly number[],
+  windowStart: number,
+  windowEnd: number,
   direction: 1 | -1,
-): number {
-  if (lines.length === 0) return 0
-  const currentMessage = messageAtLine(lines, currentLine) ?? 0
-  if (direction > 0) {
-    for (let at = Math.max(0, currentLine + 1); at < lines.length; at++) {
-      const line = lines[at]
-      if (line !== undefined && line.kind === 'header' && line.messageIndex > currentMessage) return at
-    }
-    return lines.length - 1
+): number | undefined {
+  let first: number | undefined
+  let last: number | undefined
+  let below: number | undefined
+  let above: number | undefined
+  for (const line of hitStartLines) {
+    if (line < 0) continue
+    if (first === undefined || line < first) first = line
+    if (last === undefined || line > last) last = line
+    if (line >= windowEnd && (below === undefined || line < below)) below = line
+    if (line < windowStart && (above === undefined || line > above)) above = line
   }
-  for (let at = Math.min(lines.length - 1, currentLine - 1); at >= 0; at--) {
-    const line = lines[at]
-    if (line !== undefined && line.kind === 'header' && line.messageIndex < currentMessage) return at
-  }
-  return 0
+  if (first === undefined || last === undefined) return undefined
+  return direction > 0 ? (below ?? first) : (above ?? last)
 }
 
 /**
@@ -247,23 +247,4 @@ export function hitOrdinal(
     if (at <= messageIndex) index += 1
   }
   return { index, total }
-}
-
-/** One weight per preview line: every line is exactly one terminal row. */
-export function unitWeights(lineCount: number): number[] {
-  return new Array<number>(Math.max(0, lineCount)).fill(1)
-}
-
-/**
- * The preview's visible window over its flat line list — `fitScrollWindow`
- * with all-ones weights (a thin wrapper so tests can exercise the exact
- * contract the scene gets).
- */
-export function previewWindow(
-  lineCount: number,
-  cursorLine: number,
-  height: number,
-  previousStart: number,
-): { start: number; end: number } {
-  return fitScrollWindow(unitWeights(lineCount), cursorLine, height, previousStart)
 }

@@ -14,7 +14,7 @@
 import { t } from './i18n.js'
 import type { ScannedSession } from './core/scan.js'
 import type { SearchScope } from './core/search.js'
-import { hitLanding, hitOrdinal, jumpHit, messageAtLine, stepMessage, type PreviewLine } from './preview.js'
+import { hitLanding, hitOrdinal, jumpHitLine, messageAtLine, scrollWindow, type PreviewLine } from './preview.js'
 import {
   CHROME_LINES,
   type CopyEntry,
@@ -62,24 +62,32 @@ export interface FindInputDeps {
   setMode: (next: Mode | ((current: Mode) => Mode)) => void
   setExpanded: (next: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => void
   setSelected: (next: number | ((current: number) => number)) => void
-  setPreviewCursor: (next: number | ((current: number) => number)) => void
-  /** The reader's window start — `n`/`N` set it alongside the cursor so a
-   *  deep hit lands with its own leading context (see hitLanding) instead of
-   *  being pushed to the window's bottom edge by the follow-the-cursor fit. */
+  /** The reader's window start: its ONLY position state (a read-only pane
+   *  has no cursor). ↑↓ scroll it by a row, PgUp/PgDn by a viewport, and
+   *  `n`/`N` open it on a hit's landing line (see hitLanding), so a deep
+   *  hit arrives with its own leading context instead of landing flush
+   *  against the window's bottom edge. */
   setPreviewWindowStart: (next: number | ((current: number) => number)) => void
   setStatus: (next: StatusNote | undefined | ((current: StatusNote | undefined) => StatusNote | undefined)) => void
   flatLength: number
   rows: number
   /** True while the split layout is live (config layout=split AND the
-   *  terminal is wide enough): Alt+P then HANDS FOCUS between the list and
-   *  the reader instead of opening/closing the full-screen preview. */
+   *  terminal is wide enough): ←/→ move the keyboard focus between the list
+   *  and the always-mounted reader pane instead of Alt+P opening the
+   *  full-screen preview. */
   splitActive: boolean
-  /** The reader's scroll viewport in rows — PgUp/PgDn inside the reader
-   *  pages by it (the classic pane and the split pane differ). */
+  /** The reader's scroll viewport in rows — PgUp/PgDn inside the reader page
+   *  by it, and it is the height every window clamp uses (the classic pane
+   *  and the split pane differ). */
   previewPageJump: number
   selectedRow: FlatRow | undefined
   previewLines: readonly PreviewLine[]
-  previewCursor: number
+  /** The reader's top visible line — the window's own position, and the
+   *  reference its keys act on (there is no cursor to act on instead). */
+  previewWindowStart: number
+  /** The window's end line, so `n`/`N` never re-target a hit already on
+   *  screen (see jumpHitLine). */
+  previewWindowEnd: number
   previewSession: ScannedSession | undefined
   previewHitStarts: readonly number[]
   previewAnchorRef: { current: number | undefined }
@@ -112,7 +120,6 @@ export function useFindInput(deps: FindInputDeps): void {
     setMode,
     setExpanded,
     setSelected,
-    setPreviewCursor,
     setPreviewWindowStart,
     setStatus,
     flatLength,
@@ -121,7 +128,8 @@ export function useFindInput(deps: FindInputDeps): void {
     previewPageJump,
     selectedRow,
     previewLines,
-    previewCursor,
+    previewWindowStart,
+    previewWindowEnd,
     previewSession,
     previewHitStarts,
     previewAnchorRef,
@@ -192,23 +200,30 @@ export function useFindInput(deps: FindInputDeps): void {
         return
       }
       if (modeRef.current === 'preview') {
-        const lastLine = Math.max(0, previewLines.length - 1)
+        // The reader has no cursor: its whole position is the window's top
+        // line, and every navigation key moves that window directly. The
+        // clamp lives in scrollWindow, so a key that would run past either
+        // end parks the window at the edge instead of scrolling past the
+        // content (the old cursor+follow pair let the cursor roam to the
+        // last line and pushed the window to the bottom edge).
+        const scrollBy = (rows: number): void => {
+          setPreviewWindowStart(current => scrollWindow(previewLines.length, current + rows, previewPageJump).start)
+        }
         if (isPlainReturn(key)) beginResume()
         else if (lower === 'c' && altOnly) {
-          // Alt+C copies the message the cursor sits on, whatever line of
-          // it (header or body) holds the cursor.
-          const entry = previewSession?.messages[messageAtLine(previewLines, previewCursor) ?? 0]
+          // Alt+C copies the message at the TOP of the viewport: with no
+          // cursor, the first line on screen is the reader's only "where am
+          // I" reference, and a scroll just put it there. (A window opened
+          // inside a message's wrapped body copies that message, whatever
+          // line of it is on top.)
+          const entry = previewSession?.messages[messageAtLine(previewLines, previewWindowStart) ?? 0]
           if (entry !== undefined) copyMessage(entry)
         } else if (key.upArrow) {
-          setPreviewCursor(current => stepMessage(previewLines, current, -1))
+          scrollBy(-1)
         } else if (key.downArrow) {
-          setPreviewCursor(current => stepMessage(previewLines, current, 1))
+          scrollBy(1)
         } else if (key.pageUp || key.pageDown) {
-          const jump = Math.max(1, previewPageJump)
-          setPreviewCursor(current => {
-            const next = key.pageUp ? current - jump : current + jump
-            return Math.min(lastLine, Math.max(0, next))
-          })
+          scrollBy(key.pageUp ? -previewPageJump : previewPageJump)
         } else if (key.leftArrow && splitActive) {
           // Split only: ← hands the keyboard back to the list. The reader
           // pane stays mounted; Esc reaches the same place (see the shared
@@ -218,22 +233,18 @@ export function useFindInput(deps: FindInputDeps): void {
           modeRef.current = 'list'
           setMode('list')
         } else if (plain && lower === 'n') {
-          // Walk the session's own hits (`n` forward, Shift+n back). A
-          // recent-session card has an empty hit table and no-ops silently;
-          // a session's hit table is circular, so moving past either end
-          // wraps and a non-empty table always yields a target. The landing
-          // is hit-aware like the anchor path: a target whose keyword sits
-          // below its own viewport opens on the keyword, not on a header
-          // that hides it.
-          const currentMessage = messageAtLine(previewLines, previewCursor) ?? 0
-          const { total } = hitOrdinal(previewHitStarts, currentMessage)
-          if (total > 0) {
-            const target = jumpHit(previewHitStarts, currentMessage, key.shift ? -1 : 1)!
+          // Walk the session's own hits (`n` forward, Shift+n back): with no
+          // cursor, the reference is the visible window — `n` takes the first
+          // hit below it, `N` the last one above, wrapping at either end. A
+          // recent-session card has an empty hit table and no-ops silently.
+          // The landing is hit-aware like the anchor path: a target whose
+          // keyword sits below its own viewport opens on the keyword, not on
+          // a header that hides it.
+          const target = jumpHitLine(previewHitStarts, previewWindowStart, previewWindowEnd, key.shift ? -1 : 1)
+          if (target !== undefined) {
             const targetMessage = messageAtLine(previewLines, target) ?? 0
-            const landing = hitLanding(previewLines, targetMessage, previewPageJump)
-            setPreviewCursor(landing.cursor)
-            setPreviewWindowStart(landing.windowStart)
-            const { index } = hitOrdinal(previewHitStarts, targetMessage)
+            setPreviewWindowStart(hitLanding(previewLines, targetMessage, previewPageJump))
+            const { index, total } = hitOrdinal(previewHitStarts, targetMessage)
             setStatus({ text: t('preview-hit-jump', { index, total }), tone: 'info' })
           }
         }

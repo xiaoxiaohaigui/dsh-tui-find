@@ -35,65 +35,103 @@ describe('preview scene wiring', () => {
     }
   })
 
-  it('walks hits with n/N, wrapping at both ends', async () => {
-    const harness = await mount(sessionWithMessages(['intro', 'needle one', 'middle', 'needle two is longer']))
+  it('walks hits with n/N from the visible window, wrapping at both ends', async () => {
+    // Twelve short messages at the 7-row solo viewport: the reader opens on
+    // the card's first hit (#2) and each press of n/N scrolls the window to
+    // the next hit — the top of the viewport is the reader's position, so
+    // Alt+C copying a different message is the proof the window moved.
+    const harness = await mount(
+      sessionWithMessages([
+        'one',
+        'needle one',
+        'three',
+        'four',
+        'five',
+        'six',
+        'seven',
+        'eight',
+        'needle two is longer',
+        'ten',
+        'eleven',
+        'twelve',
+      ]),
+    )
     try {
       harness.send('\u001bp')
       await waitFor()
       harness.send('n')
       await waitFor()
-      expect(harness.all()).toContain('Hit1/2')
+      expect(harness.all()).toMatch(/Hit\s*2\/2/)
       harness.send('\u001bc')
       await waitFor()
-      expect(harness.latest()).toMatch(/Copied\s*15\s*chars/)
-      harness.send('n')
-      await waitFor()
-      harness.send('\u001bc')
-      await waitFor()
-      expect(harness.latest()).toMatch(/Copied\s*25\s*chars/)
+      // '[You]' + newline + 'needle two is longer' = 26.
+      expect(harness.latest()).toMatch(/Copied\s*26\s*chars/)
       harness.send('N')
       await waitFor()
+      expect(harness.all()).toMatch(/Hit\s*1\/2/)
       harness.send('\u001bc')
       await waitFor()
+      // '[AI]' + newline + 'needle one' = 15.
       expect(harness.latest()).toMatch(/Copied\s*15\s*chars/)
       harness.send('N')
       await waitFor()
       harness.send('\u001bc')
       await waitFor()
       // N wraps from the first hit back to the last hit.
-      expect(harness.latest()).toMatch(/Copied\s*25\s*chars/)
+      expect(harness.latest()).toMatch(/Copied\s*26\s*chars/)
     } finally {
       harness.dispose()
     }
   })
 
-  it('uses rows minus preview chrome for PgDn and copies the cursor message', async () => {
+  it('pages by the viewport with PgUp/PgDn, and Alt+C copies the top message', async () => {
     const harness = await mount(
       sessionWithMessages(['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff', 'ggggggg', 'hhhhhhhh']),
       { query: '', rows: 10 },
     )
     try {
+      // Each step asserts on a resize-forced FULL repaint: a status-row
+      // overwrite only ever emits its changed cells in a diff frame, so
+      // 'Copied 9 chars' would otherwise read back as a lone '9'.
       harness.send('\u001bp')
       await waitFor()
       harness.send('\u001b[B')
       await waitFor()
       harness.send('\u001bc')
       await waitFor()
-      expect(harness.all()).toContain('Copied7chars')
+      harness.resize(81, 10)
+      await waitFor()
+      // One row of scrolling from the head opens the window on line 1 —
+      // message #2's body 'bb' — so Alt+C copies THAT message: '[AI]' +
+      // newline + 2 chars = 7.
+      expect(harness.latest()).toMatch(/Copied\s*7\s*chars/)
 
-      // rows=10 and four fixed preview chrome lines leave a six-line page.
-      // Every message is two lines (header + body), so PgDn lands on message 3.
+      // rows=10 and five fixed preview chrome lines leave a five-line page,
+      // and every message here is two lines (header + body): PgDn moves the
+      // window from line 1 to line 6, i.e. onto message #4's header — the
+      // copy follows the window to that message: '[AI]' + 1 + 4 = 9.
       harness.send('\u001b[6~')
       await waitFor()
       harness.send('\u001bc')
       await waitFor()
-      expect(harness.latest().trim()).toMatch(/9$/)
+      harness.resize(80, 10)
+      await waitFor()
+      const paged = harness.latest()
+      expect(paged).toMatch(/Copied\s*9\s*chars/)
+      // The window really moved: it opens on #4 and the earlier messages are
+      // gone from the viewport (which holds #4..#6 of the eight).
+      expect(paged).toMatch(/AI\s*#4/)
+      expect(paged).toMatch(/AI\s*#6/)
+      expect(paged).not.toMatch(/You\s*#1\b/)
 
+      // PgUp returns the window to line 1, and the copy follows it there.
       harness.send('\u001b[5~')
       await waitFor()
       harness.send('\u001bc')
       await waitFor()
-      expect(harness.latest().trim()).toMatch(/7$/)
+      harness.resize(81, 10)
+      await waitFor()
+      expect(harness.latest()).toMatch(/Copied\s*7\s*chars/)
     } finally {
       harness.dispose()
     }

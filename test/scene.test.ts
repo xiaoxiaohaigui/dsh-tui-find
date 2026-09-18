@@ -205,7 +205,7 @@ describe('list-mode key dispatch', () => {
 })
 
 describe('preview scrolling', () => {
-  it('re-anchors the preview on Alt+P and walks messages with arrows, window following', async () => {
+  it('re-anchors the preview on Alt+P and scrolls the window line by line', async () => {
     const harness = await mount(
       sessionWithMessages(['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight']),
       { query: '', rows: 10 },
@@ -222,19 +222,36 @@ describe('preview scrolling', () => {
       }
       harness.resize(80, 10)
       await waitFor()
-      // Five arrows walk from message 1 to message 6; with a five-line
-      // viewport the fitted window has scrolled the head off the top.
-      expect(harness.latest()).toContain('#6')
-      expect(harness.latest()).not.toContain('#1')
+      // Five rows of scrolling from the head: every message is two lines
+      // (header + body) in a five-line viewport, so the window now opens on
+      // message 3's BODY line and runs through message 5. Arrows move the
+      // window ITSELF — no cursor, no per-message stepping — which is why a
+      // half-scrolled message (its header gone, its text on top) is a normal
+      // frame rather than something the reader would snap away from.
+      const scrolled = harness.latest()
+      expect(scrolled).toContain('three')
+      expect(scrolled).not.toMatch(/You\s*#1\b/)
+      expect(scrolled).not.toMatch(/\bone\b/)
+      expect(scrolled).toMatch(/AI\s*#4/)
+      expect(scrolled).toMatch(/You\s*#5/)
+      // ...and ↑ walks back up the same way, to the very top.
+      for (let index = 0; index < 5; index++) {
+        harness.send('\u001b[A')
+        await waitFor()
+      }
+      harness.resize(81, 10)
+      await waitFor()
+      const back = harness.latest()
+      expect(back).toMatch(/You\s*#1\b/)
+      expect(back).not.toContain('three')
       harness.send('\u001b')
       await waitFor()
       harness.send('\u001bp')
       await waitFor()
-      harness.resize(81, 10)
+      harness.resize(80, 10)
       await waitFor()
-      // Every Alt+P re-anchors: cursor and window reset to the head.
+      // Every Alt+P re-anchors: the window resets to the head.
       expect(harness.latest()).toContain('#1')
-      expect(harness.latest()).not.toContain('#6')
     } finally {
       harness.dispose()
     }

@@ -50,14 +50,16 @@ Keys inside the scene:
 | `Alt+R` / `Alt+N` | Regex matching / title-only search |
 | `↑↓` / `PgUp` `PgDn` | Move between entries / page |
 | `→` / `←` | Split layout: → focuses the reader pane, ← returns to the list (the pane is always on screen — nothing to open or close) |
-| `Alt+P` | Classic layout: open the full-screen preview (anchored on the hit, highlighted); in the reader `↑↓` steps by message, `n`/`N` jump between hits (wrapping), `PgUp`/`PgDn`/wheel scroll |
-| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message under the cursor) / expand, collapse the session's hits |
+| `Alt+P` | Classic layout: open the full-screen preview (anchored on the hit, highlighted); in the reader `↑↓` scroll line by line, `PgUp`/`PgDn` page, `n`/`N` jump between hits (wrapping), the wheel scrolls by notch |
+| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message at the top of the view) / expand, collapse the session's hits |
 | `Alt+H` | Keyboard-help panel |
 | `↵` / `Esc` | Resume session (double confirmation) / clear the query, go back, exit |
 
-Mouse: left-click selects, hover highlights, the wheel moves the selection by the host's own notch size (about 3 rows per notch; inside the reader it scrolls line by line); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session — in the preview, copy the message under the pointer.
+Mouse: left-click selects, hover highlights, the wheel moves the selection by the host's own notch size (about 3 rows per notch; inside the reader it scrolls the reader by notch); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session — in the preview, copy the message under the cursor.
 
-> The scene layout is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split; one screen shows one focus — under list focus the pane carries no cursor emphasis, and after the handoff the list keeps its own highlight); narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview. In both forms the reader **keeps the keyword on screen**: when a hit sits too deep in its message for the viewport, the reader opens windowed onto the hit's own line instead of parking on a message head that hides it.
+> The scene layout is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split); narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview.
+
+> The reader is a **read-only view with no cursor**: `↑↓` scroll it line by line, `PgUp`/`PgDn` and the wheel move it by page / notch, and `n`/`N` jump to the next / previous hit outside the window (wrapping) — a selection means nothing in a read-only preview, so the window itself is the position. That also leaves exactly one highlighted surface per screen: the pane carries no emphasis under list focus, and after the `→` handoff its frame lights up while the list keeps its own highlight. In both forms the reader **keeps the keyword on screen**: when a hit sits too deep in its message for the viewport, the reader opens windowed onto the hit's own line instead of parking on a message head that hides it.
 
 > Results are grouped per session, the first 3 hits show per session (`(+N)` hint), most-recent-first; the scan starts the moment the scene opens and results stream in, with live progress in the header.
 

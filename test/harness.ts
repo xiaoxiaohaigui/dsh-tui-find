@@ -31,6 +31,12 @@ export type Harness = {
   rightClickAt(col: number, row: number): void
   all(): string
   latest(): string
+  /** The cumulative stream with its ANSI intact — for the few assertions
+   *  about STYLING (a dimmed border, a tinted span) that the stripped
+   *  frames cannot carry. */
+  raw(): string
+  /** The last painted frame with its ANSI intact (the `latest()` anchor). */
+  rawLatest(): string
   closed(): number
   /** Emits a real dimension change so the host renderer fully repaints. */
   resize(columns: number, rows: number): void
@@ -174,6 +180,19 @@ export async function mount(
   const sgrMouse = (button: number, col: number, row: number, final: 'M' | 'm'): string =>
     `\u001b[<${button};${col};${row}${final}`
 
+  /** The last painted frame, ANSI intact. Frame anchor: the host writes each
+   *  frame as one buffer headed by the DEC 2026 begin marker — or, on
+   *  alt-screen frames when the terminal env claims no synchronized-output
+   *  support, by the bare SGR-reset + OSC-8-close frame head. Taking the
+   *  later of the two keeps `latest()` meaning "the last painted frame" in
+   *  both modes. */
+  const frameTail = (): string => {
+    const syncStart = output.lastIndexOf('\u001b[?2026h')
+    const headStart = output.lastIndexOf('\u001b[0m\u001b]8;;')
+    const start = Math.max(syncStart, headStart)
+    return start < 0 ? output : output.slice(start)
+  }
+
   return {
     send(input: string) {
       stdin.write(input)
@@ -192,15 +211,13 @@ export async function mount(
       return stripAnsi(output)
     },
     latest() {
-      // Frame anchor: the host writes each frame as one buffer headed by
-      // the DEC 2026 begin marker — or, on alt-screen frames when the
-      // terminal env claims no synchronized-output support, by the bare
-      // SGR-reset + OSC-8-close frame head. Taking the later of the two
-      // keeps `latest()` meaning "the last painted frame" in both modes.
-      const syncStart = output.lastIndexOf('\u001b[?2026h')
-      const headStart = output.lastIndexOf('\u001b[0m\u001b]8;;')
-      const start = Math.max(syncStart, headStart)
-      return stripAnsi(start < 0 ? output : output.slice(start))
+      return stripAnsi(frameTail())
+    },
+    raw() {
+      return output
+    },
+    rawLatest() {
+      return frameTail()
     },
     closed() {
       return closeCount

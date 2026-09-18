@@ -241,8 +241,6 @@ export function FindScene(props: TuiSceneProps & {
     : Math.max(1, rows - PREVIEW_CHROME_LINES)
 
   const {
-    cursor: previewCursor,
-    setCursor: setPreviewCursor,
     windowStart: previewWindowStart,
     windowEnd: previewWindowEnd,
     setWindowStart: setPreviewWindowStart,
@@ -286,8 +284,8 @@ export function FindScene(props: TuiSceneProps & {
   }, [selectedRow])
 
   /** The shared copy body: the list's Alt+C copies the selected hit row,
-   *  the preview's Alt+C copies the message under the cursor — same shape,
-   *  so both feed this one builder. */
+   *  the preview's Alt+C copies the message at the top of its window — same
+   *  shape, so both feed this one builder. */
   const copyMessage = useCallback(
     (entry: CopyEntry) => {
       const when = entry.at === undefined ? '' : ` ${new Date(entry.at).toISOString()}`
@@ -505,7 +503,6 @@ export function FindScene(props: TuiSceneProps & {
     setMode,
     setExpanded,
     setSelected,
-    setPreviewCursor,
     setPreviewWindowStart,
     setStatus,
     closeMenu,
@@ -513,13 +510,17 @@ export function FindScene(props: TuiSceneProps & {
     activateMenu,
     flatLength: flat.length,
     rows,
-    // Split focus handoff for Alt+P, and the reader-side page jump (the
+    // Split focus handoff for ←/→, and the reader-side page jump (the
     // classic full-screen pane and the split pane have different viewports).
     splitActive,
     previewPageJump: readerViewport,
     selectedRow,
     previewLines,
-    previewCursor,
+    // The window's own position: with no reader cursor left, this is what
+    // ↑↓/PgUp/PgDn/n/N act on and Alt+C refers to (the end is what keeps n/N
+    // from re-targeting a hit that is already on screen).
+    previewWindowStart,
+    previewWindowEnd,
     previewSession,
     previewHitStarts,
     previewAnchorRef,
@@ -769,7 +770,6 @@ export function FindScene(props: TuiSceneProps & {
           session={session}
           lines={previewLines}
           bodyWidth={previewBodyWidth}
-          cursor={previewCursor}
           windowStart={previewWindowStart}
           windowEnd={previewWindowEnd}
           status={status}
@@ -811,15 +811,13 @@ export function FindScene(props: TuiSceneProps & {
               ui={ui}
               session={previewSession}
               lines={previewLines}
-              cursor={previewCursor}
               windowStart={previewWindowStart}
               windowEnd={previewWindowEnd}
               paneWidth={layout.paneWidth}
               bodyWidth={previewBodyWidth}
-              // One focused surface per screen: the pane shows its cursor
-              // vocabulary only while it owns the keyboard (mode 'preview');
-              // under list focus it reads as plain content beside the
-              // highlighted list.
+              // One lit surface per screen: the frame is the pane's only
+              // focus cue (the reader carries no selection vocabulary), so
+              // it undims exactly while the reader owns the keyboard.
               focused={mode === 'preview'}
               onWheel={stepPreview}
               {...(contextMenuCapable ? { onContextMenu: openPreviewMenu } : {})}

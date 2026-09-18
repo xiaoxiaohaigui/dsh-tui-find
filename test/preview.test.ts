@@ -4,11 +4,10 @@ import {
   buildPreviewLines,
   hitLanding,
   hitOrdinal,
-  jumpHit,
+  jumpHitLine,
   messageAtLine,
   messageHeaderLine,
-  previewWindow,
-  stepMessage,
+  scrollWindow,
 } from '../src/preview.js'
 
 const message = (
@@ -219,79 +218,89 @@ describe('hitLanding', () => {
     )
     const viewport = 20
     const landing = hitLanding(lines, 1, viewport)
-    // The landing stays header-anchored — cursor AND window on the header,
+    // The landing stays header-anchored — the window opens on the header,
     // the anchored shape every other reader assertion depends on — because
     // the hit's own line is inside the viewport below it.
     const headerLine = messageHeaderLine(lines, 1)
-    expect(landing).toEqual({ cursor: headerLine, windowStart: headerLine })
+    expect(landing).toBe(headerLine)
     const hitLine = lines.findIndex(line => line.kind === 'body' && line.ranges.length > 0)
-    expect(hitLine).toBeGreaterThanOrEqual(landing.windowStart)
-    expect(hitLine).toBeLessThan(landing.windowStart + viewport)
-    expect(messageAtLine(lines, landing.cursor)).toBe(1)
+    expect(hitLine).toBeGreaterThanOrEqual(landing)
+    expect(hitLine).toBeLessThan(landing + viewport)
+    expect(messageAtLine(lines, landing)).toBe(1)
   })
 
-  it('centers a hit the header-anchored window cannot reach', () => {
+  it('opens above a hit the header-anchored window cannot reach', () => {
     const viewport = 9
     const { lines, hitLine, headerLine } = build()
     // Guards the fixture: the hit really is unreachable from the header.
     expect(hitLine - headerLine + 1).toBeGreaterThan(viewport)
     const landing = hitLanding(lines, 1, viewport)
-    expect(landing.cursor).toBe(hitLine)
-    // The keyword's line is inside [windowStart, windowStart + viewport) with
+    // The keyword's line is inside [landing, landing + viewport) with
     // leading context above it, and the message head is scrolled away.
-    expect(landing.windowStart).toBeLessThan(hitLine)
-    expect(landing.windowStart).toBeGreaterThanOrEqual(headerLine)
-    expect(hitLine - landing.windowStart).toBeLessThan(viewport)
+    expect(landing).toBeLessThan(hitLine)
+    expect(landing).toBeGreaterThanOrEqual(headerLine)
+    expect(hitLine - landing).toBeLessThan(viewport)
   })
 
-  it('never parks below the message head, whatever the viewport', () => {
+  it('never opens above the message head, whatever the viewport', () => {
     const { lines, hitLine, headerLine } = build()
     for (const viewport of [1, 2, 3, 5, 9, 40]) {
       const landing = hitLanding(lines, 1, viewport)
-      expect(landing.windowStart).toBeGreaterThanOrEqual(headerLine)
-      expect(landing.cursor).toBeGreaterThanOrEqual(landing.windowStart)
+      expect(landing).toBeGreaterThanOrEqual(headerLine)
       if (viewport >= hitLine - headerLine + 1) {
         // Reachable from the header: the whole message head stays in view.
-        expect(landing.windowStart).toBe(headerLine)
+        expect(landing).toBe(headerLine)
       } else {
-        expect(landing.cursor).toBe(hitLine)
-        expect(hitLine - landing.windowStart).toBeLessThan(viewport)
+        expect(hitLine - landing).toBeLessThan(viewport)
+        expect(hitLine).toBeGreaterThanOrEqual(landing)
       }
     }
   })
 
-  it('parks on the header for a message without an in-body hit', () => {
+  it('falls back to the header for a message without an in-body hit', () => {
     const lines = buildPreviewLines([message('plain text')], new Set<number>(), 20)
-    expect(hitLanding(lines, 0, 9)).toEqual({ cursor: 0, windowStart: 0 })
+    expect(hitLanding(lines, 0, 9)).toBe(0)
     // Out-of-range anchors clamp like messageHeaderLine, and an empty list
-    // still answers a usable pair.
-    expect(hitLanding(lines, 99, 9)).toEqual({ cursor: 0, windowStart: 0 })
-    expect(hitLanding([], 0, 9)).toEqual({ cursor: 0, windowStart: 0 })
+    // still answers a usable line.
+    expect(hitLanding(lines, 99, 9)).toBe(0)
+    expect(hitLanding([], 0, 9)).toBe(0)
   })
 })
 
-describe('jumpHit', () => {
+describe('jumpHitLine', () => {
   // Messages 0..5; hits at 1 (header line 3) and 4 (header line 9).
   const table = [-1, 3, -1, -1, 9, -1]
 
-  it('walks forward to the next hit, skipping non-hit messages', () => {
-    expect(jumpHit(table, 0, 1)).toBe(3)
-    expect(jumpHit(table, 1, 1)).toBe(9)
-    expect(jumpHit(table, 3, 1)).toBe(9)
+  it('takes the first hit below the window on n, skipping the visible ones', () => {
+    // At the top with a 4-row window (lines 0..3): line 3 is on screen, so
+    // the next press lands on the far hit rather than re-showing it.
+    expect(jumpHitLine(table, 0, 4, 1)).toBe(9)
+    // A one-row window that stops just above line 3 targets it.
+    expect(jumpHitLine(table, 0, 3, 1)).toBe(3)
+    // From below the last hit, n wraps to the first.
+    expect(jumpHitLine(table, 9, 12, 1)).toBe(3)
   })
 
-  it('walks backward to the previous hit', () => {
-    expect(jumpHit(table, 4, -1)).toBe(3)
-    expect(jumpHit(table, 5, -1)).toBe(9)
-    expect(jumpHit(table, 2, -1)).toBe(3)
+  it('takes the last hit above the window on N, likewise wrapping', () => {
+    expect(jumpHitLine(table, 9, 12, -1)).toBe(3)
+    expect(jumpHitLine(table, 4, 9, -1)).toBe(3)
+    // From the top, N wraps to the last hit.
+    expect(jumpHitLine(table, 0, 3, -1)).toBe(9)
   })
 
-  it('wraps around at both ends', () => {
-    expect(jumpHit(table, 4, 1)).toBe(3)
-    expect(jumpHit(table, 1, -1)).toBe(9)
-    expect(jumpHit(table, 99, 1)).toBe(3)
-    expect(jumpHit(table, -1, -1)).toBe(9)
-    expect(jumpHit([], 0, 1)).toBeUndefined()
+  it('never re-targets a hit that is already on screen', () => {
+    // The window (lines 3..11) holds both hits: each direction wraps, so a
+    // press always moves even in a conversation that fits entirely.
+    expect(jumpHitLine(table, 3, 12, 1)).toBe(3)
+    expect(jumpHitLine(table, 3, 12, -1)).toBe(9)
+  })
+
+  it('answers empty tables and empty windows', () => {
+    expect(jumpHitLine([], 0, 5, 1)).toBeUndefined()
+    expect(jumpHitLine([-1, -1], 0, 5, -1)).toBeUndefined()
+    // A degenerate window still resolves: both hits sit below line 0.
+    expect(jumpHitLine(table, 0, 0, 1)).toBe(3)
+    expect(jumpHitLine(table, 0, 0, -1)).toBe(9)
   })
 
   it('serves a table derived from built lines the way the scene does', () => {
@@ -303,8 +312,10 @@ describe('jumpHit', () => {
     })
     // msg1's header sits at line 2 (after msg0's header+body), msg4's at 8.
     expect(table).toEqual([-1, 2, -1, -1, 8])
-    expect(jumpHit(table, 1, 1)).toBe(8)
-    expect(jumpHit(table, 4, -1)).toBe(2)
+    // The end is EXCLUSIVE: a window [0, 3) shows line 2, so n skips it.
+    expect(jumpHitLine(table, 0, 3, 1)).toBe(8)
+    expect(jumpHitLine(table, 0, 2, 1)).toBe(2)
+    expect(jumpHitLine(table, 8, 10, -1)).toBe(2)
   })
 })
 
@@ -320,34 +331,29 @@ describe('hitOrdinal', () => {
   })
 })
 
-describe('previewWindow', () => {
-  it('weighs every preview line one terminal row', () => {
-    expect(previewWindow(100, 50, 10, 0)).toEqual({ start: 41, end: 51 })
+describe('scrollWindow', () => {
+  it('slices a viewport of the given height from the offset', () => {
+    expect(scrollWindow(100, 41, 10)).toEqual({ start: 41, end: 51 })
+    expect(scrollWindow(100, 0, 10)).toEqual({ start: 0, end: 10 })
   })
 
-  it('follows the cursor at the window edges', () => {
-    expect(previewWindow(100, 60, 10, 41)).toEqual({ start: 51, end: 61 })
-    expect(previewWindow(100, 5, 10, 41)).toEqual({ start: 5, end: 15 })
-    expect(previewWindow(100, 99, 10, 0)).toEqual({ start: 90, end: 100 })
+  it('clamps the offset so the window never runs past either end', () => {
+    // Past the tail: the window parks flush with the content's end instead
+    // of scrolling into blank space.
+    expect(scrollWindow(100, 99, 10)).toEqual({ start: 90, end: 100 })
+    expect(scrollWindow(100, 1_000, 10)).toEqual({ start: 90, end: 100 })
+    expect(scrollWindow(100, -5, 10)).toEqual({ start: 0, end: 10 })
   })
 
-  it('answers empty line lists', () => {
-    expect(previewWindow(0, 0, 10, 0)).toEqual({ start: 0, end: 0 })
-  })
-})
-
-describe('stepMessage', () => {
-  const lines = buildPreviewLines([message('one\ntwo'), message('three'), message('four\nfive')], new Set(), 20)
-
-  it('moves one message at a time regardless of wrapped body lines', () => {
-    expect(stepMessage(lines, 0, 1)).toBe(3)
-    expect(stepMessage(lines, 1, 1)).toBe(3)
-    expect(stepMessage(lines, 3, 1)).toBe(5)
-    expect(stepMessage(lines, 4, -1)).toBe(0)
+  it('stops the end at a short list instead of padding it', () => {
+    expect(scrollWindow(4, 0, 10)).toEqual({ start: 0, end: 4 })
+    expect(scrollWindow(0, 0, 10)).toEqual({ start: 0, end: 0 })
   })
 
-  it('clamps at the conversation ends', () => {
-    expect(stepMessage(lines, 0, -1)).toBe(0)
-    expect(stepMessage(lines, 5, 1)).toBe(7)
+  it('answers degenerate viewports', () => {
+    // A zero or negative height still renders one row (the scene's own
+    // Math.max(1, …) budget rule, mirrored here).
+    expect(scrollWindow(10, 3, 0)).toEqual({ start: 3, end: 4 })
+    expect(scrollWindow(10, 3, -2)).toEqual({ start: 3, end: 4 })
   })
 })

@@ -135,12 +135,12 @@ export const dict = {
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
   'hint-preview': {
-    zh: '**↑↓** 逐段 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制 · **Esc** 返回列表',
-    en: '**↑↓** step messages · **n/N** hit · **Enter** resume · **Alt+C** copy · **Esc** back to list',
+    zh: '**↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制顶部 · **Esc** 返回列表',
+    en: '**↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy top · **Esc** back to list',
   },
   'hint-preview-split': {
-    zh: '**←** 返回列表 · **↑↓** 逐段 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制',
-    en: '**←** back to list · **↑↓** step messages · **n/N** hit · **Enter** resume · **Alt+C** copy',
+    zh: '**←** 返回列表 · **↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制顶部',
+    en: '**←** back to list · **↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy top',
   },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',
@@ -230,11 +230,11 @@ export const dict = {
   'help-list-esc': { zh: '清空查询 / 退出', en: 'Clear the query / exit' },
   'help-list-help': { zh: '打开 / 关闭本帮助', en: 'Toggle this help' },
   'help-list-global': { zh: '全局打开 /find（shortcut 配置可改键）', en: 'Open /find globally (remap via shortcut config)' },
-  'help-preview-scroll': { zh: '按消息段滚动', en: 'Step through messages' },
+  'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
   'help-preview-resume': { zh: '恢复该会话（进入确认）', en: 'Resume this session (confirm)' },
-  'help-preview-copy': { zh: '复制光标所在消息', en: 'Copy the message under the cursor' },
+  'help-preview-copy': { zh: '复制视口顶部那条消息', en: 'Copy the message at the top of the view' },
   'help-preview-focus': { zh: '焦点移回左栏列表', en: 'Move focus back to the list' },
   'help-preview-esc': { zh: '返回列表', en: 'Back to the list' },
   'help-list-layout': {

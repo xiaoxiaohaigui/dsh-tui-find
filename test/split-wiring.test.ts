@@ -12,6 +12,17 @@
  * their assertions changed, which is the no-regression proof.
  */
 import { afterAll, describe, expect, it, vi } from 'vitest'
+
+// The pane's focus cue is a STYLE (a dimmed vs plain border — the host
+// SearchBox's own idiom), and chalk strips escapes off-TTY, so the styling
+// case below needs coloured output. `vi.hoisted` runs before this file's
+// imports, i.e. before chalk resolves FORCE_COLOR at module load; the
+// stripped-frame assertions everywhere else are unaffected because
+// stripAnsi removes whatever colour this turns on.
+vi.hoisted(() => {
+  process.env['FORCE_COLOR'] = '1'
+})
+
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
 import type { ScannedSession } from '../src/core/scan.js'
 import { hasTerminalImageHooks, splitLayout } from '../src/find-types.js'
@@ -56,6 +67,34 @@ const splitSession = (): ScannedSession =>
 const wide = { columns: 120, rows: 20 }
 /** One SGR wheel report; button 64 = wheel up, 65 = wheel down. */
 const wheelAt = (col: number, row: number, button: number): string => `\u001b[<${button};${col};${row}M`
+
+/** The reader pane's own text, for assertions the LIST column must not be
+ *  able to satisfy (a hit's keyword appears in both: the pane as prose, the
+ *  list as '#N role: …' rows). The split frame interleaves the two columns
+ *  across the pane's border cells, so the odd segments of a `│` split are the
+ *  pane interior — minus the full-width search card's own `⌕ query` row,
+ *  which the same split also cuts into odd-shaped segments. */
+const paneText = (frame: string): string =>
+  frame
+    .split('│')
+    .filter((segment, index) => index % 2 === 1 && !segment.includes('⌕'))
+    .join('\n')
+
+/** The SGR run that paints the pane's top-left corner — the LAST `╭` in a
+ *  split frame, since the search card's own frame sits above it. Returns the
+ *  escapes verbatim so a styling assertion can inspect them without caring
+ *  about the order the host generation applies them in (0.9.3 and 0.10.1
+ *  differ: colour-then-dim vs dim-then-colour, and the palette resolves to
+ *  truecolor on one and to a basic SGR on the other). */
+const paneCornerStyle = (frame: string): string => {
+  const at = frame.lastIndexOf('╭')
+  if (at < 0) return ''
+  return /((?:\u001b\[[0-9;]*m)+)$/.exec(frame.slice(0, at))?.[1] ?? ''
+}
+
+/** The corner's escape run without its dim attribute — the colour identity
+ *  the two focus states must share. */
+const withoutDim = (style: string): string => style.replaceAll('\u001b[2m', '')
 
 // Pointer-event delivery differences ride the 0.10 kit generation probe,
 // as the list menu does (menu-wiring.test.ts): on the 0.9.3 baseline the
@@ -123,14 +162,12 @@ describe('split rendering and anchoring', () => {
     }
   })
 
-  it('shows one focus marker at a time, and the reader adds rather than swaps', async () => {
-    // Two emphasized surfaces at once read as two focuses. While the list
-    // holds the keyboard the pane renders its cursor message as plain content
-    // — no cursor marker in the pane at all; once the reader takes over the
-    // pane gains its own marker while the list KEEPS its highlight (the
-    // reader's focus is additive). The cursor shapes are the pair the reader
-    // uses (the `❯` role glyph alone, without a marker in front, is just a
-    // user header and must not satisfy them).
+  it('shows one focus marker at a time: the list, never the reader', async () => {
+    // Two emphasized surfaces at once read as two focuses. The reader has
+    // no selection vocabulary of its own, so the panes never add a marker —
+    // in either focus state — and the handoff only lights the pane's frame
+    // (asserted on the ANSI stream below, since dimming is a style, not a
+    // glyph). The cursor vocabulary the list owns is asserted unchanged.
     const harness = await mount(splitSession(), wide)
     try {
       await waitForMatch(() => harness.all(), /Read-only\s*preview/)
@@ -140,47 +177,50 @@ describe('split rendering and anchoring', () => {
       expect(listFocus).not.toMatch(/❯\s*✦\s*AI/)
       expect(listFocus).not.toMatch(/❯\s*❯\s*You/)
       expect(listFocus).toMatch(/❯\s*Preview\s*wiring/)
+      // The pane's focused message carries no marker either: the `✦ AI #2`
+      // header is on screen and nothing precedes it.
+      expect(listFocus).toMatch(/│\s*✦\s*AI\s*#2\s*◆/)
+      expect(listFocus).not.toMatch(/❯\s*✦/)
 
       harness.send('\u001b[C')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
       const readerFocus = harness.latest()
-      expect(readerFocus).toMatch(/❯\s*✦\s*AI\s*#2\s*◆/)
-      // The list's own marker survived the handoff.
+      // Still exactly one focus cue: the list keeps its marker and the pane
+      // gains none (its frame un-dims instead — see the styling case).
       expect(readerFocus).toMatch(/❯\s*Preview\s*wiring/)
+      expect(readerFocus).not.toMatch(/❯\s*✦/)
     } finally {
       harness.dispose()
     }
   })
 
-  it('keeps the focused pane marked when the cursor header is off screen', async () => {
-    // A hit-aware landing parks the cursor on a body line with the message's
-    // header scrolled out; a focused pane that showed no marker there would
-    // read as unfocused. The marker moves to the cursor's own body line, so
-    // the handoff adds exactly one marker even though no pane header carries
-    // one (measured relatively: the role glyphs in the pane are unchanged by
-    // focus, only the cursor marker appears).
-    const pad = 'pad '.repeat(120)
-    const session = sessionWithMessages(['intro', `${pad}deepneedle marker tail`, 'tail'])
-    const harness = await mount(session, { ...wide, query: 'deepneedle' })
+  it('undims the pane frame on reader focus as the only accent a split screen adds', async () => {
+    // The reader shows no selection vocabulary, so the pane frame is the
+    // handoff's whole visual difference: `borderDimColor` while the list owns
+    // the keyboard (faint), plain while the reader does. Asserted on the raw
+    // ANSI stream — `latest()` strips exactly the escape that carries it.
+    const harness = await mount(splitSession(), wide)
     try {
       await waitForMatch(() => harness.all(), /Read-only\s*preview/)
-      harness.send('\u001b[B') // onto the hit row: the pane lands on the hit
-      await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      const listFocus = harness.latest()
-      const before = (listFocus.match(/❯/g) ?? []).length
-      // The header really is off screen — no pane header marker to hide behind.
-      expect(listFocus).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      // The pane's top-left corner is painted (it carries a colour) and dim
+      // while the list owns the keyboard...
+      const listCorner = paneCornerStyle(harness.rawLatest())
+      expect(listCorner).toContain('\u001b[2m')
+      expect(withoutDim(listCorner).length).toBeGreaterThan(0)
 
-      harness.send('\u001b[C') // → reader focus
+      harness.send('\u001b[C')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      const frame = harness.latest()
-      expect((frame.match(/❯/g) ?? []).length).toBe(before + 1)
+      // ...and the handoff changes EXACTLY the dim: the same colour escape
+      // run paints the frame, so the pane is lit rather than recoloured.
+      const readerCorner = paneCornerStyle(harness.rawLatest())
+      expect(readerCorner).not.toContain('\u001b[2m')
+      expect(withoutDim(readerCorner)).toBe(withoutDim(listCorner))
     } finally {
       harness.dispose()
     }
@@ -243,22 +283,24 @@ describe('split rendering and anchoring', () => {
       await waitFor()
       expect(harness.latest()).toMatch(/❯\s*#9\s*You/)
 
-      // A focus handoff (→) lights the pane up: the same window now carries
-      // the cursor vocabulary — two markers, one per pane, because the
-      // reader owns the keyboard.
+      // A focus handoff (→) changes which side owns the keyboard, not the
+      // window: the pane still shows #9, and since the reader carries no
+      // cursor vocabulary the list's marker remains the screen's only one.
       harness.send('\u001b[C')
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
-      // ← hands it back: the pane dims to plain content again while the
-      // list keeps its own highlight (the reader's focus is additive).
+      const focusFrame = harness.latest()
+      expect(focusFrame).toMatch(/❯\s*#9\s*You/)
+      expect(focusFrame).toMatch(/You\s*#9\s*◆/)
+      expect(focusFrame).not.toMatch(/❯\s*❯/)
+      // ← hands it back with the same window and the same single marker.
       harness.send('\u001b[D')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).not.toMatch(/❯\s*❯\s*You\s*#9/)
       expect(harness.latest()).toMatch(/❯\s*#9\s*You/)
+      expect(harness.latest()).not.toMatch(/❯\s*❯/)
       // Esc clears the query: recent mode lists the card alone and the
       // reader anchors to the conversation head.
       harness.send('\u001b')
@@ -289,29 +331,54 @@ describe('split focus handoff', () => {
       harness.resize(120, 20)
       await waitFor()
       expect(harness.latest()).not.toMatch(/⌕\s*needlex/)
-      // ...PgDn pages by the split viewport (9 rows: the cursor lands on
-      // message #6)...
-      harness.send('\u001b[6~')
-      await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*✦\s*AI\s*#6/)
-      // ...arrows step by message (three ↓ merged in one chunk: #6 → #9);
-      // the forced repaint doubles as the unrelated-repaint dedup check —
-      // the manually moved cursor was NOT yanked back to the selection
-      // anchor...
+      // ...arrows scroll by single rows (three ↓ merged in one chunk move the
+      // window from the anchor at line 2 to line 5 — message #3's body
+      // 'bravo' heads the pane and #2's message is gone). The forced repaint
+      // doubles as the unrelated-repaint dedup check: the manually scrolled
+      // window was NOT yanked back to the selection anchor...
       harness.send('\u001b[B\u001b[B\u001b[B')
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9/)
-      expect(harness.latest()).not.toMatch(/✦\s*AI\s*#2/)
-      // ...n walks the hits (wrapping to the first), Alt+C copies the
-      // cursor's message ('[AI]\nneedle one' = 15 chars).
+      const steppedPane = paneText(harness.latest())
+      expect(steppedPane).toMatch(/bravo/)
+      expect(steppedPane).not.toMatch(/needle/)
+      // ...PgDn then pages the window by the split viewport (9 rows) into the
+      // conversation's tail, where it stops: the reader never scrolls past
+      // the content's end, so the last message rides the bottom row. The pane
+      // reads as plain content throughout — no cursor anywhere.
+      harness.send('\u001b[6~')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      const pagedPane = paneText(harness.latest())
+      expect(pagedPane).toMatch(/You\s*#7/)
+      expect(pagedPane).toMatch(/hotel/)
+      expect(pagedPane).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      // ...n takes the first hit BELOW the window. Both hits sit above it (the
+      // window opens past #9's line), so n wraps to the session's first hit —
+      // and since the window's top line is now the reader's position, Alt+C
+      // copies exactly the message that line belongs to: #2's
+      // '[AI]\nneedle one' = 15 chars...
       harness.send('n')
       await waitFor()
       await waitForMatch(() => harness.all(), /Hit\s*1\/2/)
       harness.send('\u001bc')
       await waitFor()
       expect(harness.all()).toMatch(/Copied\s*15\s*chars/)
+      // ...and a second n finds #9's line below the window's end. The landing
+      // is clamped flush with the tail (hitLanding aims at #9; scrollWindow
+      // refuses to scroll past the last row), so #9's keyword is on screen —
+      // 'needle two' spelled out as PANE content, where the list's own row
+      // carries the '#9 You: ' prefix.
+      harness.send('n')
+      await waitFor()
+      await waitForMatch(() => harness.all(), /Hit\s*2\/2/)
+      harness.resize(121, 20)
+      await waitFor()
+      const hitPane = paneText(harness.latest())
+      expect(hitPane).toMatch(/You\s*#9\s*◆/)
+      expect(hitPane).toMatch(/needle\s*two/)
       // ← hands focus back; the reader pane STAYS VISIBLE and the list
       // hint vocabulary returns...
       harness.send('\u001b[D')
@@ -506,8 +573,11 @@ describe.skipIf(!generation10)('split pointer into the list from reader focus', 
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
+      // The list column alone carries the selection marker (the reader has
+      // none to add) and the pane's window followed it onto #9's message.
+      expect(harness.latest()).toMatch(/❯\s*#9\s*You/)
       expect(harness.latest()).not.toMatch(/❯\s*Preview\s*wiring/)
+      expect(paneText(harness.latest())).toMatch(/You\s*#9\s*◆/)
       // ...hover follows the pointer to that same row (the list rows span the
       // list column, so row 8 = the #9 hit row) — the reader re-anchors to
       // the new target, and the marker leaves #2 (REVIEW R-056: hover/click
