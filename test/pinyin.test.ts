@@ -77,13 +77,13 @@ describe('searchSessions pinyin matching', () => {
   it('matches initials contiguously across word boundaries', () => {
     // Initials are one letter per character, with no separator between
     // words: a multi-character Chinese phrase is searched by the initials a
-    // person would type in an IME (南瑞继保 → nrjb). An earlier revision
+    // person would type in an IME (北京大学 → bjdx). An earlier revision
     // split the initials folds at ICU word boundaries, which made every
-    // phrase ICU segments into single-character words unmatchable — the
-    // daily case, since proper nouns (南瑞继保) and compounds (无隐藏文字)
+    // phrase ICU segments into short words unmatchable — the daily case,
+    // since proper nouns (北京大学 → 北京|大学) and compounds (无隐藏文字)
     // segment that way.
-    expect(flat(searchSessions([make('南瑞继保技术支持面试自我介绍')], 'nrjb', P))).toEqual([
-      ['南瑞继保技术支持面试自我介绍', '[[0,4]]'],
+    expect(flat(searchSessions([make('北京大学计算机专业介绍')], 'bjdx', P))).toEqual([
+      ['北京大学计算机专业介绍', '[[0,4]]'],
     ])
     expect(flat(searchSessions([make('无隐藏文字')], 'wycwz', P))).toEqual([['无隐藏文字', '[[0,5]]']])
     expect(flat(searchSessions([make('山东大学')], 'sddx', P))).toEqual([['山东大学', '[[0,4]]']])

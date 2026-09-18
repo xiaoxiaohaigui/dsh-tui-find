@@ -22,7 +22,7 @@
  * the literal substring over the original text. Full-reading matches must
  * start at a syllable boundary, preventing a syllable tail from joining the
  * next character's initial; the initials chains instead run contiguously
- * across the whole text (one letter per character, `nrjb` → 南瑞继保),
+ * across the whole text (one letter per character, `bjdx` → 北京大学),
  * which is what an IME-style initials query means. The pinyin variant of a
  * document is a fold just like the case fold (one CJK code point expands
  * to its readings; the same prefix tables map a hit back onto the original
@@ -264,7 +264,7 @@ function foldOf(owner: object, text: string): FoldedText {
  * fold — `allInitials` keeps one letter per reading (`cq` finds 重庆),
  * `firstInitials` one letter per character (`cs` finds 长沙). The initials
  * chains carry no separators between characters: an initials query types
- * one letter per character contiguously (`nrjb` → 南瑞继保), which is why
+ * one letter per character contiguously (`bjdx` → 北京大学), which is why
  * they are scanned directly rather than through the syllable-start rule the
  * reading chains use. Non-table
  * characters fold to their lowercased self under insensitive matching — so
