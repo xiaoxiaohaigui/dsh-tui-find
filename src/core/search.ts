@@ -383,6 +383,18 @@ function readingsOf(char: string): PinyinReadings | undefined {
 
 const pinyinFoldCache = new WeakMap<object, PinyinFoldEntry>()
 
+/** Whether `text` holds a character the pinyin table covers. A cheap scan
+ *  (a CJK code point is what the table holds, so anything below the first
+ *  table range is skipped without a lookup) that lets the prewarm skip its
+ *  pinyin half on the common ASCII-only message — the search path makes the
+ *  same distinction for free, by looking the reading up while it folds. */
+function hasTableChar(text: string): boolean {
+  for (let at = 0; at < text.length; at++) {
+    if (text.charCodeAt(at) >= 0x2e80) return true
+  }
+  return false
+}
+
 /** One owner's cached pinyin folds. `folds` is undefined when the text holds
  *  no table character at all and nothing was built — the length/sensitivity
  *  ride the entry so that negative result validates exactly like a positive
@@ -393,7 +405,20 @@ interface PinyinFoldEntry {
   readonly caseSensitive: boolean
 }
 
-function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): PinyinFolds | undefined {
+/**
+ * The pinyin folds a document matches through, built once and cached. The
+ * `buildPinyin` knob lets the background warm-up skip the pinyin half for a
+ * configuration that has it off: building folds no search will ever read is
+ * pure waste, and skipping it also keeps the cache free of entries whose
+ * `caseSensitive` shape would never be probed.
+ */
+function pinyinFoldsOf(
+  owner: object,
+  text: string,
+  caseSensitive: boolean,
+  buildPinyin: boolean,
+): PinyinFolds | undefined {
+  if (!buildPinyin) return undefined
   const cached = pinyinFoldCache.get(owner)
   if (
     cached !== undefined &&
@@ -913,7 +938,7 @@ export function searchSessions(
         const pinyinNeedle = pinyinOn ? pinyinNeedleOf(term, true) : undefined
         let extended = termRanges
         if (pinyinNeedle !== undefined) {
-          const folds = pinyinFoldsOf(owner, text, true)
+          const folds = pinyinFoldsOf(owner, text, true, true)
           if (folds !== undefined) extended = [...termRanges, ...pinyinRanges(folds, pinyinNeedle)]
         }
         if (extended.length === 0) return []
@@ -931,7 +956,7 @@ export function searchSessions(
         if (pinyinNeedle === undefined) {
           needleRanges = rangesInFold(caseFold(), needle)
         } else {
-          const folds = pinyinFoldsOf(owner, text, false)
+          const folds = pinyinFoldsOf(owner, text, false, pinyinOn)
           needleRanges =
             folds === undefined ? rangesInFold(caseFold(), needle) : pinyinRanges(folds, pinyinNeedle)
         }
@@ -999,4 +1024,136 @@ export function searchSessions(
     }
   }
   return hits
+}
+
+// ── background fold prewarm (staged plan phase 1b) ───────────────────────
+
+/** How the prewarm paces itself. */
+export interface PrewarmOptions {
+  /**
+   * Build the pinyin chains too, not just the case folds. The caller passes
+   * the scene's own `pinyin` config: with pinyin off, the chains are dead
+   * weight (see pinyinFoldsOf).
+   */
+  readonly pinyin?: boolean
+  /** Stop after this many documents (title + messages). */
+  readonly maxMessages?: number
+  /** Stop after this much wall clock. */
+  readonly maxMs?: number
+  /** Cancellation — checked at every yield. */
+  readonly signal?: AbortSignal
+  /**
+   * How many documents to fold between event-loop yields. The default keeps
+   * one synchronous chunk near `PREWARM_YIELD_EVERY` × the per-document cost
+   * (tens of microseconds on a session-sized message), i.e. a few
+   * milliseconds — well inside a frame.
+   */
+  readonly yieldEvery?: number
+  /** The yield itself, defaulting to `setImmediate` (the scan path's own
+   *  discipline). Injectable so a test can run the pass without timers. */
+  readonly yield?: () => Promise<void>
+  /** Progress reporting, called once per document the pass resolves. */
+  readonly onProgress?: (progress: { resolved: number; total: number; warmed: number }) => void
+}
+
+/** Documents folded between yields when the caller does not say. */
+export const PREWARM_YIELD_EVERY = 32
+
+/** Default document cap — a budget, not a guarantee: the warm-up is an
+ *  optimization, and a library larger than this simply warms up partway. */
+export const PREWARM_MAX_MESSAGES = 20_000
+
+/** Default wall-clock cap, for the reason above: roughly twice the measured
+ *  build of a 4.8M-character index, and a hard stop for a pathological one. */
+export const PREWARM_MAX_MS = 2_000
+
+const defaultYield = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+/**
+ * Build and cache the fold of every document in `sessions`, in the background
+ * — the phase-1b fix for the one remaining cost on the user's FIRST keystroke.
+ *
+ * Why it is needed at all: `warmup.tsx`'s sweep pays the per-file decode, and
+ * the decode never builds folds (search.ts builds them lazily, on the first
+ * query that needs them), so the first letter key still bought the whole fold
+ * build — hundreds of milliseconds on a multi-million-character index, on the
+ * frame the user is typing into.
+ *
+ * The pass is a budget, never a dependency: it yields to the event loop every
+ * `yieldEvery` documents so it can never block a render tick, stops on the
+ * abort signal, on `maxMessages` or on `maxMs`, and the caches it fills are
+ * the very ones the search reads (per-object WeakMaps), so searchSessions
+ * needs no change at all — whatever was warmed is simply not rebuilt. A
+ * partial warm is a partial win, and a skipped warm is today's behavior.
+ *
+ * The object IDs matter: the scanner hands out stable `ScannedSession` and
+ * message objects and KEEPS them (its cache is the index), so folding against
+ * these objects populates the same cache keys the scene's sweep will search
+ * with. Warming a copy would be thrown away.
+ *
+ * @param sessions - The scanned index, in any order.
+ * @param options - See {@link PrewarmOptions}.
+ * @returns How many documents were folded and how many the budget left.
+ */
+export async function prewarmFolds(
+  sessions: readonly ScannedSession[],
+  options: PrewarmOptions = {},
+): Promise<{ warmed: number; total: number; timedOut: boolean }> {
+  const buildPinyin = options.pinyin === true
+  const maxMessages = options.maxMessages ?? Number.POSITIVE_INFINITY
+  const maxMs = options.maxMs ?? Number.POSITIVE_INFINITY
+  const yieldEvery = Math.max(1, options.yieldEvery ?? PREWARM_YIELD_EVERY)
+  const yieldTo = options.yield ?? defaultYield
+  const signal = options.signal
+
+  let total = 0
+  for (const session of sessions) {
+    total += session.messages.length
+    if (session.title !== undefined) total += 1
+  }
+
+  const started = Date.now()
+  let resolved = 0
+  let warmed = 0
+  let timedOut = false
+  let sinceYield = 0
+
+  /** Fold one document on its own cache key; false once the budget is spent
+   *  or the pass was cancelled, which unwinds both loops. */
+  const warmOne = (owner: object, text: string): boolean => {
+    if (resolved >= maxMessages) {
+      timedOut = true
+      return false
+    }
+    foldOf(owner, text)
+    // No table character means no pinyin chain to build (the search skips the
+    // probe entirely on such a document), so the half is skipped here too.
+    if (buildPinyin && hasTableChar(text)) pinyinFoldsOf(owner, text, false, true)
+    resolved += 1
+    warmed += 1
+    return true
+  }
+
+  outer: for (const session of sessions) {
+    if (signal?.aborted) break
+    // The title is a document like any message (searchSessions runs the AND
+    // against it), so it warms on the session's own key.
+    if (session.title !== undefined && !warmOne(session, session.title)) break
+    for (const message of session.messages) {
+      if (!warmOne(message, message.text)) break outer
+      sinceYield += 1
+      if (sinceYield >= yieldEvery) {
+        sinceYield = 0
+        options.onProgress?.({ resolved, total, warmed })
+        await yieldTo()
+        if (signal?.aborted) break outer
+        if (Date.now() - started >= maxMs) {
+          timedOut = true
+          break outer
+        }
+      }
+    }
+  }
+  options.onProgress?.({ resolved, total, warmed })
+  return { warmed, total, timedOut }
 }

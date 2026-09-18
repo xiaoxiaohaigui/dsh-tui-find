@@ -95,8 +95,9 @@ if (!['all', 'search', 'preview'].includes(scenarioName)) {
 
 let searchSessions
 let buildPreviewLines
+let prewarmFolds
 try {
-  ;({ searchSessions } = await import('../dist/core/search.js'))
+  ;({ searchSessions, prewarmFolds } = await import('../dist/core/search.js'))
   if (scenarioName !== 'search') ({ buildPreviewLines } = await import('../dist/preview.js'))
 } catch (error) {
   console.error(
@@ -189,7 +190,13 @@ function chunkOf(list, chunk, next) {
 /**
  * One message body: alternating ASCII/CJK ORIGINAL sentences joined by
  * newlines, trimmed to `chars` UTF-16 units. Deterministic (a seeded LCG per
- * message) so two runs of the same command measure the same text.
+ * message plus the index's own `seedOffset`) so two runs of the same command
+ * measure the same text.
+ *
+ * `seedOffset` is what keeps separate INDEXES textually distinct. Two
+ * `makeIndex` calls that produced identical strings would let V8 dedupe them
+ * into one object, and the per-object fold cache would then be warm on the
+ * "fresh" index — a cold scenario that silently measures nothing.
  */
 function makeBody(seed, targetChars) {
   let state = (seed * 2654435761 + 0x9e3779b9) >>> 0
@@ -206,7 +213,7 @@ function makeBody(seed, targetChars) {
   return out.slice(0, targetChars)
 }
 
-function makeIndex(sessionCount, messageCount, bodyChars) {
+function makeIndex(sessionCount, messageCount, bodyChars, seedOffset = 0) {
   const out = []
   for (let session = 0; session < sessionCount; session++) {
     const messageList = []
@@ -214,7 +221,7 @@ function makeIndex(sessionCount, messageCount, bodyChars) {
       messageList.push({
         seq: message + 1,
         role: message % 3 === 0 ? 'user' : message % 3 === 1 ? 'assistant' : 'tool',
-        text: makeBody(session * messageCount + message + 1, bodyChars),
+        text: makeBody(seedOffset + session * messageCount + message + 1, bodyChars),
         at: undefined,
       })
     }
@@ -242,7 +249,6 @@ const composition = {
   totalChars: 0,
   asciiChars: 0,
   cjkChars: 0,
-  tableCjkChars: 0,
   nonBmpChars: 0,
   newlines: 0,
 }
@@ -340,6 +346,53 @@ function queryOnce(list, query, options) {
   return { ...measurement, hits, total }
 }
 
+/**
+ * The FIRST query the scene runs over one index, as the median of `repeats`
+ * INDEPENDENT cold samples: every repetition builds a fresh index and starts
+ * from empty fold caches (they are per-object WeakMaps, so reusing one index
+ * would warm every later repetition and the "cold" label would be a lie).
+ * This is the scenario phase 1 is about — the user's first letter key, which
+ * pays the whole fold build today.
+ */
+function coldOnce(query, options) {
+  const samples = []
+  let shape = { hits: 0, total: 0 }
+  for (let at = 0; at < repeats; at++) {
+    const fresh = makeIndex(sessions, messages, chars, at * 100_000)
+    const started = process.hrtime.bigint()
+    const result = searchSessions(fresh, query, options)
+    samples.push(Number(process.hrtime.bigint() - started) / 1e6)
+    shape = { hits: result.length, total: result.reduce((sum, entry) => sum + entry.total, 0) }
+  }
+  samples.sort((left, right) => left - right)
+  return { ms: samples[(samples.length - 1) >> 1], min: samples[0], max: samples[samples.length - 1], ...shape }
+}
+
+/** The prewarm budget the probe grants the background pass: generous on
+ *  purpose, because this scenario asks "what does the first keystroke cost
+ *  once the folds ARE built", not "did the production budget finish".
+ *  warmup.tsx picks its own, smaller budget. */
+const PREWARM_MAX_MESSAGES = 1_000_000
+const PREWARM_MAX_MS = 60_000
+
+/** The same first query after a background prewarm — what a scene open sees
+ *  once phase 1b's sweep has run. Null when the build has no prewarm yet. */
+async function coldPrewarmedOnce(query, options) {
+  if (prewarmFolds === undefined) return null
+  const samples = []
+  let shape = { hits: 0, total: 0 }
+  for (let at = 0; at < repeats; at++) {
+    const fresh = makeIndex(sessions, messages, chars, at * 100_000 + 50_000)
+    await prewarmFolds(fresh, { maxMessages: PREWARM_MAX_MESSAGES, maxMs: PREWARM_MAX_MS })
+    const started = process.hrtime.bigint()
+    const result = searchSessions(fresh, query, options)
+    samples.push(Number(process.hrtime.bigint() - started) / 1e6)
+    shape = { hits: result.length, total: result.reduce((sum, entry) => sum + entry.total, 0) }
+  }
+  samples.sort((left, right) => left - right)
+  return { ms: samples[(samples.length - 1) >> 1], min: samples[0], max: samples[samples.length - 1], ...shape }
+}
+
 const scenarios = []
 let memoryReport = null
 let previewReport = null
@@ -357,25 +410,21 @@ if (scenarioName !== 'preview') {
   gc()
   const memBefore = memory()
 
-  // ── cold group: a fresh index per repetition, empty fold caches ─────────
-  // Repetitions rebuild the index (cheap string work) but the measurement
-  // only times the query, so each sample pays a genuine first fold build.
+  // ── cold group: a fresh index per sample, empty fold caches ─────────────
   for (const [name, query, options, note] of [
     ['first letter (cold folds)', letterNeedle, baseOn, 'first query on a fresh index; pinyin on'],
     ['first letter (cold, pinyin off)', letterNeedle, baseOff, 'case fold build alone'],
     ['first CJK (cold, case fold)', cjkNeedle, baseOn, 'never builds the pinyin chains'],
   ]) {
-    const measurement = timed(() => {
-      const fresh = makeIndex(sessions, messages, chars)
-      const result = searchSessions(fresh, query, options)
-      return result
-    })
-    const last = measurement.result
+    const measurement = coldOnce(query, options)
+    scenarios.push(row(name, note, measurement, measurement))
+  }
+
+  // ── the same first query, folds prewarmed (phase 1b) ────────────────────
+  const prewarmedLetter = await coldPrewarmedOnce(letterNeedle, baseOn)
+  if (prewarmedLetter !== null) {
     scenarios.push(
-      row(name, note, measurement, {
-        hits: last.length,
-        total: last.reduce((sum, entry) => sum + entry.total, 0),
-      }),
+      row('first letter (prewarmed folds)', 'same query after a background prewarm', prewarmedLetter, prewarmedLetter),
     )
   }
 

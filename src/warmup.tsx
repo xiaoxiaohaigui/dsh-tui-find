@@ -34,6 +34,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
 import type { SessionScanner } from './core/scan.js'
+import { prewarmFolds, PREWARM_MAX_MESSAGES, PREWARM_MAX_MS } from './core/search.js'
 import { registerSeamWithRetry } from './seam.js'
 
 /** Quiet delay between apply and the warm-up sweep: long enough that the
@@ -222,7 +223,15 @@ export class WarmupDriver {
 
   /** Start-time gates: the config toggle is re-read here (a mid-session
    *  settings edit applies to the not-yet-started sweep), and an already
-   *  open scene means the warm-up's purpose is moot. */
+   *  open scene means the warm-up's purpose is moot.
+   *
+   *  The sweep has two halves now: `scanner.scan` pays the per-file decode,
+   *  then {@link prewarmFolds} builds the fold caches the first keystroke
+   *  would otherwise buy. The second half is what lets a letter query be
+   *  served without a cold build on its first key press; both halves share
+   *  the one controller, so the view's cancel and an opening scene stop the
+   *  prewarm at its next yield.
+   */
   private begin(): void {
     this.started = true
     if (!this.options.config().warmup) return
@@ -241,14 +250,27 @@ export class WarmupDriver {
           // An aborted file can still deliver one trailing progress tick
           // (scan.ts fires onProgress for the file it was aborted inside);
           // never resurrect the view after a cancel.
-          if (controller.signal.aborted) return
-          if (this.options.isSceneOpen()) {
-            controller.abort()
-            this.settle(controller)
-            return
-          }
+          if (this.superseded(controller)) return
           this.store.update('running', progress.resolved, progress.total)
         },
+      })
+      .then(sessions => {
+        // The scan already answered for an aborted or superseded run; the
+        // prewarm must not start one that nobody is waiting for.
+        if (this.superseded(controller)) return
+        // A partial warm is the normal outcome of the budget: the view
+        // reports what was warmed, and the search simply builds the rest on
+        // demand (see prewarmFolds).
+        return prewarmFolds(sessions, {
+          pinyin: config.pinyin,
+          maxMessages: PREWARM_MAX_MESSAGES,
+          maxMs: PREWARM_MAX_MS,
+          signal: controller.signal,
+          onProgress: progress => {
+            if (this.superseded(controller)) return
+            this.store.update('running', progress.warmed, progress.total)
+          },
+        })
       })
       .then(() => {
         this.settle(controller)
@@ -261,6 +283,18 @@ export class WarmupDriver {
           `dsh-tui-find: warm-up sweep failed (${error instanceof Error ? error.message : String(error)}); /find still scans on open`,
         )
       })
+  }
+
+  /** Whether this sweep's work is already moot: the user cancelled it, or
+   *  /find opened and its own sweep supersedes this one. Settles the driver
+   *  on the scene-open path (the scan's own onProgress tick does, but the
+   *  prewarm's does not fire until its first yield). */
+  private superseded(controller: AbortController): boolean {
+    if (controller.signal.aborted) return true
+    if (!this.options.isSceneOpen()) return false
+    controller.abort()
+    this.settle(controller)
+    return true
   }
 
   private settle(controller: AbortController): void {

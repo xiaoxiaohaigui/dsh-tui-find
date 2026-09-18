@@ -15,6 +15,7 @@ import { resolveConfig, type Config } from '../src/config.js'
 import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/scan.js'
 import { setLangOverride } from '../src/i18n.js'
 import { REGISTER_RETRY_DELAY_MS, REGISTER_RETRY_MAX_ATTEMPTS } from '../src/seam.js'
+import { PREWARM_YIELD_EVERY } from '../src/core/search.js'
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
 import { stripAnsi } from './harness.js'
 import {
@@ -39,7 +40,7 @@ process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 function stubScanner() {
   interface ScanCall {
     options: ScanOptions
-    resolve(): void
+    resolve(sessions?: ScannedSession[]): void
     reject(error: unknown): void
   }
   const calls: ScanCall[] = []
@@ -47,13 +48,38 @@ function stubScanner() {
     calls,
     scan(options: ScanOptions): Promise<ScannedSession[]> {
       return new Promise((resolve, reject) => {
-        calls.push({ options, resolve: () => resolve([]), reject })
+        calls.push({ options, resolve: (sessions = []) => resolve(sessions), reject })
       })
     },
   }
 }
 
 type StubScanner = ReturnType<typeof stubScanner>
+
+/** A session with `messages` messages of `chars` characters each — the work
+ *  the prewarm half of the sweep has to get through. */
+function stubSession(id: number, messages: number, chars: number): ScannedSession {
+  const list = []
+  for (let at = 0; at < messages; at++) {
+    let text = ''
+    while (text.length < chars) text += `${text.length === 0 ? '' : ' '}auth 张三 retry 搜索`
+    list.push({ seq: at + 1, role: 'user' as const, text: text.slice(0, chars), at: undefined })
+  }
+  return {
+    id: `s${id}`,
+    path: `P:\\stub\\s${id}\\session.jsonl`,
+    bytes: messages * chars,
+    modifiedAt: 1_700_000_000_000 - id,
+    header: { cwd: 'P:\\stub', createdAt: undefined },
+    messages: list,
+  }
+}
+
+/** Let the prewarm's real `setImmediate` yields drain (fake timers do not
+ *  patch setImmediate, so awaiting a macrotask is what advances it). */
+async function flushPrewarm(): Promise<void> {
+  for (let at = 0; at < 200; at++) await new Promise(resolve => setImmediate(resolve))
+}
 
 /** Minimal activation-context stand-in: warn capture, effect collection and
  *  a string-keyed service map for the soft probes. */
@@ -280,6 +306,69 @@ describe('WarmupDriver', () => {
     expect(warns).toHaveLength(1)
     expect(warns[0]).toContain('warm-up sweep failed')
     expect(warns[0]).toContain('boom')
+  })
+
+  // The phase-1b half of the sweep: once the decode is done, the same run
+  // builds the fold caches the first keystroke would otherwise buy. The
+  // driver tests below pin the wiring (it runs, it reports, the three
+  // cancellation layers stop it); prewarm.test.ts pins the pass's own
+  // budgets and its effect on a cold query.
+  //
+  // These cases drop the fake clock after firing the delayed start: the
+  // prewarm yields with a real `setImmediate`, and a fake clock would leave
+  // those yields pending behind the test's own timeout.
+  it('prewarms the folds after the sweep and reports the documents it folded', async () => {
+    const { driver, store, scanner } = makeDriver()
+    const phases: string[] = []
+    store.subscribe(() => {
+      phases.push(store.getSnapshot().phase)
+    })
+    driver.arm()
+    await vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS)
+    vi.useRealTimers()
+    scanner.calls[0]!.resolve([stubSession(1, 2, 200), stubSession(2, 2, 200)])
+    await flushPrewarm()
+    const snapshot = store.getSnapshot()
+    expect(snapshot.phase).toBe('idle')
+    expect(phases).toContain('running')
+    expect(scanner.calls[0]!.options.signal!.aborted).toBe(false)
+  })
+
+  it('stops the prewarm when the sweep is cancelled, without resurrecting the view', async () => {
+    const { driver, store, scanner } = makeDriver()
+    const snapshots: WarmupSnapshot[] = []
+    store.subscribe(() => {
+      snapshots.push(store.getSnapshot())
+    })
+    driver.arm()
+    await vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS)
+    vi.useRealTimers()
+    // Enough documents that the pass must yield before finishing.
+    const messages = PREWARM_YIELD_EVERY * 4
+    scanner.calls[0]!.resolve([stubSession(1, messages, 2_000)])
+    // One macrotask turn lands the scan's `.then` and lets the prewarm fold
+    // its first chunk and yield — i.e. the pass is in flight.
+    await new Promise(resolve => setImmediate(resolve))
+    driver.cancel()
+    expect(scanner.calls[0]!.options.signal!.aborted).toBe(true)
+    await flushPrewarm()
+    expect(store.getSnapshot()).toEqual({ phase: 'idle', resolved: 0, total: undefined })
+    // The pass really stopped early: it never reported folding every message.
+    expect(snapshots.every(entry => entry.total !== messages || entry.resolved < messages)).toBe(true)
+  })
+
+  it('stops the prewarm when /find opens mid-pass', async () => {
+    const { driver, store, scanner, setSceneOpen } = makeDriver()
+    driver.arm()
+    await vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS)
+    vi.useRealTimers()
+    scanner.calls[0]!.resolve([stubSession(1, PREWARM_YIELD_EVERY * 4, 2_000)])
+    await new Promise(resolve => setImmediate(resolve))
+    setSceneOpen(true)
+    // The scene check runs on the next progress tick / yield boundary.
+    await flushPrewarm()
+    expect(scanner.calls[0]!.options.signal!.aborted).toBe(true)
+    expect(store.getSnapshot().phase).toBe('idle')
   })
 })
 
