@@ -27,12 +27,42 @@ import type { ScannedSession } from '../src/core/scan.js'
 import { foldTextForTest, pinyinFoldsForTest, searchSessions } from '../src/core/search.js'
 import { refBuildFold, refBuildPinyinFolds, type RefFoldedText } from './fold-reference.js'
 
-/** Every table of one fold compared, with the label naming the failing case. */
-function expectFoldEqual(label: string, actual: RefFoldedText, expected: RefFoldedText): void {
+/** Every table of one fold compared, with the label naming the failing case.
+ *
+ * The comparison is CONTENT-based on purpose. Whether the live build was
+ * allowed to omit a table (phase 2a's identity shortcut) is not decidable
+ * from the reference's tables — the old build kept `cumUnits` for every fold,
+ * identity or not — so this helper does not try: it compares `cumUnits` and
+ * `cpStart` when the live fold carries them (where they must equal the
+ * reference's) and stops at the folded string when it does not. What the
+ * omitted tables have to be is not "shape X" but "genuinely redundant", and
+ * that claim is proven two other ways: `test/search-baseline.test.ts` runs
+ * the live search against the frozen pre-perf revision, and the table
+ * character sweep below exercises all 3500 entries.
+ */
+function expectFoldEqual(
+  label: string,
+  actual: RefFoldedText,
+  expected: RefFoldedText,
+  cpStart: Uint32Array | undefined,
+): void {
   expect(actual.folded, `${label}: folded`).toBe(expected.folded)
-  expect(Array.from(actual.cumUnits), `${label}: cumUnits`).toEqual(Array.from(expected.cumUnits))
-  expect(Array.from(actual.cpStart), `${label}: cpStart`).toEqual(Array.from(expected.cpStart))
   expect(actual.sourceLength, `${label}: sourceLength`).toBe(expected.sourceLength)
+  if (actual.cumUnits !== undefined) {
+    expect(Array.from(actual.cumUnits), `${label}: cumUnits`).toEqual(Array.from(expected.cumUnits))
+    if (cpStart !== undefined) {
+      // The pinyin chains share one table, which lives on the PinyinFolds
+      // object; the case fold carries its own.
+      expect(Array.from(cpStart), `${label}: cpStart`).toEqual(
+        Array.from(expected.cpStart.slice(0, cpStart.length)),
+      )
+    } else {
+      expect(actual.cpStart, `${label}: cpStart present`).toBeDefined()
+      expect(Array.from(actual.cpStart!), `${label}: cpStart`).toEqual(Array.from(expected.cpStart))
+    }
+  } else {
+    expect(actual.cpStart, `${label}: omitted cpStart goes with omitted cumUnits`).toBeUndefined()
+  }
   expect(actual.segmentStarts === undefined, `${label}: segmentStarts presence`).toBe(
     expected.segmentStarts === undefined,
   )
@@ -53,6 +83,54 @@ function expectFoldEqual(label: string, actual: RefFoldedText, expected: RefFold
     Array.from(expected.segmentStarts.slice(reachable)).every(entry => entry === 0),
     `${label}: segmentStarts tail is inert`,
   ).toBe(true)
+}
+
+/**
+ * Phase 2b's invariant: two chains share ONE fold object exactly when they
+ * spell the same string AND carry the same syllable bitmap, and never
+ * otherwise — a shared chain that differed would silently drop matches, and a
+ * duplicated one would just waste memory. Phase 2a's invariant rides along:
+ * an identity chain carries no prefix tables, and a non-identity one carries
+ * them (the pinyin chains through the shared `PinyinFolds.cpStart`).
+ */
+function expectChainSharing(label: string, folds: NonNullable<ReturnType<typeof pinyinFoldsForTest>>): void {
+  const pairs = [
+    ['allReadings', 'firstReading', folds.allReadings, folds.firstReading],
+    ['allInitials', 'firstInitials', folds.allInitials, folds.firstInitials],
+  ] as const
+  for (const [leftName, rightName, left, right] of pairs) {
+    const sameFolded = left.folded === right.folded
+    // The two chains' bitmaps are compared when both carry one; a chain
+    // without a bitmap (the initials chains are scanned contiguously) has no
+    // boundary rule to disagree about.
+    const sameBits =
+      left.segmentStarts === undefined
+        ? right.segmentStarts === undefined
+        : right.segmentStarts !== undefined &&
+          left.segmentStarts.length === right.segmentStarts.length &&
+          left.segmentStarts.every((bit, at) => bit === right.segmentStarts![at])
+    const shareable = sameFolded && sameBits
+    expect(left === right, `${label}: ${leftName}/${rightName} sharing`).toBe(shareable)
+  }
+  for (const [name, fold] of [
+    ['allReadings', folds.allReadings],
+    ['firstReading', folds.firstReading],
+    ['allInitials', folds.allInitials],
+    ['firstInitials', folds.firstInitials],
+  ] as const) {
+    const identity = fold.cumUnits === undefined
+    if (identity) {
+      expect(fold.cpStart, `${label}: ${name} identity carries no cpStart`).toBeUndefined()
+      expect(fold.sourceLength, `${label}: ${name} identity length`).toBe(fold.folded.length)
+    } else {
+      expect(folds.cpStart, `${label}: ${name} shares the pinyin cpStart`).toBeDefined()
+    }
+  }
+  // The shared table is allocated exactly when some chain needs it.
+  const anyNonIdentity = [folds.allReadings, folds.firstReading, folds.allInitials, folds.firstInitials].some(
+    fold => fold.cumUnits !== undefined,
+  )
+  expect(folds.cpStart === undefined, `${label}: cpStart presence`).toBe(!anyNonIdentity)
 }
 
 const FIXTURES: readonly [string, string][] = [
@@ -137,10 +215,10 @@ function randomCorpus(count: number, seed: number): string[] {
   return out
 }
 
-describe('fold build equivalence (phase 1a)', () => {
+describe('fold build equivalence (phase 1a-2b)', () => {
   it('builds the identical case fold for every fixture', () => {
     for (const [label, text] of FIXTURES) {
-      expectFoldEqual(label, foldTextForTest(text), refBuildFold(text))
+      expectFoldEqual(label, foldTextForTest(text), refBuildFold(text), undefined)
     }
   })
 
@@ -152,16 +230,11 @@ describe('fold build equivalence (phase 1a)', () => {
         const name = `${label} (caseSensitive ${caseSensitive})`
         expect(actual === undefined, `${name}: build verdict`).toBe(expected === undefined)
         if (actual === undefined || expected === undefined) continue
-        expectFoldEqual(`${name} allReadings`, actual.allReadings, expected.allReadings)
-        expectFoldEqual(`${name} firstReading`, actual.firstReading, expected.firstReading)
-        expectFoldEqual(`${name} allInitials`, actual.allInitials, expected.allInitials)
-        expectFoldEqual(`${name} firstInitials`, actual.firstInitials, expected.firstInitials)
-        // The four chains share one cpStart table by construction; assert it
-        // explicitly so a future "optimization" that gives each its own table
-        // cannot pass while wasting 4x the memory.
-        expect(actual.allReadings.cpStart, `${name}: shared cpStart`).toBe(actual.firstReading.cpStart)
-        expect(actual.allReadings.cpStart, `${name}: shared cpStart`).toBe(actual.allInitials.cpStart)
-        expect(actual.allReadings.cpStart, `${name}: shared cpStart`).toBe(actual.firstInitials.cpStart)
+        expectFoldEqual(`${name} allReadings`, actual.allReadings, expected.allReadings, actual.cpStart)
+        expectFoldEqual(`${name} firstReading`, actual.firstReading, expected.firstReading, actual.cpStart)
+        expectFoldEqual(`${name} allInitials`, actual.allInitials, expected.allInitials, actual.cpStart)
+        expectFoldEqual(`${name} firstInitials`, actual.firstInitials, expected.firstInitials, actual.cpStart)
+        expectChainSharing(name, actual)
       }
     }
   })
@@ -169,7 +242,7 @@ describe('fold build equivalence (phase 1a)', () => {
   it('builds identical folds across a seeded random corpus', () => {
     for (const text of randomCorpus(300, 0x5eed)) {
       const label = `random ${JSON.stringify(text)}`
-      expectFoldEqual(label, foldTextForTest(text), refBuildFold(text))
+      expectFoldEqual(label, foldTextForTest(text), refBuildFold(text), undefined)
       for (const caseSensitive of [false, true]) {
         const actual = pinyinFoldsForTest(text, caseSensitive)
         const expected = refBuildPinyinFolds(text, caseSensitive)
@@ -177,8 +250,19 @@ describe('fold build equivalence (phase 1a)', () => {
           expected === undefined,
         )
         if (actual === undefined || expected === undefined) continue
-        expectFoldEqual(`${label} (sensitive ${caseSensitive}) all`, actual.allReadings, expected.allReadings)
-        expectFoldEqual(`${label} (sensitive ${caseSensitive}) first`, actual.firstReading, expected.firstReading)
+        expectFoldEqual(
+          `${label} (sensitive ${caseSensitive}) all`,
+          actual.allReadings,
+          expected.allReadings,
+          actual.cpStart,
+        )
+        expectFoldEqual(
+          `${label} (sensitive ${caseSensitive}) first`,
+          actual.firstReading,
+          expected.firstReading,
+          actual.cpStart,
+        )
+        expectChainSharing(`${label} (sensitive ${caseSensitive})`, actual)
       }
     }
   })
@@ -193,10 +277,16 @@ describe('fold build equivalence (phase 1a)', () => {
         const expected = refBuildPinyinFolds(text, false)
         expect(actual === undefined, `${JSON.stringify(text)}: verdict`).toBe(expected === undefined)
         if (actual === undefined || expected === undefined) continue
-        expectFoldEqual(`${JSON.stringify(text)} all`, actual.allReadings, expected.allReadings)
-        expectFoldEqual(`${JSON.stringify(text)} first`, actual.firstReading, expected.firstReading)
-        expectFoldEqual(`${JSON.stringify(text)} allInit`, actual.allInitials, expected.allInitials)
-        expectFoldEqual(`${JSON.stringify(text)} firstInit`, actual.firstInitials, expected.firstInitials)
+        expectFoldEqual(`${JSON.stringify(text)} all`, actual.allReadings, expected.allReadings, actual.cpStart)
+        expectFoldEqual(`${JSON.stringify(text)} first`, actual.firstReading, expected.firstReading, actual.cpStart)
+        expectFoldEqual(`${JSON.stringify(text)} allInit`, actual.allInitials, expected.allInitials, actual.cpStart)
+        expectFoldEqual(
+          `${JSON.stringify(text)} firstInit`,
+          actual.firstInitials,
+          expected.firstInitials,
+          actual.cpStart,
+        )
+        expectChainSharing(JSON.stringify(text), actual)
       }
     }
   })
@@ -229,6 +319,18 @@ describe('fold build equivalence (phase 1a)', () => {
           // highlight range must come out identically, which is end-to-end
           // proof that the rewritten build feeds the scan the same tables.
           const expected = referenceHits(pool, query, { caseSensitive, pinyin })
+          if (JSON.stringify(hits) !== JSON.stringify(expected)) {
+            for (let at = 0; at < Math.max(hits.length, expected.length); at++) {
+              const left = hits[at]?.hits ?? []
+              const right = expected[at]?.hits ?? []
+              if (JSON.stringify(left) !== JSON.stringify(right)) {
+                console.log('MISMATCH', name, 'text', JSON.stringify(left[0]?.text ?? right[0]?.text))
+                console.log('  live', JSON.stringify(left.map(entry => entry.ranges)))
+                console.log('  ref ', JSON.stringify(right.map(entry => entry.ranges)))
+                break
+              }
+            }
+          }
           expect(JSON.stringify(hits), name).toBe(JSON.stringify(expected))
         }
       }
@@ -311,14 +413,24 @@ function refMergeRanges(ranges: readonly (readonly [number, number])[]): [number
   return merged
 }
 
-/** Every pinyin occurrence, in the live `pinyinRanges` chain order. */
+/** Every pinyin occurrence, in the live `pinyinRanges` contract: the shared
+ *  folds (a document without polyphones spells two chains identically) are
+ *  scanned ONCE, which phase 2b introduced — scanning a shared chain twice
+ *  would double every range it produces. */
 function refPinyinRanges(folds: NonNullable<ReturnType<typeof refBuildPinyinFolds>>, needle: string): [number, number][] {
-  return [
-    ...refRangesInPinyinFold(folds.allReadings, needle),
-    ...refRangesInPinyinFold(folds.firstReading, needle),
-    ...refRangesInFold(folds.allInitials, needle),
-    ...refRangesInFold(folds.firstInitials, needle),
-  ]
+  const ranges: [number, number][] = []
+  const seen = new Set<RefFoldedText>()
+  for (const [fold, bySegment] of [
+    [folds.allReadings, true],
+    [folds.firstReading, true],
+    [folds.allInitials, false],
+    [folds.firstInitials, false],
+  ] as const) {
+    if (seen.has(fold)) continue
+    seen.add(fold)
+    ranges.push(...(bySegment ? refRangesInPinyinFold(fold, needle) : refRangesInFold(fold, needle)))
+  }
+  return ranges
 }
 
 /** The reference implementation's answer for one document. */
@@ -330,6 +442,11 @@ function refRangesOf(
   const matches: [number, number][] = []
   for (const term of query.split(' ')) {
     const needle = term.toLowerCase()
+    // The pinyin eligibility rule, mirrored exactly: a term of ASCII letters
+    // only (`pinyinNeedleOf` lowercases a sensitive term first). A word such
+    // as `auth` therefore DOES scan the chains — its letters can fall inside
+    // a reading or initials fold — which is why this oracle must not narrow
+    // the rule to consonants.
     const pinyin = options.pinyin && /^[a-z]+$/.test(needle)
     let ranges: [number, number][]
     if (options.caseSensitive) {

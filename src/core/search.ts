@@ -204,12 +204,27 @@ export function sessionCwdMatches(
  */
 export interface FoldedText {
   readonly folded: string
-  readonly cumUnits: Uint32Array
-  readonly cpStart: Uint32Array
+  /**
+   * One entry per code point: the folded UTF-16 units produced by the first
+   * `c` code points. ABSENT on an identity fold — one where every code point
+   * occupies exactly as many units after folding as before, so no folded
+   * index ever needs translating. That is the common shape (any text without
+   * a length-changing mapping), and skipping the table is the point of the
+   * marker.
+   */
+  readonly cumUnits?: Uint32Array | undefined
+  /**
+   * One entry per code point: its UTF-16 start in the original text. ABSENT
+   * on an identity fold, where the code point index IS the unit index.
+   * Pinyin folds share ONE table across their chains (the offsets are the
+   * same; only the unit counts differ), so `PinyinFolds.cpStart` is the
+   * canonical home for those — see {@link PinyinFolds}.
+   */
+  readonly cpStart?: Uint32Array | undefined
   /** Original text length the fold was built from (staleness guard). */
   readonly sourceLength: number
   /** Pinyin syllable boundaries; absent on the ordinary case fold. */
-  readonly segmentStarts?: Uint8Array
+  readonly segmentStarts?: Uint8Array | undefined
 }
 
 /** `copied` is the fold's accumulator: kept local so the JIT can tell the
@@ -261,30 +276,46 @@ const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdf
 
 /** Build the fold of one text: one pass over the ORIGINAL string, one lookup
  *  per code point, no `[...text]` expansion of the whole text into a
- *  per-character array. */
+ *  per-character array.
+ *
+ *  The prefix tables are allocated only when the fold turns out NOT to be
+ *  identity. Sizing them here (one row per UTF-16 unit is an upper bound on
+ *  the code-point rows) avoids a separate counting pass, and the identity
+ *  verdict is known before the first row is written — a fold whose mappings
+ *  never change a code point's length needs no table at all, which is every
+ *  document that holds no length-changing mapping.
+ */
 function buildFold(text: string): FoldedText {
-  // One row per UTF-16 unit is an upper bound on the code-point rows (a
-  // surrogate pair consumes two units and one row); the tables are cut down
-  // to the exact size afterwards. Sizing them here avoids a separate
-  // code-point counting pass, which on a cold build costs more than the
-  // trimming does.
   const cpStart = new Uint32Array(text.length + 1)
   const cumUnits = new Uint32Array(text.length + 1)
   const chunks: FoldChunks = { copied: '' }
+  // Identity requires every code point to occupy EXACTLY ONE original unit and
+  // exactly one folded unit: then folded index == original index, and no
+  // table is needed. Anything else — a non-BMP pair (one code point, two
+  // units), a fold that grows (İ, ß) or shrinks — shifts the indices apart
+  // and keeps the tables. Testing "code point index == unit index" instead
+  // would wrongly call a surrogate-pair document identity.
+  let identity = true
   let utf16 = 0
   let units = 0
+  let produced = 0
   while (utf16 < text.length) {
     const at = utf16
     const high = text.charCodeAt(at)
     // A surrogate pair is ONE code point and therefore one table row: the
     // low unit is consumed here and never becomes a row of its own.
     utf16 += high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
+    const size = utf16 - at
     cpStart[units] = at
-    foldCodePoint(text, at, utf16 - at, false, chunks)
+    foldCodePoint(text, at, size, false, chunks)
+    const folded = chunks.copied.length - produced
+    if (size !== 1 || folded !== 1 || at !== units) identity = false
+    produced = chunks.copied.length
     units += 1
-    cumUnits[units] = chunks.copied.length
+    cumUnits[units] = produced
   }
   cpStart[units] = utf16
+  if (identity) return { folded: chunks.copied, sourceLength: text.length }
   return {
     folded: chunks.copied,
     cumUnits: cumUnits.slice(0, units + 1),
@@ -341,12 +372,24 @@ function foldOf(owner: object, text: string): FoldedText {
  * `cpStart` table: the original UTF-16 start per code point is the same,
  * only the cumulative unit counts differ, which is what lets a hit inside
  * any reading map back onto its character for highlighting.
+ *
+ * Two of the four chains can be the SAME object. A document without a
+ * polyphone spells the same string through `allReadings` and
+ * `firstReading` (one reading per character, no separator to distinguish
+ * them), and the same holds for the two initials chains; when the built
+ * strings and bitmaps agree, the folds are shared instead of duplicated.
+ * `pinyinRanges` scans each distinct fold once, so a shared chain is also
+ * half the `indexOf` work on such a document — the everyday case, since the
+ * table's 3500 characters hold only a few hundred polyphones.
  */
 export interface PinyinFolds {
   readonly allReadings: FoldedText
   readonly firstReading: FoldedText
   readonly allInitials: FoldedText
   readonly firstInitials: FoldedText
+  /** The shared per-code-point original-text offsets the chains that are NOT
+   *  identity map through (see {@link FoldedText.cpStart}). */
+  readonly cpStart: Uint32Array | undefined
 }
 
 /**
@@ -465,6 +508,10 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   let allInitUnits = 0
   let firstInitUnits = 0
   let hasTable = false
+  // Per-chain identity verdicts, evaluated with the same rule as buildFold: a
+  // chain is identity only when EVERY code point is one original unit and one
+  // folded unit, so folded index == original index (see buildFold).
+  let identity = { all: true, first: true, allInit: true, firstInit: true }
   let utf16 = 0
   let codePoints = 0
   while (utf16 < text.length) {
@@ -473,6 +520,8 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     const size = high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
     utf16 += size
     cpStart[codePoints] = at
+    if (size !== 1) identity = { all: false, first: false, allInit: false, firstInit: false }
+    const before = { all: allUnits, first: firstUnits, allInit: allInitUnits, firstInit: firstInitUnits }
     const parsed = readingsOf(text.slice(at, utf16))
     if (parsed !== undefined) {
       hasTable = true
@@ -538,49 +587,72 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     cumUnits.first[codePoints] = firstUnits
     cumUnits.allInit[codePoints] = allInitUnits
     cumUnits.firstInit[codePoints] = firstInitUnits
+    // Each chain is identity only while every step produced exactly one unit
+    // at exactly this code point's index (`at === codePoints` before the
+    // increment).
+    if (size !== 1 || allUnits - before.all !== 1 || at !== codePoints) identity.all = false
+    if (size !== 1 || firstUnits - before.first !== 1 || at !== codePoints) identity.first = false
+    if (size !== 1 || allInitUnits - before.allInit !== 1 || at !== codePoints) identity.allInit = false
+    if (size !== 1 || firstInitUnits - before.firstInit !== 1 || at !== codePoints) identity.firstInit = false
   }
   cpStart[codePoints] = utf16
   if (!hasTable) return undefined
-  // The dense bitmaps, built once from the recorded starts: `rangesInPinyinFold`
-  // asks `starts[indexOf(...)]`, and every index `indexOf` can return is a
-  // folded-unit position, so a bitmap covering each chain's unit total is
-  // exactly enough.
-  const bitmap = (starts: readonly number[], length: number): Uint8Array => {
-    const out = new Uint8Array(length + 1)
-    for (const start of starts) out[start] = 1
-    return out
+  // Two chains that spell the SAME string with the SAME syllable bitmap are
+  // one fold, not two: sharing it halves both the cached typed arrays and the
+  // `indexOf` scans a letter query performs (see PinyinFolds).
+  const shareReadings =
+    all.copied === first.copied && sameBits(bitmap(allStarts, allUnits), bitmap(firstStarts, firstUnits))
+  const shareInitials = allInit.copied === firstInit.copied
+  const sharedStart =
+    identity.all && identity.first && identity.allInit && identity.firstInit
+      ? undefined
+      : cpStart.slice(0, codePoints + 1)
+  const withBits = (
+    folded: string,
+    isIdentity: boolean,
+    table: Uint32Array,
+    starts: readonly number[] | undefined,
+    units: number,
+  ): FoldedText => ({
+    folded,
+    // An identity chain needs no prefix table at all: every code point
+    // occupies the same units before and after folding (see FoldedText).
+    ...(isIdentity ? {} : { cumUnits: table.slice(0, codePoints + 1), cpStart: sharedStart }),
+    sourceLength: text.length,
+    // The initials chains carry NO bitmap: they are scanned contiguously, one
+    // letter per character, so the syllable-start rule never applies to them
+    // (see PinyinFolds).
+    ...(starts === undefined ? {} : { segmentStarts: bitmap(starts, units) }),
+  })
+  const allReadings = withBits(all.copied, identity.all, cumUnits.all, allStarts, allUnits)
+  const firstReading = shareReadings
+    ? allReadings
+    : withBits(first.copied, identity.first, cumUnits.first, firstStarts, firstUnits)
+  const allInitials = withBits(allInit.copied, identity.allInit, cumUnits.allInit, undefined, allInitUnits)
+  const firstInitials = shareInitials
+    ? allInitials
+    : withBits(firstInit.copied, identity.firstInit, cumUnits.firstInit, undefined, firstInitUnits)
+  return { allReadings, firstReading, allInitials, firstInitials, cpStart: sharedStart }
+}
+
+/** Build one chain's dense syllable-boundary bitmap from the recorded starts.
+ *  `rangesInPinyinFold` asks `starts[indexOf(...)]`, and every index
+ *  `indexOf` can return is a folded-unit position, so a bitmap covering the
+ *  chain's unit total is exactly enough. */
+function bitmap(starts: readonly number[], units: number): Uint8Array {
+  const out = new Uint8Array(units + 1)
+  for (const start of starts) out[start] = 1
+  return out
+}
+
+/** Whether two bitmaps carry the same bits — the chain-sharing test needs
+ *  value equality, not identity, because each chain builds its own. */
+function sameBits(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false
+  for (let at = 0; at < left.length; at++) {
+    if (left[at] !== right[at]) return false
   }
-  // Trim once, so all four chains keep sharing ONE `cpStart` table (the unit
-  // counts differ per chain; the original-text offsets never do).
-  const sharedStart = cpStart.slice(0, codePoints + 1)
-  return {
-    allReadings: {
-      folded: all.copied,
-      cumUnits: cumUnits.all.slice(0, codePoints + 1),
-      cpStart: sharedStart,
-      sourceLength: text.length,
-      segmentStarts: bitmap(allStarts, allUnits),
-    },
-    firstReading: {
-      folded: first.copied,
-      cumUnits: cumUnits.first.slice(0, codePoints + 1),
-      cpStart: sharedStart,
-      sourceLength: text.length,
-      segmentStarts: bitmap(firstStarts, firstUnits),
-    },
-    allInitials: {
-      folded: allInit.copied,
-      cumUnits: cumUnits.allInit.slice(0, codePoints + 1),
-      cpStart: sharedStart,
-      sourceLength: text.length,
-    },
-    firstInitials: {
-      folded: firstInit.copied,
-      cumUnits: cumUnits.firstInit.slice(0, codePoints + 1),
-      cpStart: sharedStart,
-      sourceLength: text.length,
-    },
-  }
+  return true
 }
 
 /**
@@ -597,13 +669,26 @@ function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefine
 
 /** Every pinyin occurrence of `needle` — both reading chains and both
  *  initials chains together, as ranges over the ORIGINAL text. */
+/** Every pinyin occurrence of `needle` — both reading chains and both
+ *  initials chains together, as ranges over the ORIGINAL text. Chains that
+ *  share one fold object (a document without polyphones, see
+ *  {@link PinyinFolds}) are scanned once, not twice. */
 function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
-  return [
-    ...rangesInPinyinFold(folds.allReadings, needle),
-    ...rangesInPinyinFold(folds.firstReading, needle),
-    ...rangesInFold(folds.allInitials, needle),
-    ...rangesInFold(folds.firstInitials, needle),
-  ]
+  const ranges: [number, number][] = []
+  const seen = new Set<FoldedText>()
+  for (const [fold, bySegment] of [
+    [folds.allReadings, true],
+    [folds.firstReading, true],
+    [folds.allInitials, false],
+    [folds.firstInitials, false],
+  ] as const) {
+    if (seen.has(fold)) continue
+    seen.add(fold)
+    ranges.push(
+      ...(bySegment ? rangesInPinyinFold(fold, needle, folds.cpStart) : rangesInFold(fold, needle, folds.cpStart)),
+    )
+  }
+  return ranges
 }
 
 /** Match pinyin only at syllable boundaries. This prevents a query from
@@ -611,51 +696,66 @@ function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
  * `is` in `shi sou`), while still allowing a prefix inside one syllable such
  * as `zhang` in 张.
  */
-function rangesInPinyinFold(fold: FoldedText, needle: string): [number, number][] {
+function rangesInPinyinFold(fold: FoldedText, needle: string, cpStart: Uint32Array | undefined): [number, number][] {
   const starts = fold.segmentStarts
-  if (starts === undefined) return rangesInFold(fold, needle)
+  if (starts === undefined) return rangesInFold(fold, needle, cpStart)
   const ranges: [number, number][] = []
   let searchFrom = 0
   for (;;) {
     const found = fold.folded.indexOf(needle, searchFrom)
     if (found === -1) break
     const finish = found + needle.length
-    const startChar = charOfUnit(fold, found)
-    const endChar = charOfUnit(fold, finish - 1)
-    const startsAtSegment = starts[found] === 1
     // Once a query starts at a syllable boundary it may continue through
     // following syllables and stop at any prefix of the final one. The only
     // forbidden shape is a query that starts in the middle of a syllable.
-    if (startsAtSegment) {
-      ranges.push([fold.cpStart[startChar]!, fold.cpStart[endChar + 1]!])
+    if (starts[found] === 1) {
+      ranges.push(originalSpan(fold, cpStart, found, finish - 1))
     }
     searchFrom = found + Math.max(1, needle.length)
   }
   return ranges
 }
 
-/** The code point a folded UTF-16 index belongs to (binary search). */
+/** The code point a folded UTF-16 index belongs to (binary search). An
+ *  identity fold IS its own mapping, so the index is the answer. */
 function charOfUnit(fold: FoldedText, unit: number): number {
+  const table = fold.cumUnits
+  if (table === undefined) return unit
   let low = 0
-  let high = fold.cumUnits.length - 1
+  let high = table.length - 1
   while (low < high) {
     const mid = (low + high) >> 1
-    if (fold.cumUnits[mid]! <= unit) low = mid + 1
+    if (table[mid]! <= unit) low = mid + 1
     else high = mid
   }
   return low - 1
 }
 
+/** The ORIGINAL-text span the folded units `[from, to]` cover — through the
+ *  prefix tables when the fold carries them, and as the indices themselves
+ *  when the fold is identity. */
+function originalSpan(
+  fold: FoldedText,
+  cpStart: Uint32Array | undefined,
+  from: number,
+  to: number,
+): [number, number] {
+  if (cpStart === undefined) return [from, to + 1]
+  return [cpStart[charOfUnit(fold, from)]!, cpStart[charOfUnit(fold, to) + 1]!]
+}
+
 /** Every occurrence of `needle` in a fold, as ranges over the ORIGINAL text. */
-function rangesInFold(fold: FoldedText, needle: string): [number, number][] {
+function rangesInFold(
+  fold: FoldedText,
+  needle: string,
+  cpStart: Uint32Array | undefined = fold.cpStart,
+): [number, number][] {
   const ranges: [number, number][] = []
   let searchFrom = 0
   for (;;) {
     const found = fold.folded.indexOf(needle, searchFrom)
     if (found === -1) break
-    const startChar = charOfUnit(fold, found)
-    const endChar = charOfUnit(fold, found + needle.length - 1)
-    ranges.push([fold.cpStart[startChar]!, fold.cpStart[endChar + 1]!])
+    ranges.push(originalSpan(fold, cpStart, found, found + needle.length - 1))
     searchFrom = found + needle.length
   }
   return ranges
