@@ -123,6 +123,69 @@ describe('split rendering and anchoring', () => {
     }
   })
 
+  it('shows one focus marker at a time, and the reader adds rather than swaps', async () => {
+    // Two emphasized surfaces at once read as two focuses. While the list
+    // holds the keyboard the pane renders its cursor message as plain content
+    // — no cursor marker in the pane at all; once the reader takes over the
+    // pane gains its own marker while the list KEEPS its highlight (the
+    // reader's focus is additive). The cursor shapes are the pair the reader
+    // uses (the `❯` role glyph alone, without a marker in front, is just a
+    // user header and must not satisfy them).
+    const harness = await mount(splitSession(), wide)
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      harness.resize(121, 20)
+      await waitFor()
+      const listFocus = harness.latest()
+      expect(listFocus).not.toMatch(/❯\s*✦\s*AI/)
+      expect(listFocus).not.toMatch(/❯\s*❯\s*You/)
+      expect(listFocus).toMatch(/❯\s*Preview\s*wiring/)
+
+      harness.send('\u001b[C')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      const readerFocus = harness.latest()
+      expect(readerFocus).toMatch(/❯\s*✦\s*AI\s*#2\s*◆/)
+      // The list's own marker survived the handoff.
+      expect(readerFocus).toMatch(/❯\s*Preview\s*wiring/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('keeps the focused pane marked when the cursor header is off screen', async () => {
+    // A hit-aware landing parks the cursor on a body line with the message's
+    // header scrolled out; a focused pane that showed no marker there would
+    // read as unfocused. The marker moves to the cursor's own body line, so
+    // the handoff adds exactly one marker even though no pane header carries
+    // one (measured relatively: the role glyphs in the pane are unchanged by
+    // focus, only the cursor marker appears).
+    const pad = 'pad '.repeat(120)
+    const session = sessionWithMessages(['intro', `${pad}deepneedle marker tail`, 'tail'])
+    const harness = await mount(session, { ...wide, query: 'deepneedle' })
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      harness.send('\u001b[B') // onto the hit row: the pane lands on the hit
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const listFocus = harness.latest()
+      const before = (listFocus.match(/❯/g) ?? []).length
+      // The header really is off screen — no pane header marker to hide behind.
+      expect(listFocus).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+
+      harness.send('\u001b[C') // → reader focus
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      const frame = harness.latest()
+      expect((frame.match(/❯/g) ?? []).length).toBe(before + 1)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('scrolls a hit that sits below its own message head into view', async () => {
     // The reader's own budget at 120x20 is 9 rows at 41 columns, so a hit
     // that wraps far below its message's header is invisible from the
@@ -170,20 +233,39 @@ describe('split rendering and anchoring', () => {
       await waitFor()
       expect(harness.latest()).toMatch(/✦\s*AI\s*#2\s*◆/)
       // ↓ onto the second hit row (message #9): the target changes and the
-      // window jumps to that message's header.
+      // window jumps to that message's header. The pane shows it with its
+      // plain header vocabulary — the LIST holds the focus, so the cursor
+      // marker stays in the list column (asserted below), and the reader's
+      // window position is what proves the re-anchor.
       harness.send('\u001b[B')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
+      expect(harness.latest()).toMatch(/❯\s*#9\s*You/)
+
+      // A focus handoff (→) lights the pane up: the same window now carries
+      // the cursor vocabulary — two markers, one per pane, because the
+      // reader owns the keyboard.
+      harness.send('\u001b[C')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
       expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
-      expect(harness.latest()).not.toMatch(/✦\s*AI\s*#2/)
+      // ← hands it back: the pane dims to plain content again while the
+      // list keeps its own highlight (the reader's focus is additive).
+      harness.send('\u001b[D')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(harness.latest()).not.toMatch(/❯\s*❯\s*You\s*#9/)
+      expect(harness.latest()).toMatch(/❯\s*#9\s*You/)
       // Esc clears the query: recent mode lists the card alone and the
       // reader anchors to the conversation head.
       harness.send('\u001b')
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#1\b/)
+      expect(harness.latest()).toMatch(/You\s*#1\b/)
       expect(harness.latest()).not.toMatch(/You\s*#9\b/)
     } finally {
       harness.dispose()
@@ -305,12 +387,15 @@ describe.skipIf(!generation10)('split wheel locality', () => {
       // One notch down over the LIST (col 30) travels the host's ±3 rows and
       // clamps at the flat list's end: the card and both hit rows are three
       // rows total, so the selection lands on the LAST hit row (#9) and the
-      // reader re-anchors to that message.
+      // reader re-anchors its window onto that message's header. The list
+      // holds the focus, so the pane carries no cursor marker — its window
+      // position is the evidence.
       harness.send(wheelAt(30, 6, 65))
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
+      expect(harness.latest()).toMatch(/❯\s*#9\s*You/)
+      expect(harness.latest()).toMatch(/You\s*#9\s*◆/)
       // Twenty notches over the READER (col 90) scroll the reader to its own
       // tail (the conversation's last message shows up) while the LIST keeps
       // its selection — the pane scrolls, the cursor does not move.

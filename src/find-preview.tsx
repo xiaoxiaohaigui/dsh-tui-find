@@ -272,7 +272,14 @@ export function usePreviewModel(
  *  rows carry the list's selection vocabulary (marker arrow + selectionBg
  *  for the cursor's message), the ROLE_MARK glyph with its generation-
  *  resolved colour, and a warning `◆` marking the session's hits; body rows
- *  split indent from content so hit spans can be painted per-segment. */
+ *  split indent from content so hit spans can be painted per-segment.
+ *
+ *  `focused` gates that cursor vocabulary: a split screen must never show two
+ *  focuses at once, so while the LIST holds the keyboard the pane renders its
+ *  cursor message like any other row (no marker, no selection bar, no accent
+ *  tint) and the list alone reads as focused. Once the reader takes over, the
+ *  pane lights up and the list keeps its own highlight — the reader's focus is
+ *  additive, never a swap. */
 function ReaderRows(props: {
   React: TuiSceneProps['React']
   ui: Ui
@@ -282,20 +289,37 @@ function ReaderRows(props: {
   end: number
   /** Message index the cursor sits on; its header row is highlighted. */
   cursorMessage: number
+  /** Whether the reader holds the keyboard focus (see the block comment). */
+  focused: boolean
   /** Truncation budget for header rows in display columns. */
   headerWidth: number
   /** Body wrap width the lines were built with (HighlightedText re-cuts). */
   bodyWidth: number
+  /** The cursor's own line — the marker's fallback home (see below). */
+  cursorLine: number
 }): React.ReactElement {
-  const { React: R, ui, lines, start, end, cursorMessage, headerWidth, bodyWidth } = props
+  const { React: R, ui, lines, start, end, cursorMessage, focused, headerWidth, bodyWidth, cursorLine } = props
   const { Box, Text } = ui
   const visible = lines.slice(start, end)
+  // The cursor marker normally rides the cursor message's HEADER. A hit-aware
+  // landing can park the cursor on a body line with that header scrolled out
+  // of the window (the whole point of hitLanding), and a focused pane that
+  // shows no marker at all reads as unfocused — so when the header is not on
+  // screen, the cursor's own body line carries the marker instead.
+  const cursorHeaderVisible = visible.some(
+    line => line.kind === 'header' && line.messageIndex === cursorMessage,
+  )
+  const marksLine = (line: PreviewLine, lineAt: number): boolean =>
+    focused &&
+    (line.kind === 'header'
+      ? line.messageIndex === cursorMessage
+      : lineAt === cursorLine && !cursorHeaderVisible)
   return (
     <>
       {visible.map((line, offset) => {
         const lineAt = start + offset
         if (line.kind === 'header') {
-          const isCursorMessage = line.messageIndex === cursorMessage
+          const isCursorMessage = marksLine(line, lineAt)
           const mark = ROLE_MARK[line.role]
           const label =
             line.role === 'user' ? t('role-user') : line.role === 'tool' ? t('role-tool') : t('role-assistant')
@@ -320,13 +344,21 @@ function ReaderRows(props: {
             </Box>
           )
         }
+        const isCursorLine = marksLine(line, lineAt)
         return (
           // Body rows split indent from content so the hit spans can be
           // painted per-segment: 'warning' bold highlights (the list's
           // own accent) over plain spans that keep the reader's hierarchy
-          // — assistant bodies dim, user/tool bodies plain text.
+          // — assistant bodies dim, user/tool bodies plain text. The
+          // cursor's own line swaps the plain indent for the focus marker
+          // when its header is off screen (no bar behind wrapped text: a
+          // marker column is enough to read as focused).
           <Box key={`b${lineAt}`} flexDirection="row" flexShrink={0}>
-            <Text dimColor={line.role === 'assistant'}>{line.bodyIndex === 0 ? '  ' : '    '}</Text>
+            {isCursorLine ? (
+              <Text color="suggestion">{selectionMarker(true)}</Text>
+            ) : (
+              <Text dimColor={line.role === 'assistant'}>{line.bodyIndex === 0 ? '  ' : '    '}</Text>
+            )}
             <HighlightedText
               React={R}
               ui={ui}
@@ -422,6 +454,10 @@ export function PreviewPane(props: {
           start={windowStart}
           end={windowEnd}
           cursorMessage={cursorMessage}
+          // The full-screen reader replaces the list, so its cursor is the
+          // screen's only focus by construction.
+          focused
+          cursorLine={cursorLine}
           headerWidth={columns - 2}
           bodyWidth={bodyWidth}
         />
@@ -459,10 +495,14 @@ export function ReaderPane(props: {
   windowEnd: number
   paneWidth: number
   bodyWidth: number
+  /** Whether the reader holds the keyboard. While the list does, the pane
+   *  draws its cursor message without the focus vocabulary — one split
+   *  screen shows exactly one focused surface (see ReaderRows). */
+  focused: boolean
   onWheel: (event: WheelEventLike) => void
   onContextMenu?: (event: ContextMenuEventLike) => void
 }): React.ReactElement {
-  const { React: R, ui, session, lines, cursor, windowStart, windowEnd, paneWidth, bodyWidth, onWheel, onContextMenu } = props
+  const { React: R, ui, session, lines, cursor, windowStart, windowEnd, paneWidth, bodyWidth, focused, onWheel, onContextMenu } = props
   const { Box, Text } = ui
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps & ContextBoxProps>
   const cursorLine = Math.min(Math.max(0, cursor), Math.max(0, lines.length - 1))
@@ -509,6 +549,8 @@ export function ReaderPane(props: {
           start={windowStart}
           end={windowEnd}
           cursorMessage={cursorMessage}
+          focused={focused}
+          cursorLine={cursorLine}
           headerWidth={Math.max(0, paneWidth - 6)}
           bodyWidth={bodyWidth}
         />

@@ -816,6 +816,11 @@ export function FindScene(props: TuiSceneProps & {
               windowEnd={previewWindowEnd}
               paneWidth={layout.paneWidth}
               bodyWidth={previewBodyWidth}
+              // One focused surface per screen: the pane shows its cursor
+              // vocabulary only while it owns the keyboard (mode 'preview');
+              // under list focus it reads as plain content beside the
+              // highlighted list.
+              focused={mode === 'preview'}
               onWheel={stepPreview}
               {...(contextMenuCapable ? { onContextMenu: openPreviewMenu } : {})}
             />
