@@ -16,9 +16,23 @@ import { glyphStyle, hasBackground, mount, sessionWithMessages, waitFor, waitFor
 
 setLangOverride('en')
 // One language for the whole file (every frame assertion below is en), and
-// restored once after ALL describes — a per-describe afterAll would reset
-// the override for every later describe in this file.
+// restored once after ALL describes — a per-describe afterAll would reset the
+// override for every later describe in this file.
 afterAll(() => setLangOverride(undefined))
+
+/** The SGR run in front of EVERY occurrence of `glyph` in a raw frame, in
+ *  frame order. `glyphStyle` reads the last one only, which cannot tell "the
+ *  badge the pointer is on" from "the badge that inherited its cell" — the
+ *  exact confusion behind REVIEW R-068, where the leftover fill landed on a
+ *  different card than the one under the pointer. Empty string where an
+ *  occurrence carries no run of its own (an unstyled badge). */
+function glyphRuns(frame: string, glyph: string): string[] {
+  const runs: string[] = []
+  for (let at = frame.indexOf(glyph); at >= 0; at = frame.indexOf(glyph, at + 1)) {
+    runs.push(/((?:\u001b\[[0-9;]*m)+)[^\S\r\n]*$/.exec(frame.slice(0, at))?.[1] ?? '')
+  }
+  return runs
+}
 
 describe('preview scene wiring', () => {
   it('owns preview typing and returns through preview, query, then close layers', async () => {
@@ -259,6 +273,94 @@ describe('preview scene wiring', () => {
       harness.dispose()
     }
   })
+
+  it('keeps the badge hover off a neighbouring card when a keyboard fold rewrites the rows', async () => {
+    // The reported leftover (REVIEW R-068): the hover tint was keyed by ROW
+    // INDEX, and folding rewrites which row sits at which index — so the
+    // index the hovered badge occupied came to name the NEXT card's badge
+    // and painted a tint onto a control the pointer was nowhere near. The
+    // host could not correct it either: its hover bookkeeping only fires
+    // `onMouseLeave` on nodes that are still mounted, and a keyboard fold
+    // (Alt+E) sends no pointer event at all.
+    //
+    // Geometry at 81x30 classic, exactly the review's probe: A holds 7 hits
+    // and B 4. Expanded, A's badge rides flat row 7 (terminal row 13) — the
+    // pointer hovers THERE. Folding A drops its badge back to flat row 3,
+    // which moves B's badge onto flat row 7: the collision. The tint is
+    // asserted in the FOLD FRAME, not after a repaint — a repaint makes the
+    // stale value vanish (the host's own hover reset reaches the recycled
+    // node), so a resize between the fold and the read would hide the bug.
+    const alpha: ScannedSession = {
+      ...sessionWithMessages(['needle alpha one', 'needle alpha two', 'needle alpha three', 'needle alpha four', 'needle alpha five', 'needle alpha six', 'needle alpha seven']),
+      id: 'alpha-session',
+      title: 'Alpha',
+    }
+    const bravo: ScannedSession = {
+      ...sessionWithMessages(['needle bravo one', 'needle bravo two', 'needle bravo three', 'needle bravo four']),
+      id: 'bravo-session',
+      title: 'Bravo',
+    }
+    const harness = await mount(alpha, {
+      columns: 80,
+      rows: 20,
+      layout: 'classic',
+      fullscreen: true,
+      scanner: { scan: async () => [alpha, bravo] },
+    })
+    try {
+      harness.resize(81, 30)
+      await waitFor(200)
+      harness.resize(81, 30)
+      await waitFor(200)
+      // Folded to start with: both cards show three hits and a badge.
+      expect(harness.latest()).toMatch(/▸\s*\(\+4\)/)
+      expect(harness.latest()).toMatch(/▸\s*\(\+1\)/)
+      // Expand A (the selection sits on its card, flat row 0) so its badge
+      // moves onto flat row 7 — the row B's badge will land on after the
+      // fold. Then hover it: the pointer is provably on a badge, so the tint
+      // assertions below are about the hover staying put, not about hover
+      // never having worked.
+      harness.send('\u001be')
+      await waitFor(200)
+      harness.resize(81, 30)
+      await waitFor(200)
+      expect(harness.latest()).toMatch(/▴\s*less/)
+      harness.movePointer(77, 13)
+      await waitFor(250)
+      const hovering = harness.rawLatest()
+      // The tint is on the badge under the pointer and on no other: A's
+      // expanded badge (`▴`) carries the fill, and B's `▸` badge does not. So
+      // a hover that never worked, or that bled onto the neighbouring card
+      // from the start, fails here rather than passing the fold below.
+      expect(hasBackground(glyphStyle(hovering, '▴'))).toBe(true)
+      for (const run of glyphRuns(hovering, '▸')) expect(hasBackground(run)).toBe(false)
+
+      // Alt+E folds A. The pointer has not moved a cell: A's expanded badge
+      // (and the whole row it sat on) is gone, and B's badge now occupies
+      // that cell. No badge in the fold frame may carry a fill — the tint
+      // belongs to the control that was hovered, and it must die with it
+      // rather than be inherited by whatever control takes the cell. This is
+      // the assertion the index-keyed state failed (it painted B's badge),
+      // and it is deliberately read from the FOLD FRAME with no repaint in
+      // between: the next repaint corrects the tint anyway (the host resets
+      // its hover bookkeeping), which is why the defect only ever showed as
+      // a transient — and why a resize before the read would hide it.
+      //
+      // The fix has two halves and this case covers both: the tint lives on
+      // the badge itself (so it dies with it), and the rows carry stable
+      // React keys (so React UNMOUNTS the folded-away badge instead of
+      // recycling that same component onto the next card's badge, hover
+      // state and all). Rotating either half alone back leaves this case red.
+      harness.send('\u001be')
+      await waitFor(250)
+      expect(harness.latest()).toMatch(/▸\s*\(\+4\)/)
+      const runs = glyphRuns(harness.rawLatest(), '▸')
+      expect(runs).toHaveLength(2)
+      for (const run of runs) expect(hasBackground(run)).toBe(false)
+    } finally {
+      harness.dispose()
+    }
+  }, 30_000)
 
   it('shows the fold badge only on the final visible hit', async () => {
     const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four', 'needle five']))

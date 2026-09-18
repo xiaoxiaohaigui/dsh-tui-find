@@ -187,7 +187,7 @@ export function FindScene(props: TuiSceneProps & {
             (scope === 'all' || sessionCwdMatches(recentScopeCwd ?? '', session.header.cwd ?? '')) &&
             (sinceMs === undefined || session.modifiedAt >= sinceMs),
         )
-        .map(session => ({ kind: 'session' as const, session, titleHit: undefined }))
+        .map(session => ({ kind: 'session' as const, session, titleHit: undefined, rowId: `s:${session.id}` }))
     }
     const rows: FlatRow[] = []
     for (const hit of hits) {
@@ -195,7 +195,7 @@ export function FindScene(props: TuiSceneProps & {
       const messageHits = hit.hits.filter(entry => entry.kind === 'message')
       const isExpanded = expanded.has(hit.session.id)
       const shown = isExpanded ? messageHits.length : Math.min(PREVIEW_HITS, messageHits.length)
-      rows.push({ kind: 'session', session: hit.session, titleHit, hits: hit.hits })
+      rows.push({ kind: 'session', session: hit.session, titleHit, hits: hit.hits, rowId: `s:${hit.session.id}` })
       // The fold badge belongs to the final visible hit row only, and only
       // when the card actually has hidden hits or shows them under a state
       // the badge can leave: attaching it to every row would repeat the same
@@ -204,11 +204,18 @@ export function FindScene(props: TuiSceneProps & {
       // (≤ PREVIEW_HITS) is the third case: there is no fold at all.
       const foldable = messageHits.length > PREVIEW_HITS
       for (let index = 0; index < shown; index++) {
+        const message = messageHits[index]!
         rows.push({
           kind: 'message',
           hit,
-          message: messageHits[index]!,
+          message,
           index,
+          // Identity is the matched MESSAGE, not the row the fold happens to
+          // put it on: folding moves this row without moving the message (see
+          // FlatRow). sourceIndex is set for every message hit — only title
+          // hits leave it undefined, and they never become rows — so the
+          // ordinal is a defensive fallback, not a second identity rule.
+          rowId: `m:${hit.session.id}:${message.sourceIndex ?? index}`,
           fold:
             foldable && index === shown - 1
               ? { hidden: messageHits.length - shown, expanded: isExpanded }

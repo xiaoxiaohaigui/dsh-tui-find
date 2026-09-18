@@ -35,6 +35,69 @@ function rowLineCount(row: FlatRow): number {
   return row.kind === 'session' ? 2 : 1
 }
 
+/**
+ * The fold control on a card's final visible hit row: `▸ (+N)` while the
+ * card hides hits, `▴ 收起` while it shows them all. A nested click target —
+ * the host dispatches to the deepest hit node and honours the bubble-stop,
+ * so this click folds the card and never reaches the row's own handler
+ * (which would otherwise open the resume confirm: Alt+E had no mouse
+ * counterpart, that was the reported gap).
+ *
+ * The hover tint — the host's own clickable-affordance idiom (ClickableDivider,
+ * the todo fold) — is COMPONENT-LOCAL state, and that is the point rather
+ * than a detail. A parent-held flag has to name the badge somehow, and the
+ * names on offer are the row's index or its id; either can outlive the
+ * control it refers to, because the host sends no `onMouseLeave` for a node
+ * that a re-render unmounted (its hover dispatch skips detached nodes) and
+ * keyboard folding never touches the pointer at all. A row index is worse
+ * still: folding rewrites the row array, so the index one card's badge
+ * occupied can come to name the NEXT card's badge and paint a tint on a
+ * control the pointer is nowhere near (REVIEW R-068). Held here, the flag
+ * dies with the badge — a fold, a windowed scroll, a dropped card — while a
+ * plain re-render (typing, a sweep flush) keeps both.
+ *
+ * Local state alone is not enough, and the fold is exactly why: the caller
+ * must ALSO key these rows by their stable id. Keyed by row index, React
+ * recycles this very component onto the next card's badge instead of
+ * unmounting it — same position, same key, so its `hovered` walks across —
+ * reproducing the stray tint by a second route (verified: with stable ids
+ * removed, the R-068 regression test still fails with this component in
+ * place).
+ */
+function FoldBadge(props: {
+  React: TuiSceneProps['React']
+  ui: Ui
+  /** The badge text, chevron included — measured by the caller for its own
+   *  text budget, so the caller composes it once. */
+  label: string
+  /** The row's selection, which keeps the label un-dimmed (a selected row
+   *  would otherwise dim the badge away in the middle of the highlight). */
+  selected: boolean
+  onFold: () => void
+}): React.ReactElement {
+  const { React: R, ui, label, selected, onFold } = props
+  const { Box, Text } = ui
+  const [hovered, setHovered] = R.useState(false)
+  return (
+    <Box
+      flexShrink={0}
+      {...(hovered ? { backgroundColor: 'userMessageBackgroundHover' as const } : {})}
+      onClick={(event: ClickEventLike) => {
+        event.stopImmediatePropagation()
+        onFold()
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <Text
+        {...(hovered ? { color: 'suggestion' as const } : {})}
+        dimColor={!hovered && !selected}
+        bold={hovered}
+      >{` ${label}`}</Text>
+    </Box>
+  )
+}
+
 export function ListView(props: {
   React: TuiSceneProps['React']
   ui: Ui
@@ -61,10 +124,6 @@ export function ListView(props: {
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
   const ContextBox = Box as unknown as React.ComponentType<ContextBoxProps>
   const { useState, useMemo } = R
-  // The badge's own hover highlight (one pointer, so one row at a time). It
-  // exists to advertise that the badge is clickable: hovering a row already
-  // moves the selection, so a plain row hover would teach nothing.
-  const [foldHover, setFoldHover] = useState<number | undefined>(undefined)
 
   // Scroll window over the flat rows, fitted in physical lines so the
   // selected row is always on screen (fitScrollWindow for the contract).
@@ -101,7 +160,7 @@ export function ListView(props: {
               : hitLine(displayTitle(session), row.titleHit.ranges, titleWidth)
           return (
             <ContextBox
-              key={`s${rowIndex}`}
+              key={row.rowId}
               flexDirection="column"
               flexShrink={0}
               {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
@@ -182,10 +241,9 @@ export function ListView(props: {
         // cut around the first highlight so the keyword cannot be truncated
         // out of view on a long message.
         const line = hitLine(hit.text, hit.ranges, budget)
-        const badgeHovered = foldHover === rowIndex
         return (
           <ContextBox
-            key={`m${rowIndex}`}
+            key={row.rowId}
             flexDirection="row"
             flexShrink={0}
             // The row stretches to the list surface on its own (a column
@@ -216,28 +274,13 @@ export function ListView(props: {
               />
             </Box>
             {foldLabel !== undefined ? (
-              // A nested click target: the host dispatches to the deepest hit
-              // node and honours the bubble-stop, so this click folds the card
-              // and never reaches the row's own handler — which would otherwise
-              // open the resume confirm (Alt+E had no mouse counterpart; that
-              // was the reported gap). The hover background is the host's own
-              // clickable-affordance idiom (ClickableDivider, the todo fold).
-              <Box
-                flexShrink={0}
-                {...(badgeHovered ? { backgroundColor: 'userMessageBackgroundHover' as const } : {})}
-                onClick={(event: ClickEventLike) => {
-                  event.stopImmediatePropagation()
-                  onRowFold(rowIndex)
-                }}
-                onMouseEnter={() => setFoldHover(rowIndex)}
-                onMouseLeave={() => setFoldHover(current => (current === rowIndex ? undefined : current))}
-              >
-                <Text
-                  {...(badgeHovered ? { color: 'suggestion' as const } : {})}
-                  dimColor={!badgeHovered && !isSelected}
-                  bold={badgeHovered}
-                >{` ${foldLabel}`}</Text>
-              </Box>
+              <FoldBadge
+                React={R}
+                ui={ui}
+                label={foldLabel}
+                selected={isSelected}
+                onFold={() => onRowFold(rowIndex)}
+              />
             ) : null}
           </ContextBox>
         )

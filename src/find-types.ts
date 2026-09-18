@@ -79,16 +79,43 @@ export type StatusNote = { text: string; tone: 'info' | 'error' }
  *  fold — a card at or under the shown-hits budget has no such row. */
 export type FoldBadge = { readonly hidden: number; readonly expanded: boolean }
 
-/** A row of the flattened list. Every row is selectable — a session card
- *  resumes its session, a hit row resumes the session it hit. A card's
- *  title hit rides INSIDE the card's title line (highlighted there, the
- *  browser's own title treatment) and never as a separate row. A results
- *  card also carries its session's own hit list so Alt+P can open the
- *  reader anchored anywhere and `n`/`N` can walk its hits; recent-mode
- *  cards have no SessionHit and set nothing (exactOptionalPropertyTypes). */
+/**
+ * A row of the flattened list. Every row is selectable — a session card
+ * resumes its session, a hit row resumes the session it hit. A card's
+ * title hit rides INSIDE the card's title line (highlighted there, the
+ * browser's own title treatment) and never as a separate row. A results
+ * card also carries its session's own hit list so Alt+P can open the
+ * reader anchored anywhere and `n`/`N` can walk its hits; recent-mode
+ * cards have no SessionHit and set nothing (exactOptionalPropertyTypes).
+ *
+ * `rowId` is the row's STABLE identity (the session, plus the matched
+ * message for a hit row) — the list keys the React tree and the fold
+ * badge's hover state off it. A row INDEX is not an identity: folding
+ * rewrites the row array, so an index that named one card's badge before
+ * the fold names the NEXT card's badge after it, which is exactly how a
+ * leftover hover tint landed on a control the pointer was never on
+ * (REVIEW R-068).
+ */
 export type FlatRow =
-  | { kind: 'session'; session: ScannedSession; titleHit: MessageHit | undefined; hits?: readonly MessageHit[] }
-  | { kind: 'message'; hit: SessionHit; message: MessageHit; index: number; fold: FoldBadge | undefined }
+  | {
+      kind: 'session'
+      session: ScannedSession
+      titleHit: MessageHit | undefined
+      hits?: readonly MessageHit[]
+      /** `s:<session id>` — unique against that session's own hit rows. */
+      rowId: string
+    }
+  | {
+      kind: 'message'
+      hit: SessionHit
+      message: MessageHit
+      index: number
+      fold: FoldBadge | undefined
+      /** `m:<session id>:<message position>` — the same id whether the card
+       *  is folded or expanded, since it names the message and not the row
+       *  the fold happens to put it on. */
+      rowId: string
+    }
 
 /** The body shape both copy paths feed copyMessage with: a hit row's
  *  MessageHit and a preview cursor's raw message are structurally the same. */
