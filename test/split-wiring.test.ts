@@ -642,7 +642,7 @@ describe.skipIf(!generation10)('split pointer into the list from reader focus', 
       await waitFor()
       const frame = harness.latest()
       expect(frame).toContain('needle five')
-      expect(frame).toMatch(/▾\s*less/)
+      expect(frame).toMatch(/▴\s*less/)
       // The reader pane is untouched: folding is a list act, and the click
       // never reached the pane's own handlers.
       expect(paneText(frame)).toMatch(/Read-only\s*preview/)

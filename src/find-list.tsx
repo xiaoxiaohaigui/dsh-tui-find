@@ -162,14 +162,18 @@ export function ListView(props: {
         // The fold badge reserves its own cells from the text budget even
         // while the row is selected: a budget that depends on the selection
         // would reflow the row's whole content on every focus move. The
-        // chevron is the host's own fold vocabulary (PromptInput's `▸ stats` /
-        // `▾ stats` badge): a bare `(+N)` reads as a passive counter, and the
-        // point of this control is that it invites a click.
+        // triangles are the host's own fold vocabulary (PromptInput's
+        // `▸ stats` badge): a bare `(+N)` reads as a passive counter, and the
+        // point of this control is that it invites a click. The two states
+        // point OPPOSITE ways — `▸` at the fold (more below), `▴` folding it
+        // back up — and stay in one glyph family so the badge keeps its width
+        // and weight when it flips. A literal `↑` would read as navigation:
+        // the hint line right below the list spells `↑↓` for selection.
         const foldLabel =
           row.fold === undefined
             ? undefined
             : row.fold.expanded
-              ? `▾ ${t('fold-collapse')}`
+              ? `▴ ${t('fold-collapse')}`
               : `▸ ${t('more-hits', { count: row.fold.hidden })}`
         const badgeReserve = foldLabel === undefined ? 0 : displayWidth(foldLabel) + 1
         const prefix = `#${hit.seq ?? '·'} ${roleLabel}: `

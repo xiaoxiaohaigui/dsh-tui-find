@@ -196,7 +196,7 @@ describe('preview scene wiring', () => {
       // The fold ran: the fourth hit row exists and the badge flipped to the
       // way back.
       expect(opened).toContain('four')
-      expect(opened).toMatch(/▾\s*less/)
+      expect(opened).toMatch(/▴\s*less/)
       // ...and the row's own action never ran — a click that reached it would
       // have replaced the whole screen with the resume confirm.
       expect(opened).not.toMatch(/Resum[^?\r]{0,20}session\?/)
@@ -288,7 +288,7 @@ describe('preview scene wiring', () => {
       const frame = harness.latest()
       expect(frame).toContain('needle three')
       expect(frame).not.toMatch(/\(\+0\)/)
-      expect(frame).not.toMatch(/[▸▾]/)
+      expect(frame).not.toMatch(/[▸▴]/)
     } finally {
       harness.dispose()
     }
