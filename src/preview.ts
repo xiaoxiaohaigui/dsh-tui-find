@@ -141,6 +141,48 @@ export function messageHeaderLine(
 }
 
 /**
+ * Where an anchor lands the reader: the cursor line and the window start to
+ * open on. When the anchored message's hit fits in the viewport below its
+ * own header, the reader keeps the header-anchored shape (cursor on the
+ * header line, window starting there) and the keyword is simply on screen;
+ * otherwise — the everyday case in a long message, where the hit sits far
+ * below the header — the reader parks on the hit's own body line and scrolls
+ * the window so that line is visible with a little leading context, because
+ * a reader that never shows the keyword the query matched is useless.
+ *
+ * A message whose hits are not in its indexed body (a title hit, an anchor
+ * of -1, a hit range that fell outside this wrap) keeps the header landing.
+ * Pure arithmetic over the built lines; the caller applies it.
+ */
+export function hitLanding(
+  lines: readonly PreviewLine[],
+  messageIndex: number,
+  viewportHeight: number,
+): { cursor: number; windowStart: number } {
+  const headerLine = messageHeaderLine(lines, messageIndex)
+  const viewport = Math.max(1, Math.floor(viewportHeight))
+  let hitLine: number | undefined
+  for (let at = Math.max(0, headerLine); at < lines.length; at++) {
+    const line = lines[at]
+    if (line === undefined) break
+    if (line.kind === 'header' && line.messageIndex > messageIndex) break
+    if (line.kind === 'body' && line.ranges.length > 0) {
+      hitLine = at
+      break
+    }
+  }
+  // Reachable from the header: the anchored frame already shows the keyword
+  // (and the message's own head), so nothing about it should move.
+  if (hitLine === undefined || hitLine - headerLine + 1 <= viewport) {
+    return { cursor: headerLine, windowStart: headerLine }
+  }
+  // Unreachable: park on the hit with about a third of the viewport as
+  // leading context, never scrolled above the message's own header.
+  const lead = Math.max(0, Math.min(Math.floor(viewport / 3), hitLine - headerLine))
+  return { cursor: hitLine, windowStart: Math.max(headerLine, hitLine - lead) }
+}
+
+/**
  * The start line of the next (`direction` 1) or previous (`direction` -1)
  * hit message relative to `currentMessageIndex`, or undefined when no hit
  * lies that way. `hitStartLines` is indexed BY MESSAGE index: entry m holds

@@ -56,7 +56,7 @@ Keys inside the scene:
 
 Mouse: left-click selects, hover highlights, the wheel moves the selection (scrolls the preview); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session — in the preview, copy the message under the pointer.
 
-> The scene layout is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `Alt+P` hands the focus between the panes; narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview.
+> The scene layout is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `Alt+P` hands the focus between the panes; narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview. In both forms the reader **keeps the keyword on screen**: when a hit sits too deep in its message for the viewport, the reader opens windowed onto the hit's own line instead of parking on a message head that hides it.
 
 > Results are grouped per session, the first 3 hits show per session (`(+N)` hint), most-recent-first; the scan starts the moment the scene opens and results stream in, with live progress in the header.
 
@@ -105,6 +105,7 @@ Session root is probed in order (first hit wins): the `sessionRoot` config (excl
 ## Privacy & safety
 
 - **Read-only end to end**: logs are opened read-only; the history lock is never touched, history is never rewritten.
+- **Generation naming**: dsh logs are named per format generation (`session.jsonl`, `session.vN.jsonl`, each with a `.zstd` variant). A session directory is read from its numerically highest generation, compressed winning within one — a retired generation left behind in a migration window is never indexed.
 - **Minimal disk footprint**: conversation content lives only in memory, never on disk. The single written file is the watermark journal `~/.dsh-tui/dsh-tui-find/watermark.json` — paths plus byte/mtime/offset metadata only, never conversation text (0700/0600 + tmp+rename atomic write; `DSH_TUI_FIND_WATERMARK=off` disables it).
 - **Incremental decode & tolerance**: appends decode only new frames, a same-size touch decodes nothing, shrink/rewrite/encoding flips fall back to a full decode; a torn final frame is recognized per RFC 8878 and skipped — never fatal, never residue.
 - **Resume needs confirmation**: resuming discards the current context; `↵` asks twice, with a loud warning while the live session is still working.
@@ -118,7 +119,7 @@ npm test             # pretest builds and generates fixtures, then runs the full
 npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (302 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader, keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
+Test coverage (312 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader (including hit-aware anchoring), keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 

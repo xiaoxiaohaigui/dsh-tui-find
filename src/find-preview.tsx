@@ -20,8 +20,8 @@ import type { MessageHit } from './core/search.js'
 import { fitScrollWindow, tailWidth, truncateWidth } from './width.js'
 import {
   buildPreviewLines,
+  hitLanding,
   messageAtLine,
-  messageHeaderLine,
   unitWeights,
   type PreviewLine,
 } from './preview.js'
@@ -209,11 +209,15 @@ export function usePreviewModel(
       if (anchored !== undefined) anchorRef.current = undefined
     }
     if (anchored !== undefined) {
-      const start = messageHeaderLine(lines, anchored)
-      setCursor(start)
-      setWindowStart(start)
-      adjustedCursor = start
-      adjustedWindow = start
+      // The landing is hit-aware: a hit that cannot sit in the viewport
+      // below its message's own header scrolls into view (hitLanding), so
+      // the reader never opens on a long message with the keyword the query
+      // matched below the fold. Header-anchored landings are unchanged.
+      const landing = hitLanding(lines, anchored, viewportHeight)
+      setCursor(landing.cursor)
+      setWindowStart(landing.windowStart)
+      adjustedCursor = landing.cursor
+      adjustedWindow = landing.windowStart
     }
     adjustedCursor = Math.min(Math.max(0, adjustedCursor), Math.max(0, lines.length - 1))
     const view = fitScrollWindow(weights, adjustedCursor, Math.max(1, viewportHeight), adjustedWindow)

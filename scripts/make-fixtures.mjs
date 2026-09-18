@@ -17,7 +17,13 @@
  * Output (default test/fixtures/generated/):
  *   <root>/<workspace>/<session-id>/session.jsonl.zstd   — compressed chain
  *   <root>/<workspace>/<session-id>/session.jsonl        — plain twin
+ *   <root>/<workspace>/<session-id>/session.vN.jsonl[.zstd] — generation-N log
  *   torn.log / oversized.log                             — corruption cases
+ *
+ * Generation naming mirrors the backend's immutable format generations
+ * (dsh-session-format's sessionFormatLogFilename): v0 keeps `session.jsonl`,
+ * every later generation carries `.vN` before the suffix, and one session
+ * directory holds exactly one generation (a migration window may hold both).
  *
  * Usage: node scripts/make-fixtures.mjs [outputDir]
  * @module scripts/make-fixtures
@@ -51,18 +57,21 @@ function writeLog(path, bytes) {
 const env = (type, seq, data, extra = {}) =>
   JSON.stringify({ type, seq, time: 1_750_000_000_000 + seq * 1000, data, ...extra })
 
-/** A header row + conversation, batched the way the backend flushes. */
-function conversation({ header, userTexts, assistantTexts, toolTexts = [], splicedFirst = undefined, legacyHeader = false, reasoningText = undefined }) {
+/** A header row + conversation, batched the way the backend flushes.
+ *  `headerVersion` names the stored format generation the header declares;
+ *  the real backend writes an `isSeeded` flag from v3 on. */
+function conversation({ header, userTexts, assistantTexts, toolTexts = [], splicedFirst = undefined, legacyHeader = false, reasoningText = undefined, headerVersion = 0 }) {
   const batches = []
   batches.push([
     legacyHeader
       ? JSON.stringify({ version: 0, id: header.id, createdAt: header.createdAt, cwd: header.cwd })
       : JSON.stringify({
           type: 'session',
-          version: 0,
+          version: headerVersion,
           id: header.id,
           createdAt: header.createdAt,
           cwd: header.cwd,
+          ...(headerVersion >= 3 ? { isSeeded: false } : {}),
           delegationDepth: 0,
           agentPreset: 'standard',
         }),
@@ -190,6 +199,103 @@ for (const session of SESSIONS) {
   })
 }
 
+// Generation-addressed stores (dsh-session-format's sessionFormatLogFilename):
+// the current backend writes `session.vN.jsonl[.zstd]` instead of the v0
+// `session.jsonl[.zstd]`, and a directory mid-migration can hold both — its
+// reader picks the numerically highest generation, so the fixtures pin that
+// the scanner sees new-generation sessions at all and never serves a retired
+// generation's stale conversation.
+const GENERATIONS = [
+  {
+    // The everyday new-generation session: v3, compressed.
+    id: '77777777-7777-4777-8777-777777777777',
+    workspace: 'd____repo-auth',
+    cwd: 'D:/work/repo-auth',
+    headerVersion: 3,
+    compressedName: 'session.v3.jsonl.zstd',
+    plainName: undefined,
+    title: { title: 'v3 generation session', source: { kind: 'provider' } },
+    user: ['新世代会话的日志名带 v3 后缀'],
+    assistant: ['扫描器要按最高世代取用'],
+    stale: undefined,
+  },
+  {
+    // A migration window: the retired v0 artifact AND the current v3 one sit
+    // in one directory, with different conversations. Only the v3 text may
+    // enter the index.
+    id: '88888888-8888-4888-8888-888888888888',
+    workspace: 'd____repo-auth',
+    cwd: 'D:/work/repo-auth',
+    headerVersion: 3,
+    compressedName: 'session.v3.jsonl.zstd',
+    plainName: undefined,
+    title: { title: 'migrated session', source: { kind: 'provider' } },
+    user: ['迁移后当前世代的正文'],
+    assistant: ['v3 世代的内容'],
+    stale: {
+      headerVersion: 0,
+      plainName: 'session.jsonl',
+      user: ['已退役 v0 世代的正文'],
+      assistant: ['v0 世代的内容（不得被索引）'],
+    },
+  },
+  {
+    // Generation naming on the plaintext backend.
+    id: '99999999-9999-4999-8999-999999999999',
+    workspace: 'd____repo-payments',
+    cwd: 'D:/work/repo-payments',
+    headerVersion: 3,
+    compressedName: undefined,
+    plainName: 'session.v3.jsonl',
+    title: undefined,
+    user: ['明文新世代会话也要枚举到'],
+    assistant: ['plain v3'],
+    stale: undefined,
+  },
+]
+
+for (const session of GENERATIONS) {
+  const header = { id: session.id, createdAt: 1_750_000_000_000, cwd: session.cwd }
+  const base = join(outRoot, session.workspace, session.id)
+  const build = (texts, version, id) => {
+    const batches = conversation({
+      header: { ...header, id },
+      userTexts: texts.user,
+      assistantTexts: texts.assistant,
+      headerVersion: version,
+    })
+    if (texts.title !== undefined) batches.push([env('session/title', 900, texts.title)])
+    return batches
+  }
+  const current = build({ user: session.user, assistant: session.assistant, title: session.title }, session.headerVersion, session.id)
+  const currentBytes = zstdChain(current)
+  if (session.compressedName !== undefined) {
+    writeLog(join(base, session.compressedName), currentBytes)
+  } else {
+    writeLog(join(base, session.plainName), Buffer.from(current.flat().map(line => line + '\n').join(''), 'utf8'))
+  }
+  if (session.stale !== undefined) {
+    writeLog(
+      join(base, session.stale.plainName),
+      Buffer.from(
+        build({ user: session.stale.user, assistant: session.stale.assistant, title: undefined }, session.stale.headerVersion, session.id)
+          .flat()
+          .map(line => line + '\n')
+          .join(''),
+        'utf8',
+      ),
+    )
+  }
+  manifest.sessions.push({
+    id: session.id,
+    plainId: undefined,
+    compressedPath: session.compressedName === undefined ? undefined : join(base, session.compressedName),
+    plainPath: session.plainName === undefined ? undefined : join(base, session.plainName),
+    bytes: currentBytes.length,
+    plainBytes: undefined,
+  })
+}
+
 // Corruption case A: a clean chain with a torn final frame (crash mid-flush).
 const tornBatches = conversation({
   header: { id: '44444444-4444-4444-8444-444444444444', createdAt: 1_750_000_000_000, cwd: 'D:/work/repo-auth' },
@@ -221,5 +327,5 @@ writeLog(
 
 writeFileSync(join(outRoot, 'manifest.json'), JSON.stringify(manifest, null, 2))
 console.log(`fixtures written to ${outRoot}`)
-console.log(`  sessions: ${manifest.sessions.length} (compressed + plain twins)`)
+console.log(`  sessions: ${manifest.sessions.length} (v0 compressed + plain twins, v3 compressed/plain, v0+v3 migration window)`)
 console.log(`  corruption: torn frame, garbage, torn plain line`)

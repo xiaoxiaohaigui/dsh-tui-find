@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { IndexedMessage } from '../src/core/events.js'
 import {
   buildPreviewLines,
+  hitLanding,
   hitOrdinal,
   jumpHit,
   messageAtLine,
@@ -185,6 +186,87 @@ describe('messageHeaderLine', () => {
     expect(messageHeaderLine(lines, -3)).toBe(0)
     expect(messageHeaderLine(lines, 99)).toBe(4)
     expect(messageHeaderLine([], 0)).toBe(0)
+  })
+})
+
+describe('hitLanding', () => {
+  /** A message whose hit sits far below its header: the pad wraps to many
+   *  body lines before the keyword's line. */
+  const longMessage = (hitAtEndOfPad: string): string =>
+    `pad ${'pad '.repeat(120)}${hitAtEndOfPad} tail`
+  const hitRanges = (text: string, needle: string): readonly (readonly [number, number])[] => {
+    const at = text.indexOf(needle)
+    return at === -1 ? [] : [[at, at + needle.length]]
+  }
+  const build = (viewportCols = 20): { lines: ReturnType<typeof buildPreviewLines>; hitLine: number; headerLine: number } => {
+    const text = longMessage('NEEDLEHIT')
+    const lines = buildPreviewLines(
+      [message('intro'), message(text, 'assistant'), message('tail')],
+      new Set([1]),
+      viewportCols,
+      new Map([[1, hitRanges(text, 'NEEDLEHIT')]]),
+    )
+    const hitLine = lines.findIndex(line => line.kind === 'body' && line.ranges.length > 0)
+    return { lines, hitLine, headerLine: messageHeaderLine(lines, 1) }
+  }
+
+  it('keeps the header when the hit already fits inside the viewport', () => {
+    const lines = buildPreviewLines(
+      [message('intro'), message('needle here', 'assistant')],
+      new Set([1]),
+      20,
+      new Map([[1, [[0, 6]] as readonly [number, number][]]]),
+    )
+    const viewport = 20
+    const landing = hitLanding(lines, 1, viewport)
+    // The landing stays header-anchored — cursor AND window on the header,
+    // the anchored shape every other reader assertion depends on — because
+    // the hit's own line is inside the viewport below it.
+    const headerLine = messageHeaderLine(lines, 1)
+    expect(landing).toEqual({ cursor: headerLine, windowStart: headerLine })
+    const hitLine = lines.findIndex(line => line.kind === 'body' && line.ranges.length > 0)
+    expect(hitLine).toBeGreaterThanOrEqual(landing.windowStart)
+    expect(hitLine).toBeLessThan(landing.windowStart + viewport)
+    expect(messageAtLine(lines, landing.cursor)).toBe(1)
+  })
+
+  it('centers a hit the header-anchored window cannot reach', () => {
+    const viewport = 9
+    const { lines, hitLine, headerLine } = build()
+    // Guards the fixture: the hit really is unreachable from the header.
+    expect(hitLine - headerLine + 1).toBeGreaterThan(viewport)
+    const landing = hitLanding(lines, 1, viewport)
+    expect(landing.cursor).toBe(hitLine)
+    // The keyword's line is inside [windowStart, windowStart + viewport) with
+    // leading context above it, and the message head is scrolled away.
+    expect(landing.windowStart).toBeLessThan(hitLine)
+    expect(landing.windowStart).toBeGreaterThanOrEqual(headerLine)
+    expect(hitLine - landing.windowStart).toBeLessThan(viewport)
+  })
+
+  it('never parks below the message head, whatever the viewport', () => {
+    const { lines, hitLine, headerLine } = build()
+    for (const viewport of [1, 2, 3, 5, 9, 40]) {
+      const landing = hitLanding(lines, 1, viewport)
+      expect(landing.windowStart).toBeGreaterThanOrEqual(headerLine)
+      expect(landing.cursor).toBeGreaterThanOrEqual(landing.windowStart)
+      if (viewport >= hitLine - headerLine + 1) {
+        // Reachable from the header: the whole message head stays in view.
+        expect(landing.windowStart).toBe(headerLine)
+      } else {
+        expect(landing.cursor).toBe(hitLine)
+        expect(hitLine - landing.windowStart).toBeLessThan(viewport)
+      }
+    }
+  })
+
+  it('parks on the header for a message without an in-body hit', () => {
+    const lines = buildPreviewLines([message('plain text')], new Set<number>(), 20)
+    expect(hitLanding(lines, 0, 9)).toEqual({ cursor: 0, windowStart: 0 })
+    // Out-of-range anchors clamp like messageHeaderLine, and an empty list
+    // still answers a usable pair.
+    expect(hitLanding(lines, 99, 9)).toEqual({ cursor: 0, windowStart: 0 })
+    expect(hitLanding([], 0, 9)).toEqual({ cursor: 0, windowStart: 0 })
   })
 })
 

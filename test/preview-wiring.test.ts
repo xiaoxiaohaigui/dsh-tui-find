@@ -173,6 +173,39 @@ describe('preview scene wiring', () => {
       harness.dispose()
     }
   })
+
+  it('opens a deep hit scrolled into view instead of on the message head', async () => {
+    // A hit far into a long message cannot sit in the 7-row solo viewport
+    // below its own header; anchoring on the header would open the reader
+    // with the keyword off screen, which is the reader's whole job. The
+    // window must land on the hit's own line.
+    const text = `${'pad '.repeat(120)}deepneedle marker tail`
+    const harness = await mount(sessionWithMessages(['intro', text, 'tail']), { rows: 12 })
+    try {
+      await waitForMatch(() => harness.all(), /deepneedle/)
+      // ↓ onto the hit row, then Alt+P: the classic anchor path.
+      harness.send('\u001b[B')
+      await waitFor()
+      harness.send('\u001bp')
+      await waitFor()
+      harness.resize(81, 12)
+      await waitFor()
+      const frame = harness.latest()
+      expect(frame).toMatch(/deepneedle/)
+      // The message header scrolled off the top: the header-anchored landing
+      // shows it instead of the keyword.
+      expect(frame).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      // `n` walks the hits through the same landing.
+      harness.send('n')
+      await waitFor()
+      harness.resize(80, 12)
+      await waitFor()
+      expect(harness.latest()).toMatch(/deepneedle/)
+      expect(harness.latest()).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+    } finally {
+      harness.dispose()
+    }
+  })
 })
 
 describe('help panel wiring', () => {

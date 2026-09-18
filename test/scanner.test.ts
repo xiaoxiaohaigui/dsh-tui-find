@@ -49,6 +49,146 @@ describe('enumerateLogs', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('picks the numerically highest canonical generation, compressed within one', () => {
+    // The backend addresses each immutable format generation with its own
+    // filename (`session.jsonl` for v0, `session.vN.jsonl` later; see
+    // dsh-session-format's sessionFormatLogFilename) and its reader selects
+    // "the numerically highest canonical generation in one Session
+    // directory". A store that grew past v0 must not be invisible, and a
+    // migration window that still holds the retired v0 artifact must not
+    // serve the stale generation.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-enum-gen-'))
+    try {
+      const write = (id: string, names: readonly string[]): string => {
+        const dir = join(root, 'ws', id)
+        mkdirSync(dir, { recursive: true })
+        for (const name of names) writeFileSync(join(dir, name), 'x', 'utf8')
+        return dir
+      }
+      // v0 plain beside the current generation: the newest generation wins.
+      const v3 = write('91000000-0000-4000-8000-000000000001', ['session.jsonl', 'session.v3.jsonl.zstd'])
+      expect(enumerateLogs(root).get('91000000-0000-4000-8000-000000000001')?.path).toBe(
+        join(v3, 'session.v3.jsonl.zstd'),
+      )
+      // Both encodings of the SAME generation: compressed wins (host rule).
+      const both = write('92000000-0000-4000-8000-000000000002', ['session.v3.jsonl', 'session.v3.jsonl.zstd'])
+      expect(enumerateLogs(root).get('92000000-0000-4000-8000-000000000002')?.path).toBe(
+        join(both, 'session.v3.jsonl.zstd'),
+      )
+      // Generation order is numeric, not lexicographic: v10 outranks v2 even
+      // when v2 is the compressed artifact.
+      const numeric = write('93000000-0000-4000-8000-000000000003', ['session.v2.jsonl.zstd', 'session.v10.jsonl'])
+      expect(enumerateLogs(root).get('93000000-0000-4000-8000-000000000003')?.path).toBe(
+        join(numeric, 'session.v10.jsonl'),
+      )
+      // A non-file winner falls through to the next candidate, generation
+      // order included.
+      const shadowed = write('94000000-0000-4000-8000-000000000004', ['session.jsonl'])
+      mkdirSync(join(shadowed, 'session.v4.jsonl.zstd'), { recursive: true })
+      expect(enumerateLogs(root).get('94000000-0000-4000-8000-000000000004')?.path).toBe(
+        join(shadowed, 'session.jsonl'),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores noncanonical generation spellings', () => {
+    // The backend's own parser refuses `.v0`, leading-zero versions, uppercase
+    // and temporary names; a directory holding only those has no log at all
+    // (an empty file list would otherwise be enumerated from its siblings).
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-enum-bad-'))
+    try {
+      const dir = join(root, 'ws', '95000000-0000-4000-8000-000000000005')
+      mkdirSync(dir, { recursive: true })
+      for (const name of [
+        'session.v0.jsonl.zstd',
+        'session.v03.jsonl.zstd',
+        'session.V3.jsonl.zstd',
+        'session.3.jsonl.zstd',
+        'session.jsonl.tmp',
+        'session.v3.jsonl.zstd.tmp',
+        'session.v3.jsonl.zst',
+      ]) {
+        writeFileSync(join(dir, name), 'x', 'utf8')
+      }
+      expect(enumerateLogs(root).size).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('decodes a generation-named log end to end', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-gen-'))
+    try {
+      const id = '96000000-0000-4000-8000-000000000006'
+      const dir = join(root, 'ws', id)
+      mkdirSync(dir, { recursive: true })
+      const chain = Buffer.concat([
+        zstdCompressSync(
+          Buffer.from(
+            `${JSON.stringify({ type: 'session', version: 3, id, createdAt: 1_750_000_000_000, cwd: 'D:/work/v3' })}\n`,
+            'utf8',
+          ),
+        ),
+        zstdCompressSync(
+          Buffer.from(
+            `${JSON.stringify({
+              type: 'user/message',
+              seq: 1,
+              time: 1_750_000_000_001,
+              data: { content: [{ type: 'text', text: 'v3 世代日志要能被搜到' }], source: { kind: 'user' } },
+            })}\n`,
+            'utf8',
+          ),
+        ),
+      ])
+      writeFileSync(join(dir, 'session.v3.jsonl.zstd'), chain)
+
+      const sessions = await new SessionScanner().scan({ sessionRoot: root })
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0]!.path).toBe(join(dir, 'session.v3.jsonl.zstd'))
+      expect(sessions[0]!.header.cwd).toBe('D:/work/v3')
+      expect(sessions[0]!.messages.map(m => m.text)).toEqual(['v3 世代日志要能被搜到'])
+      expect(searchSessions(sessions, '世代', { scope: 'all' })).toHaveLength(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('sweeps the generation fixtures and never serves a retired generation', async () => {
+    // Real stores grew from the v0 name to `session.vN.jsonl[.zstd]` when the
+    // backend moved to generation-addressed artifacts: before this, every
+    // session created by a current host was invisible to /find. These
+    // fixtures pin the three shapes (compressed v3, plaintext v3, and a
+    // migration window holding v0 beside v3).
+    const scanner = new SessionScanner()
+    const sessions = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
+    const pick = (id: string): ScannedSession => {
+      const found = sessions.find(s => s.id === id)
+      expect(found, `session ${id} missing from the sweep`).toBeDefined()
+      return found!
+    }
+
+    const compressedV3 = pick('77777777-7777-4777-8777-777777777777')
+    expect(compressedV3.path.endsWith('session.v3.jsonl.zstd')).toBe(true)
+    expect(compressedV3.title).toBe('v3 generation session')
+    expect(compressedV3.messages.map(m => m.text)).toContain('新世代会话的日志名带 v3 后缀')
+
+    const plainV3 = pick('99999999-9999-4999-8999-999999999999')
+    expect(plainV3.path.endsWith('session.v3.jsonl')).toBe(true)
+    expect(plainV3.messages.map(m => m.text)).toContain('明文新世代会话也要枚举到')
+
+    // The migration window: the v3 conversation is the one indexed; the
+    // retired v0 artifact beside it must not leak its text.
+    const migrated = pick('88888888-8888-4888-8888-888888888888')
+    expect(migrated.path.endsWith('session.v3.jsonl.zstd')).toBe(true)
+    expect(migrated.messages.map(m => m.text)).toContain('迁移后当前世代的正文')
+    expect(migrated.messages.map(m => m.text)).not.toContain('已退役 v0 世代的正文')
+    expect(searchSessions(sessions, '已退役', { scope: 'all' })).toEqual([])
+    expect(searchSessions(sessions, '迁移后', { scope: 'all' })).toHaveLength(1)
+  })
 })
 
 describe('SessionScanner', () => {

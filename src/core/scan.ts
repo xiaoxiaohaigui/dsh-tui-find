@@ -165,6 +165,53 @@ function isSafeSessionId(sessionId: string): boolean {
 }
 
 /**
+ * One canonical log basename's parsed shape: the immutable session-format
+ * generation it addresses plus its physical encoding. `session.jsonl` is
+ * generation 0 (the original suffix-only name); every later generation
+ * carries a lowercase numeric `.vN` component before the suffix — the
+ * backend's own `sessionFormatLogFilename` contract (`session.v3.jsonl`,
+ * `.v3.jsonl.zstd`). Noncanonical spellings (`.v0`, `session.v03.jsonl`,
+ * uppercase, `.tmp` temporaries) are not logs and never enumerate.
+ */
+const CANONICAL_LOG_NAME = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/
+
+/** A candidate artifact inside one session directory. */
+interface LogCandidate {
+  readonly path: string
+  /** Format generation the name addresses; 0 for the suffix-only v0 name. */
+  readonly version: number
+  /** Whether the name carries the zstd suffix. */
+  readonly compressed: boolean
+}
+
+/**
+ * Every canonical log in one session directory, best candidate first — the
+ * backend's selection order (dsh-session-persistence-jsonl
+ * `resolveGenerationInDirectory`): the numerically highest generation wins
+ * (v10 outranks v2 — the comparison is numeric, not lexicographic), and
+ * within one generation the compressed artifact outranks its plain twin.
+ *
+ * The generation matters for correctness, not just freshness: a directory
+ * mid-migration holds the retired generation beside the current one, and
+ * serving the stale artifact would search a conversation the session no
+ * longer has. A non-file entry (a directory named like a log) simply fails
+ * the caller's stat and falls through to the next candidate.
+ */
+function logCandidates(dir: string, entries: readonly string[]): LogCandidate[] {
+  const found: LogCandidate[] = []
+  for (const name of entries) {
+    const match = CANONICAL_LOG_NAME.exec(name)
+    if (match === null) continue
+    found.push({
+      path: join(dir, name),
+      version: match[1] === undefined ? 0 : Number(match[1]),
+      compressed: match[2] === '.zstd',
+    })
+  }
+  return found.sort((left, right) => right.version - left.version || Number(right.compressed) - Number(left.compressed))
+}
+
+/**
  * Stat one candidate log into {@link LogFacts}; undefined when it does not
  * exist or is not a regular file (a vanished or odd entry simply is not
  * listed). Stat-only, with no `existsSync` pre-check: enumeration runs
@@ -206,13 +253,23 @@ export function enumerateLogs(sessionRoot?: string): Map<string, LogFacts> {
       for (const id of ids) {
         if (found.has(id) || !isSafeSessionId(id)) continue
         const dir = join(root, ws, id)
-        // Compressed wins when both encodings exist (host's own preference);
-        // a compressed side that is not a regular file does not shadow the
-        // plain twin beside it.
-        const facts =
-          statFile(join(dir, 'session.jsonl.zstd')) ?? statFile(join(dir, 'session.jsonl'))
-        if (facts === undefined) continue
-        found.set(id, facts)
+        let entries: string[]
+        try {
+          entries = readdirSync(dir)
+        } catch {
+          continue
+        }
+        // Best candidate first: highest generation, compressed within one.
+        // The first candidate that is a regular file is the session's log —
+        // a non-file winner (a directory named like the artifact) does not
+        // shadow the rest, exactly as a directory-shaped `.zstd` side never
+        // shadowed the plain twin before.
+        for (const candidate of logCandidates(dir, entries)) {
+          const facts = statFile(candidate.path)
+          if (facts === undefined) continue
+          found.set(id, facts)
+          break
+        }
       }
     }
   }

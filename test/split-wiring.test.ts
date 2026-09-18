@@ -90,6 +90,42 @@ describe('split rendering and anchoring', () => {
     }
   })
 
+  it('scrolls a hit that sits below its own message head into view', async () => {
+    // The reader's own budget at 120x20 is 9 rows at 41 columns, so a hit
+    // that wraps far below its message's header is invisible from the
+    // header-anchored landing — the on-device "can't see the keyword I
+    // searched for" report. The pane must window onto the hit instead.
+    const pad = `${'pad '.repeat(120)}`
+    const session = sessionWithMessages(['intro', `${pad}deepneedle marker tail`, 'tail'])
+    const harness = await mount(session, { ...wide, query: 'deepneedle' })
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      // ↓ onto the hit row re-anchors the reader to that message.
+      harness.send('\u001b[B')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const frame = harness.latest()
+      // The keyword's own body line is on screen...
+      expect(frame).toMatch(/deepneedle/)
+      // ...while the message head scrolled away: the header-anchored landing
+      // would show this row instead of the keyword (that is the bug).
+      expect(frame).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      // `n` walks to the same message's hit with the same landing — still on
+      // the keyword, never back on the header that hides it.
+      harness.send('\u001bp')
+      await waitFor()
+      harness.send('n')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/deepneedle/)
+      expect(harness.latest()).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('re-anchors when the selection target changes and holds when it does not', async () => {
     const harness = await mount(splitSession(), wide)
     try {

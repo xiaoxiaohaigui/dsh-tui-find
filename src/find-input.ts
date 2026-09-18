@@ -14,7 +14,7 @@
 import { t } from './i18n.js'
 import type { ScannedSession } from './core/scan.js'
 import type { SearchScope } from './core/search.js'
-import { hitOrdinal, jumpHit, messageAtLine, stepMessage, type PreviewLine } from './preview.js'
+import { hitLanding, hitOrdinal, jumpHit, messageAtLine, stepMessage, type PreviewLine } from './preview.js'
 import {
   CHROME_LINES,
   type CopyEntry,
@@ -63,6 +63,10 @@ export interface FindInputDeps {
   setExpanded: (next: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => void
   setSelected: (next: number | ((current: number) => number)) => void
   setPreviewCursor: (next: number | ((current: number) => number)) => void
+  /** The reader's window start — `n`/`N` set it alongside the cursor so a
+   *  deep hit lands with its own leading context (see hitLanding) instead of
+   *  being pushed to the window's bottom edge by the follow-the-cursor fit. */
+  setPreviewWindowStart: (next: number | ((current: number) => number)) => void
   setStatus: (next: StatusNote | undefined | ((current: StatusNote | undefined) => StatusNote | undefined)) => void
   flatLength: number
   rows: number
@@ -109,6 +113,7 @@ export function useFindInput(deps: FindInputDeps): void {
     setExpanded,
     setSelected,
     setPreviewCursor,
+    setPreviewWindowStart,
     setStatus,
     flatLength,
     rows,
@@ -214,13 +219,19 @@ export function useFindInput(deps: FindInputDeps): void {
           // Walk the session's own hits (`n` forward, Shift+n back). A
           // recent-session card has an empty hit table and no-ops silently;
           // a session's hit table is circular, so moving past either end
-          // wraps and a non-empty table always yields a target.
+          // wraps and a non-empty table always yields a target. The landing
+          // is hit-aware like the anchor path: a target whose keyword sits
+          // below its own viewport opens on the keyword, not on a header
+          // that hides it.
           const currentMessage = messageAtLine(previewLines, previewCursor) ?? 0
           const { total } = hitOrdinal(previewHitStarts, currentMessage)
           if (total > 0) {
             const target = jumpHit(previewHitStarts, currentMessage, key.shift ? -1 : 1)!
-            setPreviewCursor(target)
-            const { index } = hitOrdinal(previewHitStarts, messageAtLine(previewLines, target) ?? 0)
+            const targetMessage = messageAtLine(previewLines, target) ?? 0
+            const landing = hitLanding(previewLines, targetMessage, previewPageJump)
+            setPreviewCursor(landing.cursor)
+            setPreviewWindowStart(landing.windowStart)
+            const { index } = hitOrdinal(previewHitStarts, targetMessage)
             setStatus({ text: t('preview-hit-jump', { index, total }), tone: 'info' })
           }
         }
