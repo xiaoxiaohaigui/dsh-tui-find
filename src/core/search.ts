@@ -26,9 +26,18 @@
  * which is what an IME-style initials query means. The pinyin variant of a
  * document is a fold just like the case fold (one CJK code point expands
  * to its readings; the same prefix tables map a hit back onto the original
- * character), built lazily per document and cached across keystrokes.
- * Regex mode never consults the pinyin folds: a pattern is pattern syntax
- * over the raw text, not a term, and expanding it would be ambiguous.
+ * character), built lazily per document and cached across keystrokes —
+ * and, since the background warm-up, also built ahead of the first
+ * keystroke by {@link prewarmFolds}. Regex mode never consults the pinyin
+ * folds: a pattern is pattern syntax over the raw text, not a term, and
+ * expanding it would be ambiguous.
+ *
+ * A fold table is dropped entirely when it would be the identity mapping
+ * (every code point is one UTF-16 unit and folds to one unit, so a folded
+ * index equals the original index — see {@link FoldedText}). The pinyin
+ * chains that come out spelling the same string share one fold object, and
+ * the prewarm — picking its budget, not promising completion — is what keeps
+ * the first keystroke from paying the whole build.
  *
  * Ordering is most-recent-first (the scanner already yields that order);
  * the sort key here only preserves it deterministically.

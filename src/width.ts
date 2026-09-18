@@ -11,9 +11,12 @@
  *   wrapped row shifts every region below it down a line.
  *
  * The preview reader additionally wraps whole message bodies:
- * {@link wrapWidthRanges} is the one core behind {@link wrapWidth} and hands
- * back each physical line together with the hit ranges that land on it, so
- * highlights measured on the ORIGINAL text survive the reflow.
+ * {@link wrapWidthLayout} is the one wrapper, {@link wrapWidth} is it with the
+ * line text kept, and {@link wrapWidthRanges} is it with the hit ranges
+ * projected onto each line, so highlights measured on the ORIGINAL text
+ * survive the reflow. The layout and the projection are separate entry points
+ * because the reader caches the layout per message and width and re-projects
+ * the ranges on every keystroke (see preview.ts).
  *
  * @module dsh-tui-find/width
  */
