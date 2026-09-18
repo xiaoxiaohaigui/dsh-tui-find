@@ -466,27 +466,35 @@ if (scenarioName !== 'preview') {
 
 if (scenarioName !== 'search' && buildPreviewLines !== undefined) {
   // The split layout's per-keystroke re-wrap: a long conversation laid out
-  // with fresh (new-identity) ranges every time — exactly what the memo's
-  // `rangesByMessage` dependency produces on a keystroke.
+  // with fresh (new-identity) ranges every call — exactly what the memo's
+  // `rangesByMessage` dependency produces on a keystroke. Each call builds a
+  // new ranges map so the identity really is fresh, while the message objects
+  // (and so the cached wrap layout) stay the same.
   const previewMessages = makeIndex(1, 500, 3000)[0].messages
   const width = 96
-  const rangesByMessage = new Map()
   let at = 0
-  for (const [index] of previewMessages.entries()) {
-    const ranges = []
-    for (let n = 0; n < 8; n++) {
-      const start = (at * 7919) % 2800
-      ranges.push([start, start + 6])
-      at += 1
+  const freshRanges = () => {
+    const rangesByMessage = new Map()
+    for (const [index] of previewMessages.entries()) {
+      const ranges = []
+      for (let n = 0; n < 8; n++) {
+        const start = (at * 7919) % 2800
+        ranges.push([start, start + 6])
+        at += 1
+      }
+      rangesByMessage.set(index, ranges)
     }
-    rangesByMessage.set(index, ranges)
+    return rangesByMessage
   }
   const hitIndices = new Set([0, 1, 2, 7, 40, 200, 499])
-  const build = () => buildPreviewLines(previewMessages, hitIndices, width, rangesByMessage)
+  const build = () => buildPreviewLines(previewMessages, hitIndices, width, freshRanges())
   const measurement = timed(build)
   previewReport = row(
     `preview re-wrap ${previewMessages.length}×3000 @${width} cols`,
-    'buildPreviewLines with fresh ranges',
+    // Every repetition after the first measures the CACHED layout: the reader
+    // caches per (message, width) and only re-slices the ranges, which is the
+    // per-keystroke path phase 4 targets. The first repetition pays the wrap.
+    'buildPreviewLines, fresh ranges each call (layout cached after the first)',
     measurement,
     { lines: measurement.result.length },
   )

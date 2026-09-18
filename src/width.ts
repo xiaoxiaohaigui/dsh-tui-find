@@ -101,17 +101,99 @@ export interface WrappedLine {
 }
 
 /**
- * Intersect `ranges` (original-text UTF-16 offsets, sorted and disjoint) with
- * a line's original-text window `[from, to)` and rebase the survivors onto
- * the line's own coordinates. A range straddling the window is cut at both
- * edges; one with no overlap is dropped; an empty window carries nothing.
+ * One wrapped physical line WITHOUT its highlight ranges — the layout alone.
+ *
+ * This is the half of {@link wrapWidthRanges} that depends only on the text
+ * and the width. Splitting it out is what lets the preview reader cache its
+ * wrapping per message and re-cut the ranges on every keystroke instead of
+ * re-wrapping the whole conversation: the ranges change every query while the
+ * wrap does not (the message text and the pane width are both stable), and
+ * re-wrapping a long conversation measured 66-76 ms per keystroke on a
+ * 500 x 3000-character session.
  */
-function windowRanges(
+export interface WrappedLayoutLine {
+  readonly text: string
+  /**
+   * The line's window in ORIGINAL-text UTF-16 offsets: the characters it
+   * covers are the contiguous slice `[from, to)`, or an empty window (`to <=
+   * from`) for a blank line. Ranges are projected onto the line by
+   * intersecting them with this window and subtracting `from`.
+   */
+  readonly from: number
+  readonly to: number
+}
+
+/**
+ * Wrap `text` to a display width, returning the layout WITHOUT ranges — the
+ * cacheable half (see {@link WrappedLayoutLine}). {@link wrapWidthRanges} is
+ * this layout plus a range projection, so the two can never disagree about
+ * where the line breaks fall.
+ */
+export function wrapWidthLayout(text: string, width: number): WrappedLayoutLine[] {
+  if (width <= 0) return []
+  const lines: WrappedLayoutLine[] = []
+  // UTF-16 offset of the current paragraph inside `text`; the separating
+  // '\n' belongs to neither paragraph.
+  let paragraphStart = 0
+  for (const paragraph of text.split('\n')) {
+    let line = ''
+    let used = 0
+    // Original-text window [lineFrom, lineTo) of the line being built:
+    // `lineFrom` is its first character's offset (undefined while the line is
+    // empty), `lineTo` its end; `cursor` is the offset of the character about
+    // to be appended.
+    let lineFrom: number | undefined = undefined
+    let lineTo = paragraphStart
+    let cursor = paragraphStart
+    for (const char of paragraph) {
+      const charW = charWidth(char)
+      if (used + charW > width) {
+        // Prefer a word boundary, but only when it does not throw away most
+        // of the line — a single long token must still make progress.
+        const breakAt = line.lastIndexOf(' ')
+        if (breakAt > width / 2) {
+          const headFrom: number = lineFrom ?? cursor
+          const headTo: number = headFrom + breakAt
+          lines.push({ text: line.slice(0, breakAt), from: headFrom, to: headTo })
+          const tailFrom: number = headTo + 1 // the boundary space is dropped
+          line = line.slice(breakAt + 1)
+          used = displayWidth(line)
+          lineFrom = line.length === 0 ? undefined : tailFrom
+          lineTo = tailFrom + line.length
+        } else {
+          // A blank line has an empty window: `from === to`, which
+          // `projectRanges` reads as "carries nothing".
+          lines.push({ text: line, from: lineFrom ?? lineTo, to: lineTo })
+          line = ''
+          used = 0
+          lineFrom = undefined
+          lineTo = cursor
+        }
+      }
+      line += char
+      used += charW
+      if (lineFrom === undefined) lineFrom = cursor
+      lineTo = cursor + char.length
+      cursor += char.length
+    }
+    lines.push({ text: line, from: lineFrom ?? lineTo, to: lineTo })
+    paragraphStart += paragraph.length + 1
+  }
+  return lines
+}
+
+/**
+ * The slice of `ranges` (original-text UTF-16 offsets, sorted and disjoint)
+ * that lands on one laid-out line, rebased into the line's own coordinates.
+ * A range straddling the window is cut at both edges; one with no overlap is
+ * dropped; an empty window carries nothing.
+ */
+export function projectRanges(
   ranges: readonly (readonly [number, number])[],
-  from: number | undefined,
-  to: number,
+  line: WrappedLayoutLine,
 ): [number, number][] {
-  if (from === undefined || to <= from) return []
+  const { from, to } = line
+  if (to <= from) return []
   const out: [number, number][] = []
   for (const [start, end] of ranges) {
     const low = Math.max(start, from)
@@ -135,60 +217,20 @@ function windowRanges(
  * lines. Each line therefore spans `[from, to)` in original-text offsets,
  * and a range crossing the dropped space — or the newline between
  * paragraphs — simply arrives as one segment on each line it touches.
+ *
+ * Callers that re-wrap the same text across keystrokes (the preview reader)
+ * should cache {@link wrapWidthLayout} per (text, width) and project ranges
+ * with {@link projectRanges} instead of calling this.
  */
 export function wrapWidthRanges(
   text: string,
   width: number,
   ranges: readonly (readonly [number, number])[],
 ): WrappedLine[] {
-  if (width <= 0) return []
-  const lines: WrappedLine[] = []
-  // UTF-16 offset of the current paragraph inside `text`; the separating
-  // '\n' belongs to neither paragraph.
-  let paragraphStart = 0
-  for (const paragraph of text.split('\n')) {
-    let line = ''
-    let used = 0
-    // Original-text window [lineFrom, lineTo) of the line being built:
-    // `lineFrom` is its first character's offset (undefined while the line
-    // is empty), `lineTo` its end; `cursor` is the offset of the character
-    // about to be appended.
-    let lineFrom: number | undefined = undefined
-    let lineTo = paragraphStart
-    let cursor = paragraphStart
-    for (const char of paragraph) {
-      const charW = charWidth(char)
-      if (used + charW > width) {
-        // Prefer a word boundary, but only when it does not throw away most
-        // of the line — a single long token must still make progress.
-        const breakAt = line.lastIndexOf(' ')
-        if (breakAt > width / 2) {
-          const headFrom: number = lineFrom ?? cursor
-          const headTo: number = headFrom + breakAt
-          lines.push({ text: line.slice(0, breakAt), ranges: windowRanges(ranges, headFrom, headTo) })
-          const tailFrom: number = headTo + 1 // the boundary space is dropped
-          line = line.slice(breakAt + 1)
-          used = displayWidth(line)
-          lineFrom = line.length === 0 ? undefined : tailFrom
-          lineTo = tailFrom + line.length
-        } else {
-          lines.push({ text: line, ranges: windowRanges(ranges, lineFrom, lineTo) })
-          line = ''
-          used = 0
-          lineFrom = undefined
-          lineTo = cursor
-        }
-      }
-      line += char
-      used += charW
-      if (lineFrom === undefined) lineFrom = cursor
-      lineTo = cursor + char.length
-      cursor += char.length
-    }
-    lines.push({ text: line, ranges: windowRanges(ranges, lineFrom, lineTo) })
-    paragraphStart += paragraph.length + 1
-  }
-  return lines
+  return wrapWidthLayout(text, width).map(line => ({
+    text: line.text,
+    ranges: projectRanges(ranges, line),
+  }))
 }
 
 /**

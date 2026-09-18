@@ -17,7 +17,7 @@
  * @module dsh-tui-find/preview
  */
 import type { IndexedMessage } from './core/events.js'
-import { wrapWidthRanges } from './width.js'
+import { projectRanges, wrapWidthLayout, type WrappedLayoutLine } from './width.js'
 
 /** One physical line of the built preview. A message renders as its header
  *  line followed by its wrapped body lines; `messageIndex` attributes every
@@ -61,6 +61,38 @@ export type RangesByMessage = ReadonlyMap<number, readonly (readonly [number, nu
 const NO_RANGES: RangesByMessage = new Map()
 
 /**
+ * The wrap layout of one message, cached per message object and width.
+ *
+ * The layout depends on `message.text` and the width and on nothing else —
+ * in particular NOT on the query's hit ranges, which are rebuilt on every
+ * keystroke. Without this cache the reader re-wrapped the entire conversation
+ * each time the user typed (the memo's `rangesByMessage` dependency changes
+ * identity every query), which measured 66-76 ms for a 500-message session.
+ *
+ * The key is the message OBJECT, which is what makes the cache safe: the
+ * scanner hands out frozen message objects and keeps them for the life of the
+ * index, so a text can never change under a live key, and the entry is
+ * collected exactly when the message is. The width rides in a per-message map
+ * because a terminal resize must invalidate the layout — the count of widths
+ * ever seen is one in practice (two during a resize).
+ */
+const layoutCache = new WeakMap<IndexedMessage, Map<number, WrappedLayoutLine[]>>()
+
+/** The wrap layout of one message at one width, computed once. */
+export function messageLayout(message: IndexedMessage, wrapWidthCols: number): WrappedLayoutLine[] {
+  let byWidth = layoutCache.get(message)
+  if (byWidth === undefined) {
+    byWidth = new Map()
+    layoutCache.set(message, byWidth)
+  }
+  const cached = byWidth.get(wrapWidthCols)
+  if (cached !== undefined) return cached
+  const built = wrapWidthLayout(message.text, wrapWidthCols)
+  byWidth.set(wrapWidthCols, built)
+  return built
+}
+
+/**
  * Lay a whole conversation out as flat preview lines: one header per
  * message (marked as a hit when its index is in `hitIndices`), then the
  * message text wrapped to `wrapWidthCols` display columns (newlines
@@ -72,6 +104,12 @@ const NO_RANGES: RangesByMessage = new Map()
  * highlighting: each body line receives its slice of the owning message's
  * ranges, already rebased onto the line, so the scene can paint the
  * keyword without re-deriving offsets across the reflow.
+ *
+ * The wrapping itself comes from {@link messageLayout}, so a keystroke that
+ * only moves the hits re-slices ranges against the cached layout instead of
+ * re-wrapping the conversation — the phase-4 fix for the split layout's
+ * per-keystroke re-layout. The returned lines are new objects either way (they
+ * carry per-query hits); only the expensive part is shared.
  */
 export function buildPreviewLines(
   messages: readonly IndexedMessage[],
@@ -89,15 +127,16 @@ export function buildPreviewLines(
       at: message.at,
       isHit: hitIndices.has(messageIndex),
     })
-    const wrapped = wrapWidthRanges(message.text, wrapWidthCols, rangesByMessage.get(messageIndex) ?? [])
-    for (const [bodyIndex, line] of wrapped.entries()) {
+    const hitRanges = rangesByMessage.get(messageIndex) ?? []
+    const layout = messageLayout(message, wrapWidthCols)
+    for (const [bodyIndex, line] of layout.entries()) {
       lines.push({
         kind: 'body',
         messageIndex,
         role: message.role,
         bodyIndex,
         text: line.text,
-        ranges: line.ranges,
+        ranges: projectRanges(hitRanges, line),
       })
     }
   }
