@@ -197,9 +197,19 @@ export function displayTitle(session: ScannedSession): string {
   return session.id.slice(0, 8)
 }
 
-export function wheelStep(deltaY: number, deltaX = 0): -1 | 0 | 1 {
+/**
+ * The rows one wheel event asks for, signed (negative = up). The host sends
+ * a notch's own size as `deltaY` (its own screens see ±3 per notch and
+ * scroll by exactly that much), so collapsing the value to ±1 made every
+ * /find surface scroll three times slower than the rest of the TUI. A
+ * fractional or oversized delta is normalized to at least one row, and a
+ * horizontal-only event (deltaY 0) stays a no-op — a sideways flick must
+ * never scroll vertically (REVIEW R-009).
+ */
+export function wheelRows(deltaY: number, deltaX = 0): number {
   if (deltaY === 0 || !Number.isFinite(deltaY) || !Number.isFinite(deltaX)) return 0
-  return deltaY > 0 ? 1 : -1
+  const rows = Math.max(1, Math.round(Math.abs(deltaY)))
+  return deltaY > 0 ? rows : -rows
 }
 
 /** Selection marker shared by title and message rows. Both arrows occupy the

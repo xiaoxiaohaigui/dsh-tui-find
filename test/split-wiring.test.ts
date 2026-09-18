@@ -4,7 +4,7 @@
  * for the frame-capture discipline). Covers the split matrix: default
  * rendering with the reader anchored to the selection, the deduplicated
  * selection→reader anchoring (manual scrolls survive unrelated repaints),
- * the Alt+P focus handoff with the full reader vocabulary, the area-local
+ * the ←/→ focus handoff with the full reader vocabulary, the area-local
  * wheel, the list's pointer wiring from reader focus (wheel/hover/click,
  * REVIEW R-056), the pane's right-click copy (0.10+ hosts only), and the
  * width / config fallbacks. The classic form is pinned by every existing
@@ -192,10 +192,10 @@ describe('split rendering and anchoring', () => {
 })
 
 describe('split focus handoff', () => {
-  it('hands the keyboard to the reader on Alt+P and back on Esc, with the reader vocabulary', async () => {
+  it('hands the keyboard to the reader on → and back on ←, with the reader vocabulary', async () => {
     const harness = await mount(splitSession(), wide)
     try {
-      harness.send('\u001bp') // focus the reader
+      harness.send('\u001b[C') // → focus the reader
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
@@ -230,14 +230,14 @@ describe('split focus handoff', () => {
       harness.send('\u001bc')
       await waitFor()
       expect(harness.all()).toMatch(/Copied\s*15\s*chars/)
-      // Esc hands focus back; the reader pane STAYS VISIBLE and the list
+      // ← hands focus back; the reader pane STAYS VISIBLE and the list
       // hint vocabulary returns...
-      harness.send('\u001b')
+      harness.send('\u001b[D')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
       expect(harness.latest()).toMatch(/Read-only\s*preview/)
-      expect(harness.latest()).toMatch(/Alt\+P\s*preview/)
+      expect(harness.latest()).toMatch(/→\s*read/)
       // ...and typing filters again; zero results dismiss the reader with
       // the selection.
       harness.send('x')
@@ -257,7 +257,7 @@ describe('split focus handoff', () => {
     }
   })
 
-  it('keeps Alt+P inert on an empty list, matching the classic no-op', async () => {
+  it('keeps the focus chord inert on an empty list, matching the classic no-op', async () => {
     const harness = await mount(splitSession(), wide)
     try {
       // The sweep streams sessions in: wait until the card row exists so
@@ -269,13 +269,19 @@ describe('split focus handoff', () => {
       harness.resize(121, 20)
       await waitFor()
       expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
-      // Nothing is selected, so the chord must not flip into the reader
-      // focus (the classic branch no-ops the same way, REVIEW R-057): the
-      // hint line keeps the list vocabulary...
-      harness.send('\u001bp')
+      // Nothing is selected, so → must not flip into the reader focus (the
+      // classic Alt+P branch no-ops the same way, REVIEW R-057): the hint
+      // line keeps the list vocabulary...
+      harness.send('\u001b[C')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
+      expect(harness.latest()).not.toMatch(/back\s*to\s*list/)
+      // ...Alt+P stays inert in split too (the pane has no open/close
+      // semantics there)...
+      harness.send('\u001bp')
+      await waitFor()
+      await waitFor(50)
       expect(harness.latest()).not.toMatch(/back\s*to\s*list/)
       // ...and Esc is therefore the list-mode Esc: it clears the query and
       // the reader returns with the recent list — instead of backing out of
@@ -296,31 +302,80 @@ describe.skipIf(!generation10)('split wheel locality', () => {
   it('routes the wheel to the hovered pane without moving the other', async () => {
     const harness = await mount(splitSession(), { ...wide, fullscreen: true })
     try {
-      // Wheel down over the LIST (col 30): the selection moves off the card
-      // onto the first hit row...
+      // One notch down over the LIST (col 30) travels the host's ±3 rows and
+      // clamps at the flat list's end: the card and both hit rows are three
+      // rows total, so the selection lands on the LAST hit row (#9) and the
+      // reader re-anchors to that message.
       harness.send(wheelAt(30, 6, 65))
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*#2\s*AI/)
-      expect(harness.latest()).not.toMatch(/❯\s*Preview\s*wiring/)
-      // ...and the reader did not move: same anchor target, no re-anchor.
-      expect(harness.latest()).toMatch(/✦\s*AI\s*#2\s*◆/)
-      // Twenty wheel notches over the READER (col 90) while the list holds
-      // focus: the reader scrolls to its tail, the selection stays put.
+      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
+      // Twenty notches over the READER (col 90) scroll the reader to its own
+      // tail (the conversation's last message shows up) while the LIST keeps
+      // its selection — the pane scrolls, the cursor does not move.
       harness.send(wheelAt(90, 10, 65).repeat(20))
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/You\s*#9\s*◆/)
-      expect(harness.latest()).toMatch(/❯\s*#2\s*AI/)
-      // One notch back over the list onto the second hit row: the selection
-      // target changes, and the reader re-anchors to it.
-      harness.send(wheelAt(30, 7, 65))
+      const scrolled = harness.latest()
+      expect(scrolled).toMatch(/hotel/)
+      expect(scrolled).toMatch(/❯\s*#9\s*You/)
+      // One notch back over the list walks three rows up and clamps at the
+      // head: the card is selected again and the reader anchors to the
+      // session's first hit (#2).
+      harness.send(wheelAt(30, 7, 64))
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
+      expect(harness.latest()).toMatch(/❯\s*Preview\s*wiring/)
+      expect(harness.latest()).toMatch(/✦\s*AI\s*#2\s*◆/)
+    } finally {
+      harness.dispose()
+    }
+  }, 20_000)
+
+  it('moves the selection by the notch size, not a single row', async () => {
+    // The host reports ±3 rows per notch on its own screens (App.tsx's wheel
+    // dispatch); a /find surface must travel the same distance per notch, or
+    // a long list takes three times the gestures. Eight sessions give a flat
+    // list of card/hit pairs, so a three-row step (landing on session 1's hit
+    // row) is observably different from a one-row step (session 0's hit row),
+    // and the reader pane names which session won.
+    const titles = ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7']
+    const sessions: ScannedSession[] = titles.map(title => ({
+      ...sessionWithMessages([`needle in ${title}`]),
+      id: `wheel-${title}`,
+      title,
+    }))
+    const harness = await mount(sessions[0]!, {
+      ...wide,
+      fullscreen: true,
+      query: 'needle',
+      scanner: { scan: async () => sessions },
+    })
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      harness.resize(121, 20)
+      await waitFor()
+      // The reader starts on the first session (the selection's session).
+      expect(harness.latest()).toMatch(/preview\s*·\s*s0/)
+      // ONE notch down over the list. Rows are [s0 card, s0 hit, s1 card,
+      // s1 hit, …], so a one-row step would still read s0 while the guest's
+      // ±3 lands on s1's hit row.
+      harness.send(wheelAt(30, 7, 65))
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/preview\s*·\s*s1/)
+      expect(harness.latest()).not.toMatch(/preview\s*·\s*s0/)
+      // Three arrow presses (three rows by definition) reach the same place
+      // from the top, which is what "the wheel moved three rows" means.
+      harness.send('\u001b[A\u001b[A\u001b[A')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/preview\s*·\s*s0/)
     } finally {
       harness.dispose()
     }
@@ -354,24 +409,24 @@ describe.skipIf(!generation10)('split pointer into the list from reader focus', 
     const harness = await mount(splitSession(), { ...wide, fullscreen: true })
     try {
       // The sweep streams sessions in: wait until the card row exists, so
-      // the Alt+P handoff has a selection to hand over.
+      // the → handoff has a selection to hand over.
       await waitForMatch(() => harness.all(), /Preview\s*wiring/)
-      harness.send('\u001bp') // reader focus
+      harness.send('\u001b[C') // → reader focus
       await waitFor()
       // The wheel already answered the list from reader focus (the
-      // area-local wheel): one notch over the list column steps the
-      // selection off the card onto the first hit row...
+      // area-local wheel): one notch over the list column travels three rows
+      // (the host's ±3) and clamps at the flat list's end — the selection
+      // lands on the LAST hit row (#9)...
       harness.send(wheelAt(30, 7, 65))
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/❯\s*#2\s*AI/)
+      expect(harness.latest()).toMatch(/❯\s*❯\s*You\s*#9\s*◆/)
       expect(harness.latest()).not.toMatch(/❯\s*Preview\s*wiring/)
-      // ...hover follows the pointer onto the second hit row (the list
-      // rows span the list column, so row 8 = the #9 hit row) — the reader
-      // re-anchors to the new target, and the marker leaves #2 (REVIEW
-      // R-056: hover/click used to be mode-gated off while the wheel was
-      // already live)...
+      // ...hover follows the pointer to that same row (the list rows span the
+      // list column, so row 8 = the #9 hit row) — the reader re-anchors to
+      // the new target, and the marker leaves #2 (REVIEW R-056: hover/click
+      // used to be mode-gated off while the wheel was already live)...
       harness.movePointer(30, 8)
       await waitFor()
       harness.resize(120, 20)

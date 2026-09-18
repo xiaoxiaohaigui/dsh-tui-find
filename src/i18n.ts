@@ -124,6 +124,9 @@ export const dict = {
   'hint-seg-resume': { zh: '**Enter** 恢复', en: '**Enter** resume' },
   'hint-seg-scope': { zh: 'Tab 范围', en: 'Tab scope' },
   'hint-seg-preview': { zh: 'Alt+P 预览', en: 'Alt+P preview' },
+  // Split replaces the Alt+P open with a focus handoff (the pane is always
+  // on screen), so its hint segment names the arrow instead.
+  'hint-seg-read': { zh: '→ 阅读', en: '→ read' },
   'hint-seg-copy': { zh: 'Alt+C 复制', en: 'Alt+C copy' },
   'hint-seg-expand': { zh: 'Alt+E 展开', en: 'Alt+E expand' },
   'hint-seg-regex': { zh: 'Alt+R 正则', en: 'Alt+R regex' },
@@ -134,6 +137,10 @@ export const dict = {
   'hint-preview': {
     zh: '**↑↓** 逐段 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制 · **Esc** 返回列表',
     en: '**↑↓** step messages · **n/N** hit · **Enter** resume · **Alt+C** copy · **Esc** back to list',
+  },
+  'hint-preview-split': {
+    zh: '**←** 返回列表 · **↑↓** 逐段 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制',
+    en: '**←** back to list · **↑↓** step messages · **n/N** hit · **Enter** resume · **Alt+C** copy',
   },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',
@@ -210,9 +217,10 @@ export const dict = {
   'help-list-regex': { zh: '切换正则匹配', en: 'Toggle regex matching' },
   'help-list-time': { zh: '切换时间范围', en: 'Cycle the time window' },
   'help-list-title-only': { zh: '切换标题限定（仅搜索会话标题）', en: 'Toggle title-only search (session titles only)' },
-  'help-list-preview': {
-    zh: '阅读会话内容（split 聚焦右栏 / classic 全屏预览）',
-    en: 'Read the conversation (focus the pane in split / full-screen preview in classic)',
+  'help-list-preview': { zh: '打开全屏预览（classic 布局）', en: 'Open the full-screen preview (classic layout)' },
+  'help-list-read-split': {
+    zh: '聚焦右栏阅读窗（← 回到列表）',
+    en: 'Focus the reader pane (← returns to the list)',
   },
   'help-list-copy': { zh: '复制选中的命中消息', en: 'Copy the selected hit message' },
   'help-list-expand': { zh: '展开 / 收起全部命中', en: 'Expand / collapse all hits' },
@@ -227,7 +235,7 @@ export const dict = {
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
   'help-preview-resume': { zh: '恢复该会话（进入确认）', en: 'Resume this session (confirm)' },
   'help-preview-copy': { zh: '复制光标所在消息', en: 'Copy the message under the cursor' },
-  'help-preview-focus': { zh: '焦点移回左栏列表（split 布局）', en: 'Move focus back to the list (split layout)' },
+  'help-preview-focus': { zh: '焦点移回左栏列表', en: 'Move focus back to the list' },
   'help-preview-esc': { zh: '返回列表', en: 'Back to the list' },
   'help-list-layout': {
     zh: '布局形态：分栏 / 经典（/settings 或行配置 layout）',
@@ -235,7 +243,7 @@ export const dict = {
   },
   'help-mouse-click': { zh: '选中并打开确认', en: 'Select and open the confirm' },
   'help-mouse-hover': { zh: '移动选择', en: 'Move the selection' },
-  'help-mouse-wheel': { zh: '按条目移动（预览内按行滚动）', en: 'Move by row (scroll by line in the preview)' },
+  'help-mouse-wheel': { zh: '按档移动（列表按条目、阅读窗按行）', en: 'Move by notch (selection in the list, lines in the reader)' },
   'help-mouse-context': { zh: '打开上下文菜单（0.10+ 宿主）', en: 'Open the context menu (0.10+ hosts)' },
   // The overlay's own footer hint (HintLine `**key**` vocabulary).
   'help-footer': { zh: '**Esc** 返回', en: '**Esc** back' },

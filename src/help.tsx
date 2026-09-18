@@ -71,7 +71,7 @@ export function keysColumnWidth(sections: readonly HelpSection[]): number {
  *
  * The keys column is intentionally language-free — only `action` localizes.
  */
-export function helpSections(columns: number): readonly HelpSection[] {
+export function helpSections(columns: number, splitActive = false): readonly HelpSection[] {
   const sections: readonly HelpSection[] = [
     {
       title: t('help-section-list'),
@@ -81,7 +81,12 @@ export function helpSections(columns: number): readonly HelpSection[] {
         { keys: 'Alt+R', action: t('help-list-regex') },
         { keys: 'Alt+T', action: t('help-list-time') },
         { keys: 'Alt+N', action: t('help-list-title-only') },
-        { keys: 'Alt+P', action: t('help-list-preview') },
+        // Split and classic spell the reader entry differently: split focuses
+        // the always-on pane with →, classic opens the full-screen preview
+        // with Alt+P. The sheet follows the live layout (the scene passes it).
+        splitActive
+          ? { keys: '→', action: t('help-list-read-split') }
+          : { keys: 'Alt+P', action: t('help-list-preview') },
         { keys: 'Alt+C', action: t('help-list-copy') },
         { keys: 'Alt+E', action: t('help-list-expand') },
         { keys: 'Enter', action: t('help-list-resume') },
@@ -101,7 +106,7 @@ export function helpSections(columns: number): readonly HelpSection[] {
         { keys: 'n/N', action: t('help-preview-hits') },
         { keys: 'Enter', action: t('help-preview-resume') },
         { keys: 'Alt+C', action: t('help-preview-copy') },
-        { keys: 'Alt+P', action: t('help-preview-focus') },
+        { keys: '←', action: t('help-preview-focus') },
         { keys: 'Esc', action: t('help-preview-esc') },
       ],
     },
@@ -163,10 +168,13 @@ export function HelpOverlay(props: {
   ui: TuiSceneProps['ui']
   columns: number
   rows: number
+  /** Which layout the scene is rendering: split spells the reader entry as
+   *  the focus arrow, classic as Alt+P. */
+  splitActive?: boolean
 }): React.ReactElement {
-  const { ui, columns, rows } = props
+  const { ui, columns, rows, splitActive } = props
   const { Box, Text } = ui
-  const sections = helpSections(columns)
+  const sections = helpSections(columns, splitActive === true)
   const keyWidth = keysColumnWidth(sections)
 
   // The body as one flat line list; blank separators between sections carry

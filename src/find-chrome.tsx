@@ -46,13 +46,16 @@ export function HintLine(props: { React: TuiSceneProps['React']; ui: Ui; text: s
  * A static wide/narrow pair cannot track the actual rendered width (CJK
  * labels, per-language lengths), so the line is composed here: the first and
  * last segments always render, middle segments drop in reverse priority
- * order when the full line would exceed the columns budget.
+ * order when the full line would exceed the columns budget. `splitActive`
+ * picks the reader segment's vocabulary (focus arrow vs. Alt+P open).
  */
-export function composeListHint(columns: number): string {
+export function composeListHint(columns: number, splitActive = false): string {
   const segments = [
     t('hint-seg-resume'),
     t('hint-seg-scope'),
-    t('hint-seg-preview'),
+    // The reader is always on screen in split, so the pane segment names the
+    // focus arrow there; classic keeps Alt+P (the only way to open it).
+    splitActive ? t('hint-seg-read') : t('hint-seg-preview'),
     t('hint-seg-copy'),
     t('hint-seg-expand'),
     t('hint-seg-regex'),

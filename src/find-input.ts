@@ -209,10 +209,12 @@ export function useFindInput(deps: FindInputDeps): void {
             const next = key.pageUp ? current - jump : current + jump
             return Math.min(lastLine, Math.max(0, next))
           })
-        } else if (altOnly && lower === 'p' && splitActive) {
-          // Split only: hand focus back to the list. The reader pane stays
-          // mounted — classic's full-screen preview exits through Esc, so
-          // this chord must stay swallowed there (behavior unchanged).
+        } else if (key.leftArrow && splitActive) {
+          // Split only: ← hands the keyboard back to the list. The reader
+          // pane stays mounted; Esc reaches the same place (see the shared
+          // escape branch), so both vocabulary paths stay honest. Classic's
+          // full-screen preview has no pane to the left — ← stays a no-op
+          // there (Esc is its back-out).
           modeRef.current = 'list'
           setMode('list')
         } else if (plain && lower === 'n') {
@@ -284,26 +286,18 @@ export function useFindInput(deps: FindInputDeps): void {
         beginResume()
         return
       }
-      // Preview/copy/expand live on Alt+P / Alt+C / Alt+E ONLY. Bare letters
-      // always type — a bare-key form fought the first keystroke of every
-      // query on a real terminal and was removed in v0.1.2. Alt+P works on
-      // cards too (preview from the head of the conversation); Alt+C needs a
-      // concrete hit, while Alt+E toggles every message hit on the card.
+      // Copy/expand live on Alt+C / Alt+E; the classic preview opens on
+      // Alt+P. Bare letters always type — a bare-key form fought the first
+      // keystroke of every query on a real terminal and was removed in
+      // v0.1.2. Alt+P works on cards too (preview from the head of the
+      // conversation); Alt+C needs a concrete hit, while Alt+E toggles every
+      // message hit on the card.
       if (altOnly && lower === 'p') {
-        if (splitActive) {
-          // Split: Alt+P hands focus to the reader — no open/close, no
-          // re-anchor (the reader follows the selection while it is on the
-          // list, and manual scrolls in the reader are its own business).
-          // With nothing selected the reader has nothing to anchor to, so
-          // the chord stays inert like the classic branch below (R-057): a
-          // focus handoff onto a dismissed pane would flip the hint line to
-          // the reader vocabulary and redefine Esc with nothing to show.
-          if (selectedRow !== undefined) {
-            modeRef.current = 'preview'
-            setMode('preview')
-          }
-          return
-        }
+        // Split: the reader pane is always on screen, so there is nothing to
+        // "open" — focus moves with → there and ← back (handled here and in
+        // the preview branch), and Alt+P is deliberately inert (it used to
+        // hand focus over, which the arrow keys now do).
+        if (splitActive) return
         const row = selectedRow
         if (row !== undefined) {
           // Anchor: a hit row parks the cursor on its own message's header
@@ -339,6 +333,18 @@ export function useFindInput(deps: FindInputDeps): void {
       if (altOnly && lower === 'h') {
         modeRef.current = 'help'
         setMode('help')
+        return
+      }
+      if (key.rightArrow && splitActive) {
+        // Split: → hands the keyboard to the reader pane (← brings it back;
+        // both replace the old Alt+P focus toggle). With nothing selected the
+        // reader has nothing to anchor to, so the key stays inert: a focus
+        // handoff onto a dismissed pane would flip the hint line to the
+        // reader vocabulary and redefine Esc with nothing to show (R-057).
+        if (selectedRow !== undefined) {
+          modeRef.current = 'preview'
+          setMode('preview')
+        }
         return
       }
       if (key.upArrow) {

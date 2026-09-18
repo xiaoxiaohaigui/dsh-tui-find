@@ -51,6 +51,28 @@ describe('helpSections', () => {
     }
   })
 
+  it('teaches the focus arrows in split and the Alt+P open in classic', () => {
+    setLangOverride('en')
+    // The list section's reader entry is layout-specific: classic opens the
+    // full-screen preview with Alt+P, split focuses the always-on pane with
+    // →. The preview section's back-out is ← in BOTH layouts (Esc reaches
+    // the same place), so only the list entry swaps.
+    const classic = allKeys(helpSections(100, false))
+    expect(classic).toContain('Alt+P')
+    expect(classic).not.toContain('→')
+    expect(classic).toContain('←')
+
+    const split = allKeys(helpSections(100, true))
+    expect(split).toContain('→')
+    expect(split).toContain('←')
+    expect(split).not.toContain('Alt+P')
+    // Same row counts either way: the vocabulary swaps, the sheet's shape
+    // does not.
+    expect(helpSections(100, true).map(section => section.rows.length)).toEqual(
+      helpSections(100, false).map(section => section.rows.length),
+    )
+  })
+
   it('fills every cell at a comfortable width', () => {
     setLangOverride('en')
     const sections = helpSections(120)

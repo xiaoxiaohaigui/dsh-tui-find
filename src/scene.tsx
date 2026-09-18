@@ -48,7 +48,7 @@ import {
   PANE_CHROME_LINES,
   hasTerminalImageHooks,
   splitLayout,
-  wheelStep,
+  wheelRows,
   type ContextBoxProps,
   type ContextMenuEventLike,
   type CopyEntry,
@@ -563,7 +563,7 @@ export function FindScene(props: TuiSceneProps & {
         : t('hit-count', { sessions: hits.length, hits: totalHits })
   const header = spreadRow(` ${t('scene-title')}`, headerRight, Math.max(0, columns - 1))
 
-  const listHint = composeListHint(columns)
+  const listHint = composeListHint(columns, splitActive)
 
   // The open menu's overlay: a full-viewport click-catcher (click/right-click
   // anywhere outside closes) plus the clamped anchored panel — as SIBLINGS,
@@ -663,9 +663,11 @@ export function FindScene(props: TuiSceneProps & {
       // stepPreview), and in the split layout the list must keep answering
       // the wheel while the reader holds the keyboard focus. While a menu
       // stands the backdrop consumes pointer events anyway, and outside the
-      // list modes the list box is not rendered at all.
+      // list modes the list box is not rendered at all. One notch moves the
+      // selection by the event's own row count (the host's ±3 convention),
+      // not a single row.
       if (actionPendingRef.current || flat.length === 0) return
-      const by = wheelStep(event.deltaY, event.deltaX)
+      const by = wheelRows(event.deltaY, event.deltaX)
       if (by === 0) return
       setSelected(current => Math.min(Math.max(0, flat.length - 1), Math.max(0, current + by)))
     },
@@ -750,7 +752,7 @@ export function FindScene(props: TuiSceneProps & {
   if (mode === 'help') {
     // Render-only overlay: the keyboard stays with the find-input branches
     // (Alt+H toggles, Esc returns, everything else is swallowed).
-    return <HelpOverlay React={React} ui={ui} columns={columns} rows={rows} />
+    return <HelpOverlay React={React} ui={ui} columns={columns} rows={rows} splitActive={splitActive} />
   }
 
   if (mode === 'confirm' && resumeTarget !== undefined) {
@@ -821,7 +823,7 @@ export function FindScene(props: TuiSceneProps & {
         </Box>
         {noticeRow}
         {dividerRow}
-        {hintRow(mode === 'preview' ? t('hint-preview') : listHint)}
+        {hintRow(mode === 'preview' ? t('hint-preview-split') : listHint)}
         {menuOverlay}
       </Box>
     )

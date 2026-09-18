@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import { selectionMarker, wheelStep } from '../src/find-types.js'
+import { selectionMarker, wheelRows } from '../src/find-types.js'
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
 import { mount, sessionWithMessages, waitFor } from './harness.js'
@@ -10,15 +10,29 @@ setLangOverride('en')
 // the override for every later describe in this file.
 afterAll(() => setLangOverride(undefined))
 
-describe('wheelStep', () => {
-  it('moves one row for vertical wheel events', () => {
-    expect(wheelStep(1)).toBe(1)
-    expect(wheelStep(-1)).toBe(-1)
+describe('wheelRows', () => {
+  it('moves by the notch size the host reports, not one row', () => {
+    // The host sends ±3 per notch on its own screens; a /find surface must
+    // scroll at the same speed instead of collapsing the delta to one row.
+    expect(wheelRows(3)).toBe(3)
+    expect(wheelRows(-3)).toBe(-3)
+    expect(wheelRows(1)).toBe(1)
+    expect(wheelRows(-1)).toBe(-1)
+    // Oversized and fractional deltas normalize to a whole-row step of at
+    // least one; a zero-height delta is still nothing.
+    expect(wheelRows(5)).toBe(5)
+    expect(wheelRows(0.4)).toBe(1)
+    expect(wheelRows(-0.4)).toBe(-1)
+    expect(wheelRows(0)).toBe(0)
+    expect(wheelRows(Number.NaN)).toBe(0)
+    expect(wheelRows(Number.POSITIVE_INFINITY)).toBe(0)
   })
 
   it('ignores horizontal-only wheel events', () => {
-    expect(wheelStep(0, 1)).toBe(0)
-    expect(wheelStep(0, -1)).toBe(0)
+    expect(wheelRows(0, 1)).toBe(0)
+    expect(wheelRows(0, -1)).toBe(0)
+    // A diagonal event still scrolls vertically (deltaY wins).
+    expect(wheelRows(-3, 3)).toBe(-3)
   })
 })
 

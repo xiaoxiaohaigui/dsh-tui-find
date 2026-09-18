@@ -32,7 +32,7 @@ import {
   ROLE_MARK,
   roleMarkColor,
   selectionMarker,
-  wheelStep,
+  wheelRows,
   type ContextBoxProps,
   type ContextMenuEventLike,
   type FlatRow,
@@ -186,12 +186,14 @@ export function usePreviewModel(
     }
     return table
   }, [session, lines])
-  // Preview wheel: one line per notch — the cursor is the scroll driver,
-  // the window follows it through fitScrollWindow.
+  // Preview wheel: the cursor is the scroll driver and the window follows it
+  // through fitScrollWindow; one notch advances by the event's row count
+  // (the host's ±3 convention), so the pane scrolls at the TUI's own speed
+  // instead of a line per notch.
   const stepByWheel = useCallback(
     (event: WheelEventLike) => {
       if (!readerActiveRef.current) return
-      const by = wheelStep(event.deltaY, event.deltaX)
+      const by = wheelRows(event.deltaY, event.deltaX)
       if (by === 0) return
       setCursor(current => {
         const last = Math.max(0, lines.length - 1)
