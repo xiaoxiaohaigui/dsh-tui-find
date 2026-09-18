@@ -100,6 +100,31 @@ describe('mergeRanges', () => {
     expect(mergeRanges([[0, 4], [9, 14]])).toEqual([[0, 4], [9, 14]])
     expect(mergeRanges([])).toEqual([])
   })
+
+  // Phase 3b: an already-ordered array skips the sort. The observable
+  // contract is unchanged, so what is pinned here is the property the fast
+  // path must not break — the input is not mutated, and duplicates that
+  // touch still union — over both the ordered and the unordered shape.
+  it('agrees with the sort path on ordered input and never mutates its input', () => {
+    const ordered: [number, number][] = [[0, 2], [2, 5], [7, 9], [12, 20]]
+    const snapshot = JSON.stringify(ordered)
+    expect(mergeRanges(ordered)).toEqual([[0, 5], [7, 9], [12, 20]])
+    expect(JSON.stringify(ordered)).toBe(snapshot)
+
+    const descending: [number, number][] = [[12, 20], [7, 9], [2, 5], [0, 2]]
+    const descendingSnapshot = JSON.stringify(descending)
+    expect(mergeRanges(descending)).toEqual([[0, 5], [7, 9], [12, 20]])
+    expect(JSON.stringify(descending)).toBe(descendingSnapshot)
+
+    // An equal start with a SHRINKING end is a descent too, and the union of
+    // the two overlap cases must match what the sort would have produced.
+    expect(mergeRanges([[4, 9], [4, 6], [8, 12]])).toEqual([[4, 12]])
+    expect(mergeRanges([[4, 6], [4, 9], [8, 12]])).toEqual([[4, 12]])
+
+    // A long ordered run (the single-letter-needle shape) stays exact.
+    const run = Array.from({ length: 500 }, (_, at) => [at * 3, at * 3 + 2] as [number, number])
+    expect(mergeRanges(run)).toEqual(run)
+  })
 })
 
 describe('searchSessions multi-term AND', () => {

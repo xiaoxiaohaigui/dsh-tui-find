@@ -104,6 +104,23 @@ describe('searchSessions pinyin matching', () => {
     expect(flat(searchSessions(chongqing, 'zq', P))).toEqual([['重庆', '[[0,2]]']])
   })
 
+  it('matches initials longer than the text, and stops paying for them (phase 3a)', () => {
+    // The initials chains spell one letter per table character, so a needle
+    // longer than that count cannot occur there — the search skips both
+    // scans. The guard must be invisible: a needle that IS long enough still
+    // matches, and one that is not still returns nothing (never a wrong hit).
+    expect(flat(searchSessions([make('张三')], 'zs', P))).toEqual([['张三', '[[0,2]]']])
+    expect(flat(searchSessions([make('张三')], 'zszs', P))).toEqual([])
+    // Two table characters, needle of three: skipped by the guard, no match —
+    // while the same needle against a three-character text still finds it.
+    expect(flat(searchSessions([make('张三')], 'zsz', P))).toEqual([])
+    expect(flat(searchSessions([make('张三张')], 'zsz', P))).toEqual([['张三张', '[[0,3]]']])
+    // The count is over the whole document, so a needle as long as the
+    // document's table characters still matches, and one longer still does not.
+    expect(flat(searchSessions([make('城市地铁')], 'csdt', P))).toEqual([['城市地铁', '[[0,4]]']])
+    expect(flat(searchSessions([make('城市地铁')], 'csdts', P))).toEqual([])
+  })
+
   it('maps a pinyin highlight onto the original characters, not the fold', () => {
     // 'zhang' hits 张 through pinyin AND the literal "zhang" in the text —
     // both ranges land on original-string offsets and stay disjoint.

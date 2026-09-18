@@ -390,6 +390,15 @@ export interface PinyinFolds {
   /** The shared per-code-point original-text offsets the chains that are NOT
    *  identity map through (see {@link FoldedText.cpStart}). */
   readonly cpStart: Uint32Array | undefined
+  /**
+   * How many characters of the document the pinyin table covers. The initials
+   * chains spell exactly ONE letter per reading (and one per character for the
+   * first-only chain), so a needle longer than this count cannot occur in
+   * either of them — the guard that lets a long initials query skip both
+   * `indexOf` scans without looking at the text at all. Counted during the
+   * build, where the table lookup already happened.
+   */
+  readonly tableChars: number
 }
 
 /**
@@ -508,6 +517,9 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   let allInitUnits = 0
   let firstInitUnits = 0
   let hasTable = false
+  /** Characters the table covers — the length bound for the initials chains
+   *  (see {@link PinyinFolds.tableChars}). */
+  let tableChars = 0
   // Per-chain identity verdicts, evaluated with the same rule as buildFold: a
   // chain is identity only when EVERY code point is one original unit and one
   // folded unit, so folded index == original index (see buildFold).
@@ -523,6 +535,7 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     if (size !== 1) identity = { all: false, first: false, allInit: false, firstInit: false }
     const before = { all: allUnits, first: firstUnits, allInit: allInitUnits, firstInit: firstInitUnits }
     const parsed = readingsOf(text.slice(at, utf16))
+    if (parsed !== undefined) tableChars += 1
     if (parsed !== undefined) {
       hasTable = true
       // Every reading is appended exactly as the table spells it — readings
@@ -632,7 +645,7 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   const firstInitials = shareInitials
     ? allInitials
     : withBits(firstInit.copied, identity.firstInit, cumUnits.firstInit, undefined, firstInitUnits)
-  return { allReadings, firstReading, allInitials, firstInitials, cpStart: sharedStart }
+  return { allReadings, firstReading, allInitials, firstInitials, cpStart: sharedStart, tableChars }
 }
 
 /** Build one chain's dense syllable-boundary bitmap from the recorded starts.
@@ -676,6 +689,12 @@ function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefine
 function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
   const ranges: [number, number][] = []
   const seen = new Set<FoldedText>()
+  // An initials chain spells one letter per reading (and one per character for
+  // the first-only chain), so a needle longer than the document's table
+  // character count cannot occur in it: skip both `indexOf` scans outright.
+  // The reading chains are exempt — one character's reading can be several
+  // letters, so their folds are longer than the count.
+  const initialsViable = needle.length <= folds.tableChars
   for (const [fold, bySegment] of [
     [folds.allReadings, true],
     [folds.firstReading, true],
@@ -684,6 +703,7 @@ function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
   ] as const) {
     if (seen.has(fold)) continue
     seen.add(fold)
+    if (!bySegment && !initialsViable) continue
     ranges.push(
       ...(bySegment ? rangesInPinyinFold(fold, needle, folds.cpStart) : rangesInFold(fold, needle, folds.cpStart)),
     )
@@ -935,15 +955,34 @@ export function parseQueryTerms(query: string, caseSensitive = false): string[] 
  * Single-term results are already sorted and disjoint — they come out
  * unchanged.
  *
+ * Already-ordered input (one term; the pinyin chains and `indexOf` both
+ * produce ascending ranges) skips the sort entirely: the verification scan
+ * below is one comparison per range, and on a short needle over a large index
+ * that array runs to six figures, where the sort was measurably the single
+ * biggest cost left in a keystroke (phase 3b).
+ *
  * @param ranges - Any order, possibly overlapping; not mutated.
  * @returns A new sorted, disjoint array.
  */
 export function mergeRanges(
   ranges: readonly (readonly [number, number])[],
 ): [number, number][] {
-  const sorted = [...ranges].sort((left, right) => left[0] - right[0] || left[1] - right[1])
   const merged: [number, number][] = []
-  for (const [start, end] of sorted) {
+  // The scan aborts at the first descent, so a genuinely multi-term result
+  // pays only until its first out-of-order pair — usually its second element.
+  let ordered = true
+  for (let at = 1; at < ranges.length; at++) {
+    const previous = ranges[at - 1]!
+    const current = ranges[at]!
+    if (current[0] < previous[0] || (current[0] === previous[0] && current[1] < previous[1])) {
+      ordered = false
+      break
+    }
+  }
+  const source = ordered
+    ? ranges
+    : [...ranges].sort((left, right) => left[0] - right[0] || left[1] - right[1])
+  for (const [start, end] of source) {
     const previous = merged[merged.length - 1]
     if (previous !== undefined && start <= previous[1]) {
       if (end > previous[1]) previous[1] = end
