@@ -54,6 +54,33 @@ export function waitFor(ms = 100): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/** The SGR run that paints `glyph`, verbatim — the escapes immediately before
+ *  it, skipping the padding cell the badge's own text carries. Style
+ *  assertions need the RAW stream (`latest()` strips escapes), and taking the
+ *  run rather than the whole frame keeps them honest about what is styled. */
+export function glyphStyle(frame: string, glyph: string): string {
+  const at = frame.lastIndexOf(glyph)
+  if (at < 0) return ''
+  return /((?:\u001b\[[0-9;]*m)+)[^\S\r\n]*$/.exec(frame.slice(0, at))?.[1] ?? ''
+}
+
+/** Whether an SGR run sets a background, at ANY palette depth: the 8/16-colour
+ *  codes (40-47, 100-107) and the 256/truecolour `48;…` forms. Which one a
+ *  theme produces follows the HOST generation (0.10.1 renders
+ *  `userMessageBackgroundHover` as SGR 44, 0.10.2 as truecolor), so a test
+ *  pinning one depth fails on the other for no real reason. `49` (default
+ *  background) is a RESET, not a fill, and does not count. */
+export function hasBackground(style: string): boolean {
+  for (const match of style.matchAll(/\u001b\[([0-9;]*)m/g)) {
+    for (const part of (match[1] ?? '').split(';')) {
+      if (part.length === 0) continue
+      const value = Number(part)
+      if ((value >= 40 && value <= 47) || (value >= 100 && value <= 107) || value === 48) return true
+    }
+  }
+  return false
+}
+
 /** Poll the cumulative stream until `pattern` appears or the deadline lapses.
  *  Stream arrival is arrival-driven (flush gaps double up to their ceiling,
  *  parallel workers and cold working-tree copies add scheduling delay), so

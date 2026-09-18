@@ -16,6 +16,7 @@ import {
   formatWhen,
   roleMarkColor,
   selectionMarker,
+  type ClickEventLike,
   type ContextBoxProps,
   type ContextMenuEventLike,
   type FlatRow,
@@ -47,16 +48,23 @@ export function ListView(props: {
   width: number
   onRowClick: (rowIndex: number) => void
   onRowHover: (rowIndex: number) => void
+  /** Toggle a session's folded hits — the `(+N)` badge's own click, which
+   *  never reaches the row's resume path (see the badge below). */
+  onRowFold: (rowIndex: number) => void
   onWheel: (event: WheelEventLike) => void
   /** Right-click a row; attached by the scene only on 0.10+ kits (the 0.9
    *  runtime dispatches no context-menu events and the prop stays absent). */
   onRowContextMenu?: (rowIndex: number, event: ContextMenuEventLike) => void
 }): React.ReactElement {
-  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, width, onRowClick, onRowHover, onWheel, onRowContextMenu } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, width, onRowClick, onRowHover, onRowFold, onWheel, onRowContextMenu } = props
   const { Box, Text } = ui
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
   const ContextBox = Box as unknown as React.ComponentType<ContextBoxProps>
   const { useState, useMemo } = R
+  // The badge's own hover highlight (one pointer, so one row at a time). It
+  // exists to advertise that the badge is clickable: hovering a row already
+  // moves the selection, so a plain row hover would teach nothing.
+  const [foldHover, setFoldHover] = useState<number | undefined>(undefined)
 
   // Scroll window over the flat rows, fitted in physical lines so the
   // selected row is always on screen (fitScrollWindow for the contract).
@@ -151,22 +159,37 @@ export function ListView(props: {
         const roleColor: TextColor | undefined =
           hit.role === undefined ? undefined : roleMarkColor(ui, hit.role)
         const marker = selectionMarker(isSelected, 'message')
-        // The `(+N)` tail is reserved from the text budget even while the
-        // row is selected: a budget that depends on the selection would
-        // reflow the row's whole content on every focus move.
-        const more = row.more > 0 ? t('more-hits', { count: row.more }) : undefined
-        const moreReserve = more === undefined ? 0 : displayWidth(more) + 1
+        // The fold badge reserves its own cells from the text budget even
+        // while the row is selected: a budget that depends on the selection
+        // would reflow the row's whole content on every focus move. The
+        // chevron is the host's own fold vocabulary (PromptInput's `▸ stats` /
+        // `▾ stats` badge): a bare `(+N)` reads as a passive counter, and the
+        // point of this control is that it invites a click.
+        const foldLabel =
+          row.fold === undefined
+            ? undefined
+            : row.fold.expanded
+              ? `▾ ${t('fold-collapse')}`
+              : `▸ ${t('more-hits', { count: row.fold.hidden })}`
+        const badgeReserve = foldLabel === undefined ? 0 : displayWidth(foldLabel) + 1
         const prefix = `#${hit.seq ?? '·'} ${roleLabel}: `
-        const budget = Math.max(1, hitWidth - displayWidth(marker) - displayWidth(prefix) - moreReserve)
+        const budget = Math.max(1, hitWidth - displayWidth(marker) - displayWidth(prefix) - badgeReserve)
         // One line, guaranteed: newlines flatten, and the visible slice is
         // cut around the first highlight so the keyword cannot be truncated
         // out of view on a long message.
         const line = hitLine(hit.text, hit.ranges, budget)
+        const badgeHovered = foldHover === rowIndex
         return (
           <ContextBox
             key={`m${rowIndex}`}
             flexDirection="row"
             flexShrink={0}
+            // The row stretches to the list surface on its own (a column
+            // parent stretches its children), and the badge rides its RIGHT
+            // edge — the same column on every row, so the fold control is a
+            // stable mouse target instead of trailing whatever each hit's
+            // text happens to measure.
+            justifyContent="space-between"
             {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
             onClick={() => onRowClick(rowIndex)}
             onMouseEnter={() => onRowHover(rowIndex)}
@@ -174,19 +197,44 @@ export function ListView(props: {
               ? { onContextMenu: (event: ContextMenuEventLike) => onRowContextMenu(rowIndex, event) }
               : {})}
           >
-            <Text color={isSelected ? 'suggestion' : 'subtle'}>{marker}</Text>
-            <Text dimColor={!isSelected} {...(isSelected && roleColor !== undefined ? { color: roleColor } : {})}>
-              {prefix}
-            </Text>
-            <HighlightedText
-              React={R}
-              ui={ui}
-              text={line.text}
-              ranges={line.ranges}
-              color="warning"
-              width={budget}
-            />
-            {more !== undefined ? <Text dimColor={!isSelected}>{` ${more}`}</Text> : null}
+            <Box flexDirection="row" flexShrink={1}>
+              <Text color={isSelected ? 'suggestion' : 'subtle'}>{marker}</Text>
+              <Text dimColor={!isSelected} {...(isSelected && roleColor !== undefined ? { color: roleColor } : {})}>
+                {prefix}
+              </Text>
+              <HighlightedText
+                React={R}
+                ui={ui}
+                text={line.text}
+                ranges={line.ranges}
+                color="warning"
+                width={budget}
+              />
+            </Box>
+            {foldLabel !== undefined ? (
+              // A nested click target: the host dispatches to the deepest hit
+              // node and honours the bubble-stop, so this click folds the card
+              // and never reaches the row's own handler — which would otherwise
+              // open the resume confirm (Alt+E had no mouse counterpart; that
+              // was the reported gap). The hover background is the host's own
+              // clickable-affordance idiom (ClickableDivider, the todo fold).
+              <Box
+                flexShrink={0}
+                {...(badgeHovered ? { backgroundColor: 'userMessageBackgroundHover' as const } : {})}
+                onClick={(event: ClickEventLike) => {
+                  event.stopImmediatePropagation()
+                  onRowFold(rowIndex)
+                }}
+                onMouseEnter={() => setFoldHover(rowIndex)}
+                onMouseLeave={() => setFoldHover(current => (current === rowIndex ? undefined : current))}
+              >
+                <Text
+                  {...(badgeHovered ? { color: 'suggestion' as const } : {})}
+                  dimColor={!badgeHovered && !isSelected}
+                  bold={badgeHovered}
+                >{` ${foldLabel}`}</Text>
+              </Box>
+            ) : null}
           </ContextBox>
         )
       })}

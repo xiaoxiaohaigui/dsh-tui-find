@@ -51,11 +51,11 @@ Keys inside the scene:
 | `↑↓` / `PgUp` `PgDn` | Move between entries / page |
 | `→` / `←` | Split layout: → focuses the reader pane, ← returns to the list (the pane is always on screen — nothing to open or close) |
 | `Alt+P` | Classic layout: open the full-screen preview (anchored on the hit, highlighted); in the reader `↑↓` scroll line by line, `PgUp`/`PgDn` page, `n`/`N` jump between hits (wrapping), the wheel scrolls by notch |
-| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message at the top of the view) / expand, collapse the session's hits |
+| `Alt+C` / `Alt+E` | Copy the hit's text (in the preview, the message at the top of the view) / fold, unfold this session's hits (the row-end `▸ (+N)` badge's own action) |
 | `Alt+H` | Keyboard-help panel |
 | `↵` / `Esc` | Resume session (double confirmation) / clear the query, go back, exit |
 
-Mouse: left-click selects, hover highlights, the wheel moves the selection by the host's own notch size (about 3 rows per notch; inside the reader it scrolls the reader by notch); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session — in the preview, copy the message under the cursor.
+Mouse: left-click selects, hover highlights, the wheel moves the selection by the host's own notch size (about 3 rows per notch; inside the reader it scrolls the reader by notch); a session with more than three hits carries a `▸ (+N)` badge at the right end of its last visible hit row — **click it to reveal the session's remaining hits** (it turns into `▾ less` in place, and lights up on hover; it is the one control whose click does not follow the row, which selects and opens the resume confirmation); right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session.
 
 > The scene layout is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split); narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview.
 
@@ -122,7 +122,7 @@ npm test             # pretest builds and generates fixtures, then runs the full
 npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (319 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin with cross-word initials / title-only / time window / scope filtering), the preview reader (hit-aware anchoring and re-landing as the query is typed), keyboard help (layout-aware vocabulary), scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the ←/→ focus handoff, selection anchoring, the width fallback and wheel step size), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
+Test coverage (324 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin with cross-word initials / title-only / time window / scope filtering), the preview reader (hit-aware anchoring, re-landing as the query is typed, cursor-less line scrolling and window-relative n/N), keyboard help (layout-aware vocabulary, the mouse fold badge), scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the ←/→ focus handoff, selection anchoring, the width fallback, wheel step size, and badge folding that never opens the row), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 

@@ -606,6 +606,51 @@ describe.skipIf(!generation10)('split pointer into the list from reader focus', 
       harness.dispose()
     }
   })
+
+  it('folds a card from its badge inside the narrow list column', async () => {
+    // The badge must work in the split layout too, where the list column is
+    // 70 columns wide rather than the terminal's own width: it is right-
+    // aligned on the COLUMN, and its click must not spill into the reader
+    // pane beside it (nor into the row's resume path). Five hits so the fold
+    // has something to reveal.
+    const session = sessionWithMessages([
+      'needle one',
+      'needle two',
+      'needle three',
+      'needle four',
+      'needle five',
+    ])
+    const harness = await mount(session, { ...wide, fullscreen: true })
+    try {
+      harness.resize(121, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/▸\s*\(\+2\)/)
+      // The badge is right-aligned on the LIST COLUMN, so it ends at column
+      // 70 (listWidth) whatever the terminal's own width — measured by
+      // probing: columns 65-70 fold, 63-64 (and left) open the row's resume
+      // confirm. The row it rides is the one rendering the badge.
+      const badgeRow =
+        harness
+          .latest()
+          .split('\r')
+          .findIndex(line => line.includes('(+2)')) + 1
+      harness.clickAt(67, badgeRow)
+      await waitFor()
+      // A resize forces the full repaint the assertions read: the click's own
+      // frame is a diff, and a newly inserted row can be missing from one.
+      harness.resize(120, 20)
+      await waitFor()
+      const frame = harness.latest()
+      expect(frame).toContain('needle five')
+      expect(frame).toMatch(/▾\s*less/)
+      // The reader pane is untouched: folding is a list act, and the click
+      // never reached the pane's own handlers.
+      expect(paneText(frame)).toMatch(/Read-only\s*preview/)
+      expect(frame).not.toMatch(/Resum[^?\r]{0,20}session\?/)
+    } finally {
+      harness.dispose()
+    }
+  })
 })
 
 describe('split width gate and classic layout config', () => {

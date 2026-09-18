@@ -196,15 +196,23 @@ export function FindScene(props: TuiSceneProps & {
       const isExpanded = expanded.has(hit.session.id)
       const shown = isExpanded ? messageHits.length : Math.min(PREVIEW_HITS, messageHits.length)
       rows.push({ kind: 'session', session: hit.session, titleHit, hits: hit.hits })
+      // The fold badge belongs to the final visible hit row only, and only
+      // when the card actually has hidden hits or shows them under a state
+      // the badge can leave: attaching it to every row would repeat the same
+      // (+N) on the card, and a card with nothing to fold carries no control
+      // to click. A card whose hits are all visible WITHOUT an expand-state
+      // (≤ PREVIEW_HITS) is the third case: there is no fold at all.
+      const foldable = messageHits.length > PREVIEW_HITS
       for (let index = 0; index < shown; index++) {
         rows.push({
           kind: 'message',
           hit,
           message: messageHits[index]!,
           index,
-          // The remaining-count tail belongs to the final visible hit only;
-          // attaching it to every row repeats the same (+N) on the card.
-          more: !isExpanded && index === shown - 1 ? messageHits.length - shown : 0,
+          fold:
+            foldable && index === shown - 1
+              ? { hidden: messageHits.length - shown, expanded: isExpanded }
+              : undefined,
         })
       }
     }
@@ -310,6 +318,25 @@ export function FindScene(props: TuiSceneProps & {
     if (hit === undefined) return
     copyMessage(hit)
   }, [copyMessage, selectedMessage])
+
+  /** Flip a session's hit fold. Both the Alt+E chord and the card's own
+   *  `(+N)` badge route here, so the keyboard and the mouse can never drift
+   *  into different fold semantics. The row may be a card or any of its hit
+   *  rows — they share the session id. */
+  const toggleFold = useCallback((rowIndex: number) => {
+    const row = flat[rowIndex]
+    if (row === undefined) return
+    const id = rowSession(row).id
+    // Recent-mode cards carry no hit bundle, so there is nothing to fold.
+    const hasHits = row.kind === 'message' || (row.hits?.some(entry => entry.kind === 'message') ?? false)
+    if (!hasHits) return
+    setExpanded(current => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [flat])
 
   const beginResume = useCallback(() => {
     if (resumeTarget === undefined) return
@@ -501,8 +528,9 @@ export function FindScene(props: TuiSceneProps & {
     setUseRegex,
     setTitleOnly,
     setMode,
-    setExpanded,
     setSelected,
+    selected,
+    toggleFold,
     setPreviewWindowStart,
     setStatus,
     closeMenu,
@@ -719,6 +747,7 @@ export function FindScene(props: TuiSceneProps & {
         width={splitActive ? layout.listWidth : columns}
         onRowClick={clickRow}
         onRowHover={selectRow}
+        onRowFold={toggleFold}
         onWheel={stepRows}
         {...(contextMenuCapable ? { onRowContextMenu: openRowMenu } : {})}
       />

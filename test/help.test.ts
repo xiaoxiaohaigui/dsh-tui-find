@@ -26,9 +26,9 @@ describe('helpSections', () => {
     ])
   })
 
-  it('carries the full key inventory: 15 list rows, 7 preview rows, 4 mouse rows', () => {
+  it('carries the full key inventory: 15 list rows, 7 preview rows, 5 mouse rows', () => {
     const sections = helpSections(100)
-    expect(sections.map(section => section.rows.length)).toEqual([15, 7, 4])
+    expect(sections.map(section => section.rows.length)).toEqual([15, 7, 5])
   })
 
   it('keeps the keys column language-free while actions localize', () => {
@@ -46,9 +46,19 @@ describe('helpSections', () => {
   it('spells the key combos the way the scene and hints do', () => {
     setLangOverride('en')
     const keys = allKeys(helpSections(100))
-    for (const combo of ['<char>', 'Tab', 'Alt+R', 'Alt+T', 'Alt+N', 'Alt+P', 'Alt+C', 'Alt+E', 'Enter', '↑↓', 'PgUp/PgDn', 'Esc', 'Alt+H', 'Alt+F', 'layout', 'n/N', 'Click', 'Hover', 'Wheel']) {
+    for (const combo of ['<char>', 'Tab', 'Alt+R', 'Alt+T', 'Alt+N', 'Alt+P', 'Alt+C', 'Alt+E', 'Enter', '↑↓', 'PgUp/PgDn', 'Esc', 'Alt+H', 'Alt+F', 'layout', 'n/N', 'Click', '▸ (+N)', 'Hover', 'Wheel']) {
       expect(keys).toContain(combo)
     }
+  })
+
+  it('teaches the fold badge in the mouse section', () => {
+    // The badge is the one mouse control whose click does NOT do what a click
+    // on the row does (that opens the resume confirm), so the sheet must name
+    // it — otherwise the mouse user has no way to learn it exists.
+    setLangOverride('en')
+    const mouse = helpSections(100)[2]
+    const fold = mouse?.rows.find(row => row.keys === '▸ (+N)')
+    expect(fold?.action).toMatch(/fold|unfold/i)
   })
 
   it('teaches the focus arrows in split and the Alt+P open in classic', () => {

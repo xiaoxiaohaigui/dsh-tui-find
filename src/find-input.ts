@@ -60,8 +60,13 @@ export interface FindInputDeps {
   setUseRegex: (next: boolean | ((current: boolean) => boolean)) => void
   setTitleOnly: (next: boolean | ((current: boolean) => boolean)) => void
   setMode: (next: Mode | ((current: Mode) => Mode)) => void
-  setExpanded: (next: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => void
   setSelected: (next: number | ((current: number) => number)) => void
+  /** The selected row's index — what Alt+E folds through (the same helper
+   *  the card's `(+N)` badge calls). */
+  selected: number
+  /** Fold/unfold the hits of the session owning `rowIndex`. Shared by the
+   *  Alt+E chord and the mouse badge so both keep one set of rules. */
+  toggleFold: (rowIndex: number) => void
   /** The reader's window start: its ONLY position state (a read-only pane
    *  has no cursor). ↑↓ scroll it by a row, PgUp/PgDn by a viewport, and
    *  `n`/`N` open it on a hit's landing line (see hitLanding), so a deep
@@ -118,8 +123,9 @@ export function useFindInput(deps: FindInputDeps): void {
     setUseRegex,
     setTitleOnly,
     setMode,
-    setExpanded,
     setSelected,
+    selected,
+    toggleFold,
     setPreviewWindowStart,
     setStatus,
     flatLength,
@@ -325,20 +331,10 @@ export function useFindInput(deps: FindInputDeps): void {
         return
       }
       if (altOnly && lower === 'e') {
-        const row = selectedRow
-        if (row !== undefined) {
-          const id = row.kind === 'message' ? row.hit.session.id : row.session.id
-          // Recent-mode cards have no hit bundle, so there is nothing to
-          // expand. Result cards and their child rows share one session id.
-          const hasHits = row.kind === 'message' || (row.hits !== undefined && row.hits.some(entry => entry.kind === 'message'))
-          if (!hasHits) return
-          setExpanded(current => {
-            const next = new Set(current)
-            if (next.has(id)) next.delete(id)
-            else next.add(id)
-            return next
-          })
-        }
+        // One fold implementation for the keyboard and the mouse: the scene's
+        // toggleFold resolves the row's session and no-ops on recent cards
+        // (no hit bundle to fold) — the same rules the card's badge applies.
+        toggleFold(selected)
         return
       }
       if (altOnly && lower === 'h') {

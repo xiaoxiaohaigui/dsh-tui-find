@@ -114,7 +114,11 @@ export const dict = {
   'role-assistant': { zh: 'AI', en: 'AI' },
   'role-tool': { zh: '工具', en: 'Tool' },
   'role-title': { zh: '标题', en: 'Title' },
-  'more-hits': { zh: ' (+{{count}})', en: ' (+{{count}})' },
+  // The fold badge: hidden-hit count while collapsed, or the way back when
+  // expanded. The renderer supplies the leading cell that separates it from
+  // the hit text.
+  'more-hits': { zh: '(+{{count}})', en: '(+{{count}})' },
+  'fold-collapse': { zh: '收起', en: 'less' },
   'hit-count': { zh: '{{sessions}} 个会话 · {{hits}} 处命中', en: '{{sessions}} sessions · {{hits}} hits' },
 
   // ── hint lines (HintLine style: **key** spans render bold) ─────────────
@@ -223,7 +227,7 @@ export const dict = {
     en: 'Focus the reader pane (← returns to the list)',
   },
   'help-list-copy': { zh: '复制选中的命中消息', en: 'Copy the selected hit message' },
-  'help-list-expand': { zh: '展开 / 收起全部命中', en: 'Expand / collapse all hits' },
+  'help-list-expand': { zh: '展开 / 收起当前会话命中', en: 'Expand / collapse this session\u2019s hits' },
   'help-list-resume': { zh: '恢复选中的会话（进入确认）', en: 'Resume the selected session (confirm)' },
   'help-list-select': { zh: '移动选择', en: 'Move the selection' },
   'help-list-page': { zh: '翻页', en: 'Page up / down' },
@@ -242,6 +246,7 @@ export const dict = {
     en: 'Layout form: split / classic (/settings or the layout row-config key)',
   },
   'help-mouse-click': { zh: '选中并打开确认', en: 'Select and open the confirm' },
+  'help-mouse-fold': { zh: '折叠 / 展开该会话命中（▸ (+N) 徽标）', en: 'Fold / unfold the session\u2019s hits (the \u25b8 (+N) badge)' },
   'help-mouse-hover': { zh: '移动选择', en: 'Move the selection' },
   'help-mouse-wheel': { zh: '按档移动（列表按条目、阅读窗按行）', en: 'Move by notch (selection in the list, lines in the reader)' },
   'help-mouse-context': { zh: '打开上下文菜单（0.10+ 宿主）', en: 'Open the context menu (0.10+ hosts)' },

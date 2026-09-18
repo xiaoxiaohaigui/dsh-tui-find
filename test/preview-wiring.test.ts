@@ -1,7 +1,18 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
+
+// The fold badge's hover highlight is a STYLE, and chalk strips escapes
+// off-TTY, so the styling case below needs coloured output. `vi.hoisted` runs
+// before this file's imports, i.e. before chalk resolves FORCE_COLOR at module
+// load; every other assertion reads ANSI-stripped frames, so the extra
+// escapes change nothing for them — and a state that MUST leave no highlight
+// (badge not hovered) is asserted on their absence.
+vi.hoisted(() => {
+  process.env['FORCE_COLOR'] = '1'
+})
+
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
-import { mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
+import { glyphStyle, hasBackground, mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
 
 setLangOverride('en')
 // One language for the whole file (every frame assertion below is en), and
@@ -157,35 +168,148 @@ describe('preview scene wiring', () => {
     }
   })
 
-  it('shows the collapsed remaining count only on the final visible hit', async () => {
-    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four', 'needle five']))
+  it('folds and unfolds from the badge without taking the row\'s resume path', async () => {
+    // The reported gap: a card with more than three hits offers Alt+E on the
+    // keyboard and nothing for the mouse. The count now rides a chevron badge
+    // on the final visible hit row, right-aligned on the list surface;
+    // clicking it must fold THAT card and must not fall through to the row's
+    // own click, which opens the resume confirmation (the host dispatches to
+    // the deepest node and honours the bubble-stop). Geometry at 80x20:
+    // header row 1, search card 2-4, card title/meta 5-6, hit rows 7-9 — the
+    // badge spans the last seven columns of row 9 (measured by probing every
+    // column: 75-80 fold, 74 and left resume).
+    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four']), {
+      columns: 80,
+      rows: 20,
+      layout: 'classic',
+      fullscreen: true,
+    })
     try {
-      const frame = harness.latest()
-      const count = (frame.match(/\(\+2\)/g) ?? []).length
-      expect(count).toBe(1)
-      expect(frame).toMatch(/needlethree.*\(\+2\)/)
-      expect(frame).not.toMatch(/needleone.*\(\+2\)/)
-      expect(frame).not.toMatch(/needletwo.*\(\+2\)/)
+      harness.resize(81, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/▸\s*\(\+1\)/)
+      harness.clickAt(77, 9)
+      await waitFor()
+      harness.resize(80, 20)
+      await waitFor()
+      const opened = harness.latest()
+      // The fold ran: the fourth hit row exists and the badge flipped to the
+      // way back.
+      expect(opened).toContain('four')
+      expect(opened).toMatch(/▾\s*less/)
+      // ...and the row's own action never ran — a click that reached it would
+      // have replaced the whole screen with the resume confirm.
+      expect(opened).not.toMatch(/Resum[^?\r]{0,20}session\?/)
+
+      // The same badge folds it back: the expanded card spends one more row
+      // (the fourth hit), so the badge moved down with it — the mouse path
+      // stays symmetric, or expanding by mouse would be a one-way door.
+      harness.clickAt(77, 10)
+      await waitFor()
+      harness.resize(81, 20)
+      await waitFor()
+      const closed = harness.latest()
+      expect(closed).toMatch(/▸\s*\(\+1\)/)
+      expect(closed).not.toContain('four')
+      expect(closed).not.toMatch(/Resum[^?\r]{0,20}session\?/)
+    } finally {
+      harness.dispose()
+    }
+  }, 20_000)
+
+  it('advertises the badge as clickable on hover and restores it on leave', async () => {
+    // A passive `(+N)` taught nothing; the badge is a control. Its hover
+    // highlight is the host's own clickable-affordance treatment (the
+    // `userMessageBackgroundHover` fill ClickableDivider and the todo fold
+    // use). Asserted on the raw stream: this is a STYLE, and `latest()`
+    // strips exactly the escape that carries it — and asserted as
+    // "carries a background at all", not as one colour, because the palette
+    // depth follows the host generation. No resize between hovering and
+    // reading: the host drops its hover set on a resize (the geometry it was
+    // computed against is gone), which would read as a leave.
+    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four']), {
+      columns: 80,
+      rows: 20,
+      layout: 'classic',
+      fullscreen: true,
+    })
+    try {
+      harness.resize(81, 20)
+      await waitFor()
+      expect(harness.latest()).toMatch(/▸\s*\(\+1\)/)
+      // The selected row's own tint rides the row box, not the badge: the
+      // badge's own run carries no fill until the pointer reaches it.
+      expect(hasBackground(glyphStyle(harness.rawLatest(), '▸'))).toBe(false)
+
+      harness.movePointer(77, 9)
+      await waitFor(200)
+      expect(hasBackground(glyphStyle(harness.rawLatest(), '▸'))).toBe(true)
+
+      // Leaving for another cell of the SAME row (the row stays hovered and
+      // selected, so only the badge's own state changes) drops the fill. The
+      // resize then forces a full repaint, which is what makes the assertion
+      // about the leave handler rather than about the host's own hover
+      // bookkeeping.
+      harness.movePointer(20, 9)
+      await waitFor(150)
+      harness.resize(80, 20)
+      await waitFor()
+      expect(hasBackground(glyphStyle(harness.rawLatest(), '▸'))).toBe(false)
     } finally {
       harness.dispose()
     }
   })
 
-  it('keeps the collapsed remaining count visible while its row is selected', async () => {
+  it('shows the fold badge only on the final visible hit', async () => {
     const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four', 'needle five']))
     try {
-      // The (+2) tail rides the final visible hit row; selecting that row
-      // must not hide it — the collapsed card has no other place reporting
-      // its remaining hits. The resize forces a full repaint so the SELECTED
-      // row's screen content is asserted, not just the incremental diff
-      // (unchanged tail cells never appear in a diff frame).
+      // A resize forces a full repaint: the mount frame is a diff, and a
+      // partly-painted card would fail the row-shape assertions below for a
+      // reason that has nothing to do with the badge.
+      harness.resize(81, 12)
+      await waitFor()
+      const frame = harness.latest()
+      const count = (frame.match(/\(\+2\)/g) ?? []).length
+      expect(count).toBe(1)
+      expect(frame).toMatch(/needle\s*three.*▸\s*\(\+2\)/)
+      expect(frame).not.toMatch(/needle\s*one.*\(\+2\)/)
+      expect(frame).not.toMatch(/needle\s*two.*\(\+2\)/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('leaves the fold control off a card that has nothing to fold', async () => {
+    // Exactly three hits: every hit is already visible, so there is no fold
+    // state to reach and no control to click. A badge here would offer a
+    // click that does nothing.
+    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three']))
+    try {
+      const frame = harness.latest()
+      expect(frame).toContain('needle three')
+      expect(frame).not.toMatch(/\(\+0\)/)
+      expect(frame).not.toMatch(/[▸▾]/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('keeps the collapsed fold badge visible while its row is selected', async () => {
+    const harness = await mount(sessionWithMessages(['needle one', 'needle two', 'needle three', 'needle four', 'needle five']))
+    try {
+      // The badge rides the final visible hit row; selecting that row must
+      // not hide it — the collapsed card has no other place reporting its
+      // remaining hits, nor any other stretch of the row that folds. The
+      // resize forces a full repaint so the SELECTED row's screen content is
+      // asserted, not just the incremental diff (unchanged tail cells never
+      // appear in a diff frame).
       harness.send('\u001b[B')
       harness.send('\u001b[B')
       harness.send('\u001b[B')
       await waitFor()
       harness.resize(81, 12)
       await waitFor()
-      expect(harness.latest()).toMatch(/needle\s*three.*\(\+2\)/)
+      expect(harness.latest()).toMatch(/needle\s*three.*▸\s*\(\+2\)/)
     } finally {
       harness.dispose()
     }

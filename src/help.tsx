@@ -114,6 +114,9 @@ export function helpSections(columns: number, splitActive = false): readonly Hel
       title: t('help-section-mouse'),
       rows: [
         { keys: 'Click', action: t('help-mouse-click') },
+        // The fold badge is the one mouse control that does NOT do what a
+        // click on the row does, so it earns its own line.
+        { keys: '▸ (+N)', action: t('help-mouse-fold') },
         { keys: 'Hover', action: t('help-mouse-hover') },
         { keys: 'Wheel', action: t('help-mouse-wheel') },
         { keys: 'Right-click', action: t('help-mouse-context') },

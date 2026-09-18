@@ -54,6 +54,15 @@ export type ContextBoxProps = React.ComponentProps<Ui['Box']> & {
   onContextMenu?: (event: ContextMenuEventLike) => void
 }
 
+/**
+ * The part of the host's ClickEvent a nested handler needs. Clicks bubble
+ * from the deepest hit node up (both host generations dispatch that way and
+ * honour the bubble-stop), so a control INSIDE a clickable row — the fold
+ * badge — takes the click for itself by stopping the bubble and never lets
+ * the row's own action (the resume confirmation) run.
+ */
+export type ClickEventLike = { stopImmediatePropagation(): void }
+
 export type Mode = 'list' | 'preview' | 'confirm' | 'help'
 
 /** The time window the list and search filter sessions by — the same
@@ -64,6 +73,12 @@ export type TimeFilter = ResolvedConfig['defaultTime']
  *  and colour (✔/✕) in every pane footer. */
 export type StatusNote = { text: string; tone: 'info' | 'error' }
 
+/** The fold affordance a session card puts on its LAST visible hit row: the
+ *  hidden-hit count while the card is collapsed, or the fact that every hit
+ *  is shown (`expanded`). Rows carry one only when there is something to
+ *  fold — a card at or under the shown-hits budget has no such row. */
+export type FoldBadge = { readonly hidden: number; readonly expanded: boolean }
+
 /** A row of the flattened list. Every row is selectable — a session card
  *  resumes its session, a hit row resumes the session it hit. A card's
  *  title hit rides INSIDE the card's title line (highlighted there, the
@@ -73,7 +88,7 @@ export type StatusNote = { text: string; tone: 'info' | 'error' }
  *  cards have no SessionHit and set nothing (exactOptionalPropertyTypes). */
 export type FlatRow =
   | { kind: 'session'; session: ScannedSession; titleHit: MessageHit | undefined; hits?: readonly MessageHit[] }
-  | { kind: 'message'; hit: SessionHit; message: MessageHit; index: number; more: number }
+  | { kind: 'message'; hit: SessionHit; message: MessageHit; index: number; fold: FoldBadge | undefined }
 
 /** The body shape both copy paths feed copyMessage with: a hit row's
  *  MessageHit and a preview cursor's raw message are structurally the same. */
