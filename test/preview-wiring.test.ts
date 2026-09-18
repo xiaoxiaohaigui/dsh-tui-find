@@ -440,6 +440,34 @@ describe('preview scene wiring', () => {
     }
   })
 
+  it('keeps the reader hint on one row and the scroll region whole when the terminal is narrow', async () => {
+    // The hint is width- and language-dependent (the full line paints 70
+    // columns in en, 67 in zh), so a narrow pane drops its lowest-priority
+    // segments instead of letting the row wrap — a wrapped hint used to eat
+    // one of the reader's rows (REVIEW R-070). rows=12 leaves a seven-line
+    // window, and the fourth message's header is its last line.
+    for (const [lang, columns] of [['en', 40], ['zh', 66]] as const) {
+      setLangOverride(lang)
+      const harness = await mount(sessionWithMessages(['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff']), {
+        query: '',
+        columns,
+        rows: 12,
+      })
+      try {
+        harness.send('\u001bp')
+        await waitFor()
+        const frame = harness.all()
+        // Scroll and the way out share ONE physical row...
+        expect(frame).toMatch(/↑↓\s*(?:scroll|滚动)[^\n]*(?:Esc\s*back to list|Esc\s*返回列表)/)
+        // ...and the window still shows its whole seven lines.
+        expect(frame).toMatch(/✦\s*AI\s*#4/)
+      } finally {
+        harness.dispose()
+      }
+    }
+    setLangOverride('en')
+  })
+
   it('opens a deep hit scrolled into view instead of on the message head', async () => {
     // A hit far into a long message cannot sit in the 7-row solo viewport
     // below its own header; anchoring on the header would open the reader

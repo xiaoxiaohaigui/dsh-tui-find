@@ -76,6 +76,73 @@ export function composeListHint(columns: number, splitActive = false): string {
   return truncateWidth(`${line}${separator}${last}`, budget)
 }
 
+/** One composable hint segment: `text` carries the HintLine `**key**`
+ *  markup, and a `mandatory` segment survives every width. */
+type HintSegment = { readonly text: string; readonly mandatory?: boolean }
+
+/** Rendered width of a HintLine string — the `**` markers are styling, not
+ *  content, so they must not eat into the columns budget. */
+function hintWidth(text: string): number {
+  return displayWidth(text.split('**').join(''))
+}
+
+/**
+ * Fit hint segments into ONE row of `columns`: segments render in the given
+ * order joined by ` · `, and while the row overflows the RIGHTMOST optional
+ * segment is dropped — the right end carries the lowest priority. Mandatory
+ * segments are the guarantee ("the keys that must be shown always stay"),
+ * and `truncateWidth` is the last resort when even they cannot fit: the row
+ * then loses its `**key**` bolding, but it never wraps. Exactly one row is
+ * the contract — the reader's chrome budget counts this line as one row, and
+ * a wrapped hint used to steal a content row from the scroll region
+ * (REVIEW R-070).
+ */
+function fitHintLine(segments: readonly HintSegment[], columns: number): string {
+  const budget = Math.max(1, columns - 2)
+  const kept = [...segments]
+  const line = (): string => kept.map(segment => segment.text).join(' · ')
+  while (kept.length > 1 && hintWidth(line()) > budget && kept.some(segment => segment.mandatory !== true)) {
+    for (let at = kept.length - 1; at >= 0; at--) {
+      const segment = kept[at]
+      if (segment !== undefined && segment.mandatory !== true) {
+        kept.splice(at, 1)
+        break
+      }
+    }
+  }
+  const joined = line()
+  if (hintWidth(joined) <= budget) return joined
+  // Pathological width: even the mandatory set overflows. Cut the RENDERED
+  // text (markup dropped — a `**` pair cut in half would print its markers).
+  return truncateWidth(joined.split('**').join(''), budget)
+}
+
+/**
+ * The reader's hint line for the current layout. The mandatory pair is what
+ * a cursor-less reader cannot do without: how to scroll it, and how to leave
+ * it — Esc in the full-screen classic pane, ← back to the list in split.
+ * Hits, resume and copy drop (rightmost first) as the terminal narrows, so
+ * the keys that must be shown always are; the row is one line at any width.
+ */
+export function composeReaderHint(columns: number, splitActive: boolean): string {
+  const segments: HintSegment[] = splitActive
+    ? [
+        { text: t('hint-seg-reader-focus'), mandatory: true },
+        { text: t('hint-seg-reader-scroll'), mandatory: true },
+        { text: t('hint-seg-reader-hits') },
+        { text: t('hint-seg-resume') },
+        { text: t('hint-seg-reader-copy') },
+      ]
+    : [
+        { text: t('hint-seg-reader-scroll'), mandatory: true },
+        { text: t('hint-seg-reader-hits') },
+        { text: t('hint-seg-resume') },
+        { text: t('hint-seg-reader-copy') },
+        { text: t('hint-seg-reader-back'), mandatory: true },
+      ]
+  return fitHintLine(segments, columns)
+}
+
 /**
  * The bordered search card: `⌕ ` prefix, inverse block caret at the query's
  * end (the caret is append-only — the scene never moves it), and a

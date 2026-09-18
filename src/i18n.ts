@@ -138,14 +138,16 @@ export const dict = {
   'hint-seg-time': { zh: 'Alt+T 时间', en: 'Alt+T time' },
   'hint-seg-navigate': { zh: '↑↓ 选择', en: '↑↓ select' },
   'hint-seg-esc': { zh: 'Esc 清空/退出', en: 'Esc clear/exit' },
-  'hint-preview': {
-    zh: '**↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制当前命中 · **Esc** 返回列表',
-    en: '**↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy hit · **Esc** back to list',
-  },
-  'hint-preview-split': {
-    zh: '**←** 返回列表 · **↑↓** 滚动 · **n/N** 命中 · **Enter** 恢复 · **Alt+C** 复制当前命中',
-    en: '**←** back to list · **↑↓** scroll · **n/N** hit · **Enter** resume · **Alt+C** copy hit',
-  },
+  // The reader's hint line (classic: inside the preview pane; split: the
+  // scene's footer) is composed per width from its own segments: the scroll
+  // key and the way out are mandatory, the middle ones drop by priority
+  // (see composeReaderHint). The list hint below reuses 'hint-seg-resume'.
+  'hint-seg-reader-scroll': { zh: '**↑↓** 滚动', en: '**↑↓** scroll' },
+  'hint-seg-reader-hits': { zh: '**n/N** 命中', en: '**n/N** hit' },
+  'hint-seg-reader-copy': { zh: '**Alt+C** 复制当前命中', en: '**Alt+C** copy hit' },
+  'hint-seg-reader-back': { zh: '**Esc** 返回列表', en: '**Esc** back to list' },
+  // Split's reader owns no Esc of its own — ← hands the keyboard back.
+  'hint-seg-reader-focus': { zh: '**←** 返回列表', en: '**←** back to list' },
   'hint-confirm': {
     zh: '**Enter** 确认恢复 · Esc 取消',
     en: '**Enter** confirm resume · Esc cancel',

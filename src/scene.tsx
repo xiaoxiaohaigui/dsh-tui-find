@@ -67,7 +67,7 @@ import {
   type ContextMenuState,
   type MenuItem,
 } from './find-menu.js'
-import { ConfirmPane, HintLine, SearchCard, composeListHint } from './find-chrome.js'
+import { ConfirmPane, HintLine, SearchCard, composeListHint, composeReaderHint } from './find-chrome.js'
 import { ListView } from './find-list.js'
 import { PreviewPane, ReaderPane, usePreviewModel } from './find-preview.js'
 import { useFindInput } from './find-input.js'
@@ -876,7 +876,7 @@ export function FindScene(props: TuiSceneProps & {
         </Box>
         {noticeRow}
         {dividerRow}
-        {hintRow(mode === 'preview' ? t('hint-preview-split') : listHint)}
+        {hintRow(mode === 'preview' ? composeReaderHint(columns, true) : listHint)}
         {menuOverlay}
       </Box>
     )

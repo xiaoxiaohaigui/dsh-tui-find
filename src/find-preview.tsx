@@ -25,7 +25,7 @@ import type { ScannedSession } from './core/scan.js'
 import type { MessageHit } from './core/search.js'
 import { tailWidth, truncateWidth } from './width.js'
 import { buildPreviewLines, hitLanding, scrollWindow, type PreviewLine } from './preview.js'
-import { HighlightedText, HintLine } from './find-chrome.js'
+import { HighlightedText, HintLine, composeReaderHint } from './find-chrome.js'
 import {
   displayTitle,
   formatWhen,
@@ -413,7 +413,7 @@ export function PreviewPane(props: {
       <Box flexShrink={0}>
         <Text dimColor italic>
           {' '}
-          <HintLine React={R} ui={ui} text={t('hint-preview')} />
+          <HintLine React={R} ui={ui} text={composeReaderHint(columns, false)} />
         </Text>
       </Box>
     </Box>
