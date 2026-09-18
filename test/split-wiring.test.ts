@@ -90,6 +90,39 @@ describe('split rendering and anchoring', () => {
     }
   })
 
+  it('re-anchors onto the hit while the query is typed, with no selection change', async () => {
+    // The reported shape: the user types a query whose keyword sits deep in
+    // an already-selected session's message. Anchoring used to be keyed on
+    // (sessionId, messageIndex) alone, so extending the query — which moves
+    // the match inside that same message — never re-anchored and the pane
+    // stayed parked on the message head until another row was selected.
+    const pad = 'pad '.repeat(120)
+    const session = sessionWithMessages(['intro', `${pad}deepneedle marker tail`, 'tail'])
+    const harness = await mount(session, { ...wide, query: '' })
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      for (const char of 'deepneedle') {
+        harness.send(char)
+        await waitFor(40)
+      }
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const frame = harness.latest()
+      // The pane's own scroll region carries the keyword. Only its body rows
+      // qualify: the search card's own text carries the query ('⌕…') and the
+      // list row carries the '#N role:' prefix, so neither can satisfy this.
+      expect(
+        frame.split('│').some(segment => segment.includes('deepneedle') && !segment.includes('AI') && !segment.includes('⌕')),
+      ).toBe(true)
+      // ...and the message head scrolled away with it — the pane really
+      // re-anchored, rather than being left at the header-anchored landing.
+      expect(frame).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('scrolls a hit that sits below its own message head into view', async () => {
     // The reader's own budget at 120x20 is 9 rows at 41 columns, so a hit
     // that wraps far below its message's header is invisible from the

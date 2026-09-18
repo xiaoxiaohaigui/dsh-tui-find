@@ -68,13 +68,40 @@ describe('searchSessions pinyin matching', () => {
   })
 
   it('does not join a syllable tail to the next character initial', () => {
-    // The suffix of 时 ("i") must not combine with the initial of 搜
-    // ("s"); only a syllable-start query is eligible on the full-reading
-    // folds. Initials are also constrained to one segmented Chinese word:
-    // 搜索 is one word, while 时|搜 is two.
+    // The suffix of 时 ("i") must not combine with the initial of 搜 ("s");
+    // only a syllable-start query is eligible on the full-reading folds.
     expect(searchSessions([make('时搜')], 'is', P)).toEqual([])
-    expect(searchSessions([make('时搜')], 'ss', P)).toEqual([])
     expect(flat(searchSessions([make('搜索')], 'ss', P))).toEqual([['搜索', '[[0,2]]']])
+  })
+
+  it('matches initials contiguously across word boundaries', () => {
+    // Initials are one letter per character, with no separator between
+    // words: a multi-character Chinese phrase is searched by the initials a
+    // person would type in an IME (南瑞继保 → nrjb). An earlier revision
+    // split the initials folds at ICU word boundaries, which made every
+    // phrase ICU segments into single-character words unmatchable — the
+    // daily case, since proper nouns (南瑞继保) and compounds (无隐藏文字)
+    // segment that way.
+    expect(flat(searchSessions([make('南瑞继保技术支持面试自我介绍')], 'nrjb', P))).toEqual([
+      ['南瑞继保技术支持面试自我介绍', '[[0,4]]'],
+    ])
+    expect(flat(searchSessions([make('无隐藏文字')], 'wycwz', P))).toEqual([['无隐藏文字', '[[0,5]]']])
+    expect(flat(searchSessions([make('山东大学')], 'sddx', P))).toEqual([['山东大学', '[[0,4]]']])
+    // A cross-word run also matches mid-text, and a compound that ICU does
+    // keep as one word keeps working.
+    expect(flat(searchSessions([make('关于电赛报告的想法')], 'dsbg', P))).toEqual([['关于电赛报告的想法', '[[2,6]]']])
+    expect(flat(searchSessions([make('简历错别字检查请求')], 'jlcb', P))).toEqual([
+      ['简历错别字检查请求', '[[0,4]]'],
+    ])
+  })
+
+  it('keeps the polyphone initials chains the reading folds already served', () => {
+    // A polyphone contributes one letter per reading to the all-readings
+    // initials chain, so 重庆 answers both "zq" (frequency-first reading)
+    // and "cq" (through the second reading).
+    const chongqing = [make('重庆')]
+    expect(flat(searchSessions(chongqing, 'cq', P))).toEqual([['重庆', '[[0,2]]']])
+    expect(flat(searchSessions(chongqing, 'zq', P))).toEqual([['重庆', '[[0,2]]']])
   })
 
   it('maps a pinyin highlight onto the original characters, not the fold', () => {

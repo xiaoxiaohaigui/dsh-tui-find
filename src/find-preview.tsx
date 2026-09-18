@@ -80,6 +80,25 @@ function anchorMessageOf(row: FlatRow): number {
   return -1
 }
 
+/**
+ * Identity of a session's hit set for the reader's anchor dedup: every
+ * matched message with its highlight ranges. Two renders of the same query
+ * produce the same signature, so unrelated repaints (toasts, progress ticks,
+ * wheel scrolls) keep the manual-scroll truce; a query edit that moves a
+ * match produces a new one and re-lands the reader on the hit — the everyday
+ * case of typing a keyword that sits deep inside the already-selected
+ * session's message, where the target message never changes but its hit does.
+ */
+function hitSignature(hits: readonly MessageHit[]): string {
+  let signature = ''
+  for (const hit of hits) {
+    signature += `${hit.sourceIndex ?? -1}:`
+    for (const [start, end] of hit.ranges) signature += `${start}-${end},`
+    signature += ';'
+  }
+  return signature
+}
+
 export function usePreviewModel(
   React: TuiSceneProps['React'],
   options: {
@@ -198,7 +217,12 @@ export function usePreviewModel(
       const row = selectedRow
       if (row !== undefined) {
         const target = anchorMessageOf(row)
-        const key = `${session?.id ?? ''}:${target}`
+        // The dedup key carries the hit SHAPE on top of the target message:
+        // extending a query can move the match inside the very message the
+        // reader sits on, and that must re-land the cursor on the new hit —
+        // typing a keyword without touching the selection is the everyday
+        // case. Same query, same shape: the manual-scroll truce holds.
+        const key = `${session?.id ?? ''}:${target}:${hitSignature(hits)}`
         if (selectionAnchorRef.current !== key) {
           selectionAnchorRef.current = key
           anchored = target

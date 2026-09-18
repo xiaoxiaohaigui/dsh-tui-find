@@ -68,7 +68,7 @@ Mouse: left-click selects, hover highlights, the wheel moves the selection (scro
 
 - **Indexed**: user messages, assistant text, session titles; tool-call summaries with `indexTools`, thinking text with `indexThinking`.
 - **Matching**: case-insensitive substring by default (CJK-correct by construction, no segmenter); multi-term AND (double-quoted phrases keep their inner spaces, at most 16 terms); regex mode treats the whole query as ONE pattern — no term splitting.
-- **Pinyin** (on by default, disable via `pinyin`): letter-only terms also match Chinese — full readings (`zhangsan` → 张三), default-reading chains (`zhongqing` → 重庆), initials (`zs` → 张三); polyphones use every reading, ü is written as v; a 3500-character reading table ships built in, out-of-table characters fold to themselves; regex mode is never pinyin-expanded.
+- **Pinyin** (on by default, disable via `pinyin`): letter-only terms also match Chinese — full readings (`zhangsan` → 张三), default-reading chains (`zhongqing` → 重庆), initials (`zs` → 张三, `nrjb` → 南瑞继保 — one letter per character, contiguous across words); full readings match from a syllable start (a syllable tail never joins the next character's initial) while initials concatenate the way you type them; polyphones use every reading, ü is written as v; a 3500-character reading table ships built in, out-of-table characters fold to themselves; regex mode is never pinyin-expanded.
 - **Title-only** (`Alt+N` toggles live): session titles only, message bodies excluded — for "find that session"; untitled sessions cannot match.
 - **Default scope**: current repo (session cwd matched against the live channel cwd, the resume browser's semantics, subdirectory sessions included).
 
@@ -119,7 +119,7 @@ npm test             # pretest builds and generates fixtures, then runs the full
 npm run verify:hosts # dual-host matrix: isolated-copy host swap, one build+test each on 0.9.3 and 0.10.1
 ```
 
-Test coverage (312 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin / title-only / time window / scope filtering), the preview reader (including hit-aware anchoring), keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
+Test coverage (315 tests): frame chains, the scanner (mtime cache reuse, offset-watermark incremental decode, generation-named enumeration), search (multi-term AND / regex / pinyin with cross-word initials / title-only / time window / scope filtering), the preview reader (hit-aware anchoring and re-landing as the query is typed), keyboard help, scene wiring (real host renderer with SGR mouse injection and right-click dispatch, including the split layout, the focus handoff, selection anchoring and the width fallback), host-generation dispatch, event sanitization, display width, admission and real-fiber mounting, boot-race hardening, and the background warm-up index with its `tuiStatus` progress view.
 
 ## Requirements
 

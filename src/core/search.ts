@@ -21,8 +21,9 @@
  * syllables (`zhangsan` → 张三) and the initials (`zs` → 张三) — on top of
  * the literal substring over the original text. Full-reading matches must
  * start at a syllable boundary, preventing a syllable tail from joining the
- * next character's initial; initials do not cross ICU Chinese word
- * boundaries. The pinyin variant of a
+ * next character's initial; the initials chains instead run contiguously
+ * across the whole text (one letter per character, `nrjb` → 南瑞继保),
+ * which is what an IME-style initials query means. The pinyin variant of a
  * document is a fold just like the case fold (one CJK code point expands
  * to its readings; the same prefix tables map a hit back onto the original
  * character), built lazily per document and cached across keystrokes.
@@ -261,7 +262,11 @@ function foldOf(owner: object, text: string): FoldedText {
  * trailing position, so 重庆 needs `allReadings` (`chongqing`) while 长沙
  * needs `firstReading` (`changsha`). Each chain also carries an initials
  * fold — `allInitials` keeps one letter per reading (`cq` finds 重庆),
- * `firstInitials` one letter per character (`cs` finds 长沙). Non-table
+ * `firstInitials` one letter per character (`cs` finds 长沙). The initials
+ * chains carry no separators between characters: an initials query types
+ * one letter per character contiguously (`nrjb` → 南瑞继保), which is why
+ * they are scanned directly rather than through the syllable-start rule the
+ * reading chains use. Non-table
  * characters fold to their lowercased self under insensitive matching — so
  * for a letter-only needle these folds already contain every literal
  * case-insensitive occurrence and the case fold needs no second scan — and
@@ -310,76 +315,27 @@ function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): Pin
   return built
 }
 
-/**
- * The zh word segmenter, built once per process: `new` resolves ICU locale
- * data on every call, which was a large slice of the per-document fold
- * build. `null` means unavailable — a minimal ICU build without the locale
- * must not disable pinyin search altogether, it only falls back to the
- * character-contiguous initials behavior.
- */
-let zhWordSegmenter: Intl.Segmenter | null | undefined
-
-function zhWordSegmenterOf(): Intl.Segmenter | null {
-  if (zhWordSegmenter === undefined) {
-    try {
-      const Segmenter = Intl.Segmenter
-      zhWordSegmenter = Segmenter === undefined ? null : new Segmenter('zh', { granularity: 'word' })
-    } catch {
-      zhWordSegmenter = null
-    }
-  }
-  return zhWordSegmenter
-}
-
 function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | undefined {
   const characters = [...text]
   // First pass: the shared per-code-point UTF-16 start table, plus whether
-  // the text can use any of the expensive machinery at all. A document
-  // without a single table character has no readings to match — its
-  // insensitive folds would hold nothing but the lowercased literal text
-  // the plain case fold already covers, and its sensitive folds would hold
-  // only uppercase forms a lowercase needle can never hit — so no folds are
-  // built and the caller scans the case fold (or nothing) instead. And a
-  // word boundary only matters where one table character directly follows
-  // another (the `startsNewWord` gate below demands exactly that), so
-  // anything without such a pair skips segmentation entirely.
+  // the text can use the expensive machinery at all. A document without a
+  // single table character has no readings to match — its insensitive folds
+  // would hold nothing but the lowercased literal text the plain case fold
+  // already covers, and its sensitive folds would hold only uppercase forms
+  // a lowercase needle can never hit — so no folds are built and the caller
+  // scans the case fold (or nothing) instead.
   const cpStart = new Uint32Array(characters.length + 1)
   let utf16 = 0
   let hasTable = false
-  let hasTablePair = false
-  let previousIsTable = false
   for (let index = 0; index < characters.length; index++) {
     const char = characters[index]!
     cpStart[index] = utf16
     utf16 += char.length
-    const isTable = PINYIN_READINGS[char] !== undefined
-    if (isTable) {
-      hasTable = true
-      if (previousIsTable) hasTablePair = true
-    }
-    previousIsTable = isTable
+    if (PINYIN_READINGS[char] !== undefined) hasTable = true
   }
   cpStart[characters.length] = utf16
   if (!hasTable) return undefined
 
-  // Initials should describe one Chinese word, not an arbitrary pair of
-  // neighboring characters (`搜索` is one word, while `时搜` is two). Node's
-  // ICU segmenter is available on every supported runtime; the fallback keeps
-  // the old character-contiguous behavior if a minimal ICU build omits it.
-  const wordBoundaryBefore = new Uint8Array(characters.length)
-  if (hasTablePair) {
-    const segmenter = zhWordSegmenterOf()
-    if (segmenter !== null) {
-      // Segments arrive in ascending UTF-16 order at code point boundaries,
-      // so a cursor over the ascending cpStart table maps each segment start
-      // to its code point — no per-document utf16→code-point map needed.
-      let cursor = 0
-      for (const part of segmenter.segment(text)) {
-        while (cursor < characters.length && cpStart[cursor]! < part.index) cursor += 1
-        if (cursor > 0 && cpStart[cursor] === part.index) wordBoundaryBefore[cursor] = 1
-      }
-    }
-  }
   const allCum = new Uint32Array(characters.length + 1)
   const firstCum = new Uint32Array(characters.length + 1)
   const allInitCum = new Uint32Array(characters.length + 1)
@@ -400,14 +356,6 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   for (let index = 0; index < characters.length; index++) {
     const char = characters[index]!
     const readings = PINYIN_READINGS[char]
-    const previousIsTableChar = index > 0 && PINYIN_READINGS[characters[index - 1]!] !== undefined
-    const startsNewWord = wordBoundaryBefore[index] === 1 && previousIsTableChar && readings !== undefined
-    if (startsNewWord) {
-      allInit += ' '
-      firstInit += ' '
-      allInitUnits += 1
-      firstInitUnits += 1
-    }
     if (readings === undefined) {
       // Under sensitive matching a non-table character must fold to a form
       // the lowercase needle can NEVER hit: `pinyinNeedleOf` hands over a
