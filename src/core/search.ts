@@ -202,7 +202,7 @@ export function sessionCwdMatches(
  * point instead of one heap tuple per unit, which is what makes caching the
  * fold across keystrokes affordable.
  */
-interface FoldedText {
+export interface FoldedText {
   readonly folded: string
   readonly cumUnits: Uint32Array
   readonly cpStart: Uint32Array
@@ -212,25 +212,85 @@ interface FoldedText {
   readonly segmentStarts?: Uint8Array
 }
 
-/** Build the fold of one text. */
+/** `copied` is the fold's accumulator: kept local so the JIT can tell the
+ *  one string being appended to apart from every other local. */
+interface FoldChunks {
+  copied: string
+}
+
+/**
+ * Append one code point's folded form to a fold accumulator.
+ *
+ * A code point is passed as its first UTF-16 unit plus its unit count; the
+ * folded form comes from the original slice, so a surrogate pair is never
+ * split.
+ *
+ * The ASCII fast path is the one branch in this loop: `toLowerCase()` costs
+ * more than two comparisons, so an all-ASCII document folds ~15% faster than
+ * the pre-refactor per-code-point `toLowerCase` build did. The two mappings
+ * are canonical folds — neither maps an ASCII letter to a non-ASCII one or
+ * the reverse — so branching on the code point is equivalent to calling them
+ * unconditionally.
+ */
+function foldCodePoint(
+  text: string,
+  at: number,
+  units: number,
+  caseSensitive: boolean,
+  chunks: FoldChunks,
+): void {
+  const code = text.charCodeAt(at)
+  if (units === 1 && code < 0x80) {
+    chunks.copied +=
+      code >= 0x41 && code <= 0x5a
+        ? String.fromCharCode(code + (caseSensitive ? 0 : 0x20))
+        : String.fromCharCode(code)
+    return
+  }
+  const char = text.slice(at, at + units)
+  chunks.copied += caseSensitive ? char.toUpperCase() : char.toLowerCase()
+}
+
+/**
+ * Whether one UTF-16 unit is a low surrogate. Paired with the high-surrogate
+ * test it is what makes the fold's per-code-point walk a plain char-code
+ * scan: `codePointAt` would decode every unit, while the fold only needs the
+ * code point's LENGTH and its start.
+ */
+const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff
+
+/** Build the fold of one text: one pass over the ORIGINAL string, one lookup
+ *  per code point, no `[...text]` expansion of the whole text into a
+ *  per-character array. */
 function buildFold(text: string): FoldedText {
-  const characters = [...text]
-  const cpStart = new Uint32Array(characters.length + 1)
-  const cumUnits = new Uint32Array(characters.length + 1)
-  let folded = ''
+  // One row per UTF-16 unit is an upper bound on the code-point rows (a
+  // surrogate pair consumes two units and one row); the tables are cut down
+  // to the exact size afterwards. Sizing them here avoids a separate
+  // code-point counting pass, which on a cold build costs more than the
+  // trimming does.
+  const cpStart = new Uint32Array(text.length + 1)
+  const cumUnits = new Uint32Array(text.length + 1)
+  const chunks: FoldChunks = { copied: '' }
   let utf16 = 0
   let units = 0
-  for (let index = 0; index < characters.length; index++) {
-    const char = characters[index]!
-    cpStart[index] = utf16
-    utf16 += char.length
-    const lower = char.toLowerCase()
-    folded += lower
-    units += lower.length
-    cumUnits[index + 1] = units
+  while (utf16 < text.length) {
+    const at = utf16
+    const high = text.charCodeAt(at)
+    // A surrogate pair is ONE code point and therefore one table row: the
+    // low unit is consumed here and never becomes a row of its own.
+    utf16 += high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
+    cpStart[units] = at
+    foldCodePoint(text, at, utf16 - at, false, chunks)
+    units += 1
+    cumUnits[units] = chunks.copied.length
   }
-  cpStart[characters.length] = utf16
-  return { folded, cumUnits, cpStart, sourceLength: text.length }
+  cpStart[units] = utf16
+  return {
+    folded: chunks.copied,
+    cumUnits: cumUnits.slice(0, units + 1),
+    cpStart: cpStart.slice(0, units + 1),
+    sourceLength: text.length,
+  }
 }
 
 /**
@@ -282,11 +342,43 @@ function foldOf(owner: object, text: string): FoldedText {
  * only the cumulative unit counts differ, which is what lets a hit inside
  * any reading map back onto its character for highlighting.
  */
-interface PinyinFolds {
+export interface PinyinFolds {
   readonly allReadings: FoldedText
   readonly firstReading: FoldedText
   readonly allInitials: FoldedText
   readonly firstInitials: FoldedText
+}
+
+/**
+ * One table character's readings, pre-split. The generated table stores them
+ * as one space-separated string; every fold build used to re-`indexOf` and
+ * re-`slice` it per character, per document, per keystroke — the single
+ * hottest loop in the build. Parsing each character's entry once, lazily, and
+ * keeping the pieces lets the build append them directly.
+ */
+interface PinyinReadings {
+  /** The table's own space-separated reading string. */
+  readonly raw: string
+  /** The reading-string prefix up to the first reading. */
+  readonly first: string
+  readonly initials: string
+}
+
+const readingsCache = new Map<string, PinyinReadings>()
+
+function readingsOf(char: string): PinyinReadings | undefined {
+  const cached = readingsCache.get(char)
+  if (cached !== undefined) return cached
+  const raw = PINYIN_READINGS[char]
+  if (raw === undefined) return undefined
+  const parts = raw.split(' ')
+  const parsed: PinyinReadings = {
+    raw,
+    first: parts[0]!,
+    initials: parts.map(part => part[0]!).join(''),
+  }
+  readingsCache.set(char, parsed)
+  return parsed
 }
 
 const pinyinFoldCache = new WeakMap<object, PinyinFoldEntry>()
@@ -316,47 +408,78 @@ function pinyinFoldsOf(owner: object, text: string, caseSensitive: boolean): Pin
 }
 
 function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | undefined {
-  const characters = [...text]
-  // First pass: the shared per-code-point UTF-16 start table, plus whether
-  // the text can use the expensive machinery at all. A document without a
-  // single table character has no readings to match — its insensitive folds
-  // would hold nothing but the lowercased literal text the plain case fold
-  // already covers, and its sensitive folds would hold only uppercase forms
-  // a lowercase needle can never hit — so no folds are built and the caller
-  // scans the case fold (or nothing) instead.
-  const cpStart = new Uint32Array(characters.length + 1)
-  let utf16 = 0
-  let hasTable = false
-  for (let index = 0; index < characters.length; index++) {
-    const char = characters[index]!
-    cpStart[index] = utf16
-    utf16 += char.length
-    if (PINYIN_READINGS[char] !== undefined) hasTable = true
+  // One pass over the original string builds all four chains, the shared
+  // per-code-point UTF-16 start table, and the two syllable-boundary
+  // bitmaps. A document without a single table character has no readings to
+  // match — its insensitive folds would hold nothing but the lowercased
+  // literal text the plain case fold already covers, and its sensitive folds
+  // would hold only uppercase forms a lowercase needle can never hit — so the
+  // build stops after this pass and nothing is cached but the negative
+  // verdict (see pinyinFoldsOf).
+  const cpStart = new Uint32Array(text.length + 1)
+  const cumUnits = {
+    all: new Uint32Array(text.length + 1),
+    first: new Uint32Array(text.length + 1),
+    allInit: new Uint32Array(text.length + 1),
+    firstInit: new Uint32Array(text.length + 1),
   }
-  cpStart[characters.length] = utf16
-  if (!hasTable) return undefined
-
-  const allCum = new Uint32Array(characters.length + 1)
-  const firstCum = new Uint32Array(characters.length + 1)
-  const allInitCum = new Uint32Array(characters.length + 1)
-  const firstInitCum = new Uint32Array(characters.length + 1)
-  let all = ''
-  let first = ''
-  let allInit = ''
-  let firstInit = ''
+  const all: FoldChunks = { copied: '' }
+  const first: FoldChunks = { copied: '' }
+  const allInit: FoldChunks = { copied: '' }
+  const firstInit: FoldChunks = { copied: '' }
+  // Segment starts are recorded as folded-unit positions in one list per
+  // chain and turned into the dense bitmap only at the end, where both the
+  // unit totals and the positions are known: a bitmap pre-sized for the
+  // worst case would have to guess a reading's length (there is no small
+  // bound — a polyphone's reading string runs to a dozen units), and the
+  // build is on the first keystroke's critical path.
+  const allStarts: number[] = []
+  const firstStarts: number[] = []
   let allUnits = 0
   let firstUnits = 0
   let allInitUnits = 0
   let firstInitUnits = 0
-  const allStarts: number[] = []
-  const firstStarts: number[] = []
-  const markSegment = (starts: number[], start: number): void => {
-    starts[start] = 1
-  }
-  for (let index = 0; index < characters.length; index++) {
-    const char = characters[index]!
-    const readings = PINYIN_READINGS[char]
-    if (readings === undefined) {
+  let hasTable = false
+  let utf16 = 0
+  let codePoints = 0
+  while (utf16 < text.length) {
+    const at = utf16
+    const high = text.charCodeAt(at)
+    const size = high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
+    utf16 += size
+    cpStart[codePoints] = at
+    const parsed = readingsOf(text.slice(at, utf16))
+    if (parsed !== undefined) {
+      hasTable = true
+      // Every reading is appended exactly as the table spells it — readings
+      // separated by one space — because a needle can never contain a space:
+      // the separators stay invisible to matching while keeping a polyphone's
+      // readings from gluing into phantom syllables. Each reading's first
+      // unit is a syllable boundary the reading chains may start on.
+      allStarts.push(allUnits)
+      let readingAt = 0
+      for (;;) {
+        const next = parsed.raw.indexOf(' ', readingAt)
+        const reading = next === -1 ? parsed.raw.slice(readingAt) : parsed.raw.slice(readingAt, next)
+        all.copied += reading
+        allUnits += reading.length
+        if (next === -1) break
+        all.copied += ' '
+        allUnits += 1
+        allStarts.push(allUnits)
+        readingAt = next + 1
+      }
+      firstStarts.push(firstUnits)
+      first.copied += parsed.first
+      firstUnits += parsed.first.length
+      // The initials folds take one letter per reading (`allInitials`, so a
+      // polyphone can be reached either way — `cq` finds 重庆) and one per
+      // character (`firstInitials`, the frequency-first reading alone).
+      allInit.copied += parsed.initials
+      allInitUnits += parsed.initials.length
+      firstInit.copied += parsed.first[0]!
+      firstInitUnits += 1
+    } else {
       // Under sensitive matching a non-table character must fold to a form
       // the lowercase needle can NEVER hit: `pinyinNeedleOf` hands over a
       // lowercase needle (Chinese readings are lowercase ASCII and must
@@ -369,69 +492,69 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
       // caller's verbatim `matchRanges` scan). Any length change the
       // mapping introduces (ß → SS) is absorbed by `cumUnits`/`cpStart`
       // like in every other fold.
+      const char = text.slice(at, utf16)
       const literal = caseSensitive ? char.toUpperCase() : char.toLowerCase()
-      all += literal
-      first += literal
-      allInit += literal
-      firstInit += literal
-      const units = literal.length
-      // Non-table text remains ordinary case-insensitive literal text. Each
-      // code point is a valid segment so words such as `auth` still match
-      // across their character boundaries.
-      markSegment(allStarts, allUnits)
-      markSegment(firstStarts, firstUnits)
-      allUnits += units
-      firstUnits += units
-      allInitUnits += units
-      firstInitUnits += units
-    } else {
-      let readingStart = allUnits
-      let readingAt = 0
-      for (;;) {
-        const next = readings.indexOf(' ', readingAt)
-        const reading = next === -1 ? readings.slice(readingAt) : readings.slice(readingAt, next)
-        all += reading
-        allUnits += reading.length
-        markSegment(allStarts, readingStart)
-        if (next === -1) break
-        all += ' '
-        allUnits += 1
-        readingStart = allUnits
-        readingAt = next + 1
-      }
-      const space = readings.indexOf(' ')
-      const firstReading = space === -1 ? readings : readings.slice(0, space)
-      first += firstReading
-      firstUnits += firstReading.length
-      markSegment(firstStarts, firstUnits - firstReading.length)
-      // The initials folds take one letter per reading (all) and per
-      // character (first-only chain).
-      firstInit += firstReading[0]!
-      firstInitUnits += 1
-      let from = 0
-      for (;;) {
-        allInit += readings[from]!
-        allInitUnits += 1
-        const next = readings.indexOf(' ', from)
-        if (next === -1) break
-        from = next + 1
-      }
+      // Non-table text remains ordinary case-insensitive literal text in
+      // every chain, and each code point is a valid segment so words such
+      // as `auth` still match across their character boundaries.
+      allStarts.push(allUnits)
+      all.copied += literal
+      allUnits += literal.length
+      firstStarts.push(firstUnits)
+      first.copied += literal
+      firstUnits += literal.length
+      allInit.copied += literal
+      allInitUnits += literal.length
+      firstInit.copied += literal
+      firstInitUnits += literal.length
     }
-    allCum[index + 1] = allUnits
-    firstCum[index + 1] = firstUnits
-    allInitCum[index + 1] = allInitUnits
-    firstInitCum[index + 1] = firstInitUnits
+    codePoints += 1
+    cumUnits.all[codePoints] = allUnits
+    cumUnits.first[codePoints] = firstUnits
+    cumUnits.allInit[codePoints] = allInitUnits
+    cumUnits.firstInit[codePoints] = firstInitUnits
   }
-  const segments = (starts: number[], length: number) => ({
-    segmentStarts: Uint8Array.from({ length: length + 1 }, (_, at) => starts[at] === 1 ? 1 : 0),
-  })
-  const allSegments = segments(allStarts, allUnits)
-  const firstSegments = segments(firstStarts, firstUnits)
+  cpStart[codePoints] = utf16
+  if (!hasTable) return undefined
+  // The dense bitmaps, built once from the recorded starts: `rangesInPinyinFold`
+  // asks `starts[indexOf(...)]`, and every index `indexOf` can return is a
+  // folded-unit position, so a bitmap covering each chain's unit total is
+  // exactly enough.
+  const bitmap = (starts: readonly number[], length: number): Uint8Array => {
+    const out = new Uint8Array(length + 1)
+    for (const start of starts) out[start] = 1
+    return out
+  }
+  // Trim once, so all four chains keep sharing ONE `cpStart` table (the unit
+  // counts differ per chain; the original-text offsets never do).
+  const sharedStart = cpStart.slice(0, codePoints + 1)
   return {
-    allReadings: { folded: all, cumUnits: allCum, cpStart, sourceLength: text.length, ...allSegments },
-    firstReading: { folded: first, cumUnits: firstCum, cpStart, sourceLength: text.length, ...firstSegments },
-    allInitials: { folded: allInit, cumUnits: allInitCum, cpStart, sourceLength: text.length },
-    firstInitials: { folded: firstInit, cumUnits: firstInitCum, cpStart, sourceLength: text.length },
+    allReadings: {
+      folded: all.copied,
+      cumUnits: cumUnits.all.slice(0, codePoints + 1),
+      cpStart: sharedStart,
+      sourceLength: text.length,
+      segmentStarts: bitmap(allStarts, allUnits),
+    },
+    firstReading: {
+      folded: first.copied,
+      cumUnits: cumUnits.first.slice(0, codePoints + 1),
+      cpStart: sharedStart,
+      sourceLength: text.length,
+      segmentStarts: bitmap(firstStarts, firstUnits),
+    },
+    allInitials: {
+      folded: allInit.copied,
+      cumUnits: cumUnits.allInit.slice(0, codePoints + 1),
+      cpStart: sharedStart,
+      sourceLength: text.length,
+    },
+    firstInitials: {
+      folded: firstInit.copied,
+      cumUnits: cumUnits.firstInit.slice(0, codePoints + 1),
+      cpStart: sharedStart,
+      sourceLength: text.length,
+    },
   }
 }
 
@@ -582,6 +705,29 @@ export function matchRanges(
     return ranges
   }
   return rangesInFold(buildFold(haystack), needle)
+}
+
+// ── fold-build diagnostics ───────────────────────────────────────────────
+//
+// The fold tables are the one place where a "faster but wrong" change fails
+// SILENTLY: a miscounted `cumUnits` row still scans and still highlights,
+// just one character off. These two entry points expose the built structures
+// so `test/fold-equivalence.test.ts` can diff them field by field against a
+// frozen copy of the pre-refactor implementation. They are a diagnostics
+// surface, not a public API — nothing in the plugin calls them.
+
+/** Build one text's case fold (the {@link FoldedText} contract: `folded`,
+ *  `cumUnits`, `cpStart`, `sourceLength`). Diagnostics surface — see the
+ *  block comment above. */
+export function foldTextForTest(text: string): FoldedText {
+  return buildFold(text)
+}
+
+/** Build one text's pinyin folds, or undefined when the text holds no table
+ *  character (the same negative the search path caches). Diagnostics surface
+ *  — see the block comment above. */
+export function pinyinFoldsForTest(text: string, caseSensitive: boolean): PinyinFolds | undefined {
+  return buildPinyinFolds(text, caseSensitive)
 }
 
 /** Single-unit whitespace test: every `\s` member is one UTF-16 unit, so
