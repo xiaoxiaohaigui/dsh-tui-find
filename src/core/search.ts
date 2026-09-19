@@ -236,10 +236,81 @@ export interface FoldedText {
   readonly segmentStarts?: Uint8Array | undefined
 }
 
-/** `copied` is the fold's accumulator: kept local so the JIT can tell the
- *  one string being appended to apart from every other local. */
-interface FoldChunks {
-  copied: string
+/** How many folded units a {@link FoldSink} buffers before it flushes that
+ *  buffer into its piece list.
+ *
+ *  Why the fold is not built with `folded += …` per code point: V8 represents
+ *  repeated concatenation as a ConsString TREE (a rope, ~30 bytes per appended
+ *  piece) and only collapses one when something reads the string. A fold built
+ *  inside a query is read immediately by the `indexOf` that follows, so the
+ *  tree never survives; a fold built by `prewarmFolds` is cached and — with
+ *  `pinyin` on — its case-fold half is never read, so the tree stays: measured
+ *  on a 4.8M-character index the prewarmed case folds held ~180 MB of heap
+ *  that collapsed to ~24 MB the moment a query scanned them, and the pinyin
+ *  chains held 643 MB that collapsed to 78 MB. Joining the fold instead
+ *  returns a flat string for the same content (measured 40.5 → 1.5 bytes per
+ *  index character retained on the case folds), and it costs the query path
+ *  nothing: collapsing the tree is a copy either way, only one that used to
+ *  happen inside the first `indexOf` — on the user's keystroke.
+ *
+ *  The bound is a build-time trade-off, not a correctness one: a longer buffer
+ *  means fewer and larger pieces to collect and join, but a deeper tree held
+ *  until the flush — and {@link FoldSink.take} joins whatever it finds, so the
+ *  bound cannot affect the representation of the result. Measured on the
+ *  plugin's own corpus (480k characters, six-round minimum): the pinyin build
+ *  costs 51 ms at 128 and 46 ms at 512, against 37-48 ms for the rope build it
+ *  replaces. 512 is a third of a default-`maxMessageChars` message, which
+ *  keeps the transient buffer at a few kilobytes per chain. */
+const FOLD_FLUSH_UNITS = 512
+
+/**
+ * The fold accumulator: bounded pieces, joined ONCE by {@link FoldSink.take}.
+ *
+ * `units` is the folded-unit total the builders size their prefix tables with.
+ * It replaces the `copied.length` the per-code-point accumulator used to
+ * answer, so a piece boundary can never leak into the mapping.
+ */
+class FoldSink {
+  private readonly pieces: string[] = []
+  private buffered = ''
+  private result: string | undefined
+  /** Folded UTF-16 units appended so far. */
+  units = 0
+
+  /** Append one code point's folded form (or a chain's reading). */
+  append(piece: string): void {
+    this.units += piece.length
+    this.buffered += piece
+    if (this.buffered.length >= FOLD_FLUSH_UNITS) {
+      this.pieces.push(this.buffered)
+      this.buffered = ''
+    }
+  }
+
+  /** The folded text: ONE flat string, and the same one on every call (the
+   *  pinyin builder reads a chain both to compare it against its sibling and
+   *  to hand it to `withBits`). */
+  take(): string {
+    let result = this.result
+    if (result === undefined) {
+      // `[x].join('')` hands back `x` itself, so a fold that never flushed —
+      // a text shorter than the bound, or one that landed exactly on it —
+      // would stay a concatenation. Splitting the one remaining piece makes
+      // the join materialize the text in every case; it is at most one
+      // buffer's worth of extra copying, and the piece list is only ever
+      // rebuilt here.
+      const parts = this.buffered === '' ? [...this.pieces] : [...this.pieces, this.buffered]
+      if (parts.length === 1) {
+        const only = parts[0]!
+        const mid = only.length >> 1
+        parts.length = 0
+        parts.push(only.slice(0, mid), only.slice(mid))
+      }
+      result = parts.join('')
+      this.result = result
+    }
+    return result
+  }
 }
 
 /**
@@ -261,18 +332,19 @@ function foldCodePoint(
   at: number,
   units: number,
   caseSensitive: boolean,
-  chunks: FoldChunks,
+  sink: FoldSink,
 ): void {
   const code = text.charCodeAt(at)
   if (units === 1 && code < 0x80) {
-    chunks.copied +=
+    sink.append(
       code >= 0x41 && code <= 0x5a
         ? String.fromCharCode(code + (caseSensitive ? 0 : 0x20))
-        : String.fromCharCode(code)
+        : String.fromCharCode(code),
+    )
     return
   }
   const char = text.slice(at, at + units)
-  chunks.copied += caseSensitive ? char.toUpperCase() : char.toLowerCase()
+  sink.append(caseSensitive ? char.toUpperCase() : char.toLowerCase())
 }
 
 /**
@@ -297,7 +369,7 @@ const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdf
 function buildFold(text: string): FoldedText {
   const cpStart = new Uint32Array(text.length + 1)
   const cumUnits = new Uint32Array(text.length + 1)
-  const chunks: FoldChunks = { copied: '' }
+  const sink = new FoldSink()
   // Identity requires every code point to occupy EXACTLY ONE original unit and
   // exactly one folded unit: then folded index == original index, and no
   // table is needed. Anything else — a non-BMP pair (one code point, two
@@ -316,17 +388,18 @@ function buildFold(text: string): FoldedText {
     utf16 += high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
     const size = utf16 - at
     cpStart[units] = at
-    foldCodePoint(text, at, size, false, chunks)
-    const folded = chunks.copied.length - produced
+    foldCodePoint(text, at, size, false, sink)
+    const folded = sink.units - produced
     if (size !== 1 || folded !== 1 || at !== units) identity = false
-    produced = chunks.copied.length
+    produced = sink.units
     units += 1
     cumUnits[units] = produced
   }
   cpStart[units] = utf16
-  if (identity) return { folded: chunks.copied, sourceLength: text.length }
+  const folded = sink.take()
+  if (identity) return { folded, sourceLength: text.length }
   return {
-    folded: chunks.copied,
+    folded,
     cumUnits: cumUnits.slice(0, units + 1),
     cpStart: cpStart.slice(0, units + 1),
     sourceLength: text.length,
@@ -530,10 +603,10 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     allInit: new Uint32Array(text.length + 1),
     firstInit: new Uint32Array(text.length + 1),
   }
-  const all: FoldChunks = { copied: '' }
-  const first: FoldChunks = { copied: '' }
-  const allInit: FoldChunks = { copied: '' }
-  const firstInit: FoldChunks = { copied: '' }
+  const all = new FoldSink()
+  const first = new FoldSink()
+  const allInit = new FoldSink()
+  const firstInit = new FoldSink()
   // Segment starts are recorded as folded-unit positions in one list per
   // chain and turned into the dense bitmap only at the end, where both the
   // unit totals and the positions are known: a bitmap pre-sized for the
@@ -578,23 +651,23 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
       for (;;) {
         const next = parsed.raw.indexOf(' ', readingAt)
         const reading = next === -1 ? parsed.raw.slice(readingAt) : parsed.raw.slice(readingAt, next)
-        all.copied += reading
+        all.append(reading)
         allUnits += reading.length
         if (next === -1) break
-        all.copied += ' '
+        all.append(' ')
         allUnits += 1
         allStarts.push(allUnits)
         readingAt = next + 1
       }
       firstStarts.push(firstUnits)
-      first.copied += parsed.first
+      first.append(parsed.first)
       firstUnits += parsed.first.length
       // The initials folds take one letter per reading (`allInitials`, so a
       // polyphone can be reached either way — `cq` finds 重庆) and one per
       // character (`firstInitials`, the frequency-first reading alone).
-      allInit.copied += parsed.initials
+      allInit.append(parsed.initials)
       allInitUnits += parsed.initials.length
-      firstInit.copied += parsed.first[0]!
+      firstInit.append(parsed.first[0]!)
       firstInitUnits += 1
     } else {
       // Under sensitive matching a non-table character must fold to a form
@@ -615,14 +688,14 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
       // every chain, and each code point is a valid segment so words such
       // as `auth` still match across their character boundaries.
       allStarts.push(allUnits)
-      all.copied += literal
+      all.append(literal)
       allUnits += literal.length
       firstStarts.push(firstUnits)
-      first.copied += literal
+      first.append(literal)
       firstUnits += literal.length
-      allInit.copied += literal
+      allInit.append(literal)
       allInitUnits += literal.length
-      firstInit.copied += literal
+      firstInit.append(literal)
       firstInitUnits += literal.length
     }
     // Each chain is identity only while every step produced exactly one unit
@@ -647,8 +720,8 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   // one fold, not two: sharing it halves both the cached typed arrays and the
   // `indexOf` scans a letter query performs (see PinyinFolds).
   const shareReadings =
-    all.copied === first.copied && sameBits(bitmap(allStarts, allUnits), bitmap(firstStarts, firstUnits))
-  const shareInitials = allInit.copied === firstInit.copied
+    all.take() === first.take() && sameBits(bitmap(allStarts, allUnits), bitmap(firstStarts, firstUnits))
+  const shareInitials = allInit.take() === firstInit.take()
   // A shared prefix table is allocated for the whole PinyinFolds object
   // unless ALL four chains are identity — a chain of single-letter readings
   // (一 → `y`) or an ASCII run spells one unit per code point and needs no
@@ -678,14 +751,14 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     // (see PinyinFolds).
     ...(starts === undefined ? {} : { segmentStarts: bitmap(starts, units) }),
   })
-  const allReadings = withBits(all.copied, identity.all, cumUnits.all, allStarts, allUnits)
+  const allReadings = withBits(all.take(), identity.all, cumUnits.all, allStarts, allUnits)
   const firstReading = shareReadings
     ? allReadings
-    : withBits(first.copied, identity.first, cumUnits.first, firstStarts, firstUnits)
-  const allInitials = withBits(allInit.copied, identity.allInit, cumUnits.allInit, undefined, allInitUnits)
+    : withBits(first.take(), identity.first, cumUnits.first, firstStarts, firstUnits)
+  const allInitials = withBits(allInit.take(), identity.allInit, cumUnits.allInit, undefined, allInitUnits)
   const firstInitials = shareInitials
     ? allInitials
-    : withBits(firstInit.copied, identity.firstInit, cumUnits.firstInit, undefined, firstInitUnits)
+    : withBits(firstInit.take(), identity.firstInit, cumUnits.firstInit, undefined, firstInitUnits)
   return { allReadings, firstReading, allInitials, firstInitials, cpStart: sharedStart, tableChars }
 }
 
