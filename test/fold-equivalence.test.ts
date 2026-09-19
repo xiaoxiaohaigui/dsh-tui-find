@@ -308,6 +308,10 @@ describe('fold build equivalence (phase 1a-2b)', () => {
     }
   })
 
+  // A pure-CPU sweep: 3500 table characters x 4 texts x five compared chains takes
+  // ~3.7s alone and ~4.6s with all 29 files sharing the machine, which sits right
+  // under vitest's 5s default (that is not a margin: it tripped the prepublishOnly
+  // gate once). The assertion is untouched; only this case's budget is widened.
   it('builds identical folds for every listed table character, alone and chained', () => {
     const characters = Object.keys(PINYIN_READINGS)
     expect(characters.length).toBeGreaterThan(3000)
@@ -330,7 +334,7 @@ describe('fold build equivalence (phase 1a-2b)', () => {
         expectChainSharing(JSON.stringify(text), actual)
       }
     }
-  })
+  }, 30_000)
 
   it('keeps the search results and highlight ranges byte-identical', () => {
     const make = (text: string, index: number): ScannedSession => {
