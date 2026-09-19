@@ -376,14 +376,23 @@ const PREWARM_MAX_MESSAGES = 1_000_000
 const PREWARM_MAX_MS = 60_000
 
 /** The same first query after a background prewarm — what a scene open sees
- *  once phase 1b's sweep has run. Null when the build has no prewarm yet. */
+ *  once phase 1b's sweep has run. The prewarm is handed the SAME query options
+ *  the timed query uses (`pinyin` above all: warming case folds alone would
+ *  measure a cold pinyin build and mislabel it), and every repetition uses the
+ *  same seed offset as `coldOnce` so the two rows compare one index shape
+ *  rather than two. Null when the build has no prewarm yet. */
 async function coldPrewarmedOnce(query, options) {
   if (prewarmFolds === undefined) return null
   const samples = []
   let shape = { hits: 0, total: 0 }
   for (let at = 0; at < repeats; at++) {
-    const fresh = makeIndex(sessions, messages, chars, at * 100_000 + 50_000)
-    await prewarmFolds(fresh, { maxMessages: PREWARM_MAX_MESSAGES, maxMs: PREWARM_MAX_MS })
+    const fresh = makeIndex(sessions, messages, chars, at * 100_000)
+    await prewarmFolds(fresh, {
+      pinyin: options.pinyin === true,
+      caseSensitive: options.caseSensitive === true,
+      maxMessages: PREWARM_MAX_MESSAGES,
+      maxMs: PREWARM_MAX_MS,
+    })
     const started = process.hrtime.bigint()
     const result = searchSessions(fresh, query, options)
     samples.push(Number(process.hrtime.bigint() - started) / 1e6)
@@ -424,7 +433,12 @@ if (scenarioName !== 'preview') {
   const prewarmedLetter = await coldPrewarmedOnce(letterNeedle, baseOn)
   if (prewarmedLetter !== null) {
     scenarios.push(
-      row('first letter (prewarmed folds)', 'same query after a background prewarm', prewarmedLetter, prewarmedLetter),
+      row(
+        'first letter (prewarmed folds)',
+        'same index shape as the cold row, same query, after a background prewarm of pinyin+case folds',
+        prewarmedLetter,
+        prewarmedLetter,
+      ),
     )
   }
 

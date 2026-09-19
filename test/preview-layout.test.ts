@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { IndexedMessage } from '../src/core/events.js'
-import { buildPreviewLines, type PreviewLine } from '../src/preview.js'
+import { buildPreviewLines, layoutIsCachedForTest, messageLayout, type PreviewLine } from '../src/preview.js'
 import { displayWidth, wrapWidthLayout, wrapWidthRanges } from '../src/width.js'
 
 /** The body lines of a built preview, in order. */
@@ -95,6 +95,29 @@ describe('preview layout cache', () => {
     // And the narrow layout is what a fresh wrap at that width produces.
     const fresh = wrapWidthLayout(entry.text, 40)
     expect(narrow.map(line => line.text)).toEqual(fresh.map(line => line.text))
+  })
+
+  it('does not cache a layout for a non-positive width', () => {
+    const entry = message('auth flow retry logic '.repeat(40))
+    for (const width of [0, -1]) {
+      // The wrap primitive's own contract: no columns, no layout.
+      expect(messageLayout(entry, width)).toEqual([])
+      // …and the invalid budget is not a cache key either: the returned list
+      // cannot show the difference (a cached `[]` equals a computed one), so
+      // the cache itself has to answer.
+      expect(layoutIsCachedForTest(entry, width), `width ${width} was cached`).toBe(false)
+      const lines = bodyLines(buildPreviewLines([entry], new Set(), width))
+      expect(lines).toEqual([])
+    }
+    // The same message at a real width still lays out, and does go through the
+    // cache — the assertion above is not "nothing is ever cached".
+    const valid = messageLayout(entry, 40)
+    expect(valid.length).toBeGreaterThan(0)
+    expect(layoutIsCachedForTest(entry, 40)).toBe(true)
+    expect(valid.map(line => line.text)).toEqual(wrapWidthLayout(entry.text, 40).map(line => line.text))
+    for (const width of [0, -1]) {
+      expect(layoutIsCachedForTest(entry, width), `width ${width} was cached later`).toBe(false)
+    }
   })
 
   it('matches the wrap primitive on every line text (the layout is the only wrapper)', () => {

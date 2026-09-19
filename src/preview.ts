@@ -74,12 +74,18 @@ const NO_RANGES: RangesByMessage = new Map()
  * index, so a text can never change under a live key, and the entry is
  * collected exactly when the message is. The width rides in a per-message map
  * because a terminal resize must invalidate the layout — the count of widths
- * ever seen is one in practice (two during a resize).
+ * ever seen is one in practice (two during a resize), and a non-positive
+ * width is never stored at all (see messageLayout).
  */
 const layoutCache = new WeakMap<IndexedMessage, Map<number, WrappedLayoutLine[]>>()
 
 /** The wrap layout of one message at one width, computed once. */
 export function messageLayout(message: IndexedMessage, wrapWidthCols: number): WrappedLayoutLine[] {
+  // A non-positive width is not a layout: `wrapWidthLayout` short-circuits to
+  // an empty list, and caching that per message would fill the map with
+  // entries no resize ever revisits (and hide the invalid column budget). The
+  // caller's own arithmetic owns that case.
+  if (wrapWidthCols <= 0) return wrapWidthLayout(message.text, wrapWidthCols)
   let byWidth = layoutCache.get(message)
   if (byWidth === undefined) {
     byWidth = new Map()
@@ -90,6 +96,17 @@ export function messageLayout(message: IndexedMessage, wrapWidthCols: number): W
   const built = wrapWidthLayout(message.text, wrapWidthCols)
   byWidth.set(wrapWidthCols, built)
   return built
+}
+
+/** Whether a layout for `message` at `wrapWidthCols` is already in the cache —
+ *  the structural half of "this width was laid out once": the returned list
+ *  cannot show it, because a cached empty list and a freshly computed one are
+ *  equal. Diagnostics surface: nothing in the plugin calls it, but it rides
+ *  the shipped `dist/` into the npm artifact with the rest of the module, so
+ *  a rename or removal is a breaking change for any consumer that reached for
+ *  it (the same note the search module's probes carry). */
+export function layoutIsCachedForTest(message: IndexedMessage, wrapWidthCols: number): boolean {
+  return layoutCache.get(message)?.has(wrapWidthCols) === true
 }
 
 /**

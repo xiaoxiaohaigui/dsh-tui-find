@@ -427,6 +427,23 @@ interface PinyinReadings {
 
 const readingsCache = new Map<string, PinyinReadings>()
 
+/**
+ * The lowest code point {@link PINYIN_READINGS} covers, derived from the
+ * generated table instead of hard-coding a range: anything below it cannot be
+ * in the table, so a scan can skip it with one comparison. A stale literal
+ * would silently stop warming the CJK extensions the day the generator adds
+ * them — the search stays correct, the prewarm just skips real documents (see
+ * hasTableChar).
+ */
+const MIN_TABLE_CODE_POINT = (() => {
+  let min = Number.POSITIVE_INFINITY
+  for (const char of Object.keys(PINYIN_READINGS)) {
+    const code = char.codePointAt(0)
+    if (code !== undefined && code < min) min = code
+  }
+  return Number.isFinite(min) ? min : 0
+})()
+
 function readingsOf(char: string): PinyinReadings | undefined {
   const cached = readingsCache.get(char)
   if (cached !== undefined) return cached
@@ -445,13 +462,17 @@ function readingsOf(char: string): PinyinReadings | undefined {
 const pinyinFoldCache = new WeakMap<object, PinyinFoldEntry>()
 
 /** Whether `text` holds a character the pinyin table covers. A cheap scan
- *  (a CJK code point is what the table holds, so anything below the first
- *  table range is skipped without a lookup) that lets the prewarm skip its
- *  pinyin half on the common ASCII-only message — the search path makes the
- *  same distinction for free, by looking the reading up while it folds. */
+ *  against the table's own lower bound: a code point below
+ *  {@link MIN_TABLE_CODE_POINT} is skipped without a lookup. It is a
+ *  sufficient (not exact) test on the positive side — a code point above the
+ *  bound that the table does not list still returns true — which only costs
+ *  the prewarm a build it would have skipped, never a missing warm.
+ *
+ *  Not just about speed: the search path makes the same distinction for free,
+ *  by looking the reading up while it folds. */
 function hasTableChar(text: string): boolean {
   for (let at = 0; at < text.length; at++) {
-    if (text.charCodeAt(at) >= 0x2e80) return true
+    if (text.charCodeAt(at) >= MIN_TABLE_CODE_POINT) return true
   }
   return false
 }
@@ -604,18 +625,21 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
       firstInit.copied += literal
       firstInitUnits += literal.length
     }
+    // Each chain is identity only while every step produced exactly one unit
+    // at exactly this code point's index, so the verdict is taken BEFORE the
+    // counter advances: `at === codePoints` is this iteration's code point
+    // index, and the check would otherwise compare a unit offset against an
+    // already-incremented count and fail for every non-empty text — which is
+    // what makes it matter (see withBits).
+    if (size !== 1 || allUnits - before.all !== 1 || at !== codePoints) identity.all = false
+    if (size !== 1 || firstUnits - before.first !== 1 || at !== codePoints) identity.first = false
+    if (size !== 1 || allInitUnits - before.allInit !== 1 || at !== codePoints) identity.allInit = false
+    if (size !== 1 || firstInitUnits - before.firstInit !== 1 || at !== codePoints) identity.firstInit = false
     codePoints += 1
     cumUnits.all[codePoints] = allUnits
     cumUnits.first[codePoints] = firstUnits
     cumUnits.allInit[codePoints] = allInitUnits
     cumUnits.firstInit[codePoints] = firstInitUnits
-    // Each chain is identity only while every step produced exactly one unit
-    // at exactly this code point's index (`at === codePoints` before the
-    // increment).
-    if (size !== 1 || allUnits - before.all !== 1 || at !== codePoints) identity.all = false
-    if (size !== 1 || firstUnits - before.first !== 1 || at !== codePoints) identity.first = false
-    if (size !== 1 || allInitUnits - before.allInit !== 1 || at !== codePoints) identity.allInit = false
-    if (size !== 1 || firstInitUnits - before.firstInit !== 1 || at !== codePoints) identity.firstInit = false
   }
   cpStart[codePoints] = utf16
   if (!hasTable) return undefined
@@ -625,6 +649,14 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   const shareReadings =
     all.copied === first.copied && sameBits(bitmap(allStarts, allUnits), bitmap(firstStarts, firstUnits))
   const shareInitials = allInit.copied === firstInit.copied
+  // A shared prefix table is allocated for the whole PinyinFolds object
+  // unless ALL four chains are identity — a chain of single-letter readings
+  // (一 → `y`) or an ASCII run spells one unit per code point and needs no
+  // mapping, so the table is allocated exactly when some chain needs it. When
+  // it is undefined every chain maps through its own indices (originalSpan),
+  // which is only sound because the four verdicts are per-chain: a chain that
+  // is NOT identity still gets its own `cumUnits` and would keep the table
+  // alive.
   const sharedStart =
     identity.all && identity.first && identity.allInit && identity.firstInit
       ? undefined
@@ -689,8 +721,6 @@ function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefine
   return /^[a-z]+$/.test(lowered) ? lowered : undefined
 }
 
-/** Every pinyin occurrence of `needle` — both reading chains and both
- *  initials chains together, as ranges over the ORIGINAL text. */
 /** Every pinyin occurrence of `needle` — both reading chains and both
  *  initials chains together, as ranges over the ORIGINAL text. Chains that
  *  share one fold object (a document without polyphones, see
@@ -865,10 +895,15 @@ export function matchRanges(
 //
 // The fold tables are the one place where a "faster but wrong" change fails
 // SILENTLY: a miscounted `cumUnits` row still scans and still highlights,
-// just one character off. These two entry points expose the built structures
-// so `test/fold-equivalence.test.ts` can diff them field by field against a
-// frozen copy of the pre-refactor implementation. They are a diagnostics
-// surface, not a public API — nothing in the plugin calls them.
+// just one character off. These entry points expose the built structures
+// (and the caches the prewarm fills) so `test/fold-equivalence.test.ts` and
+// `test/prewarm.test.ts` can assert them structurally.
+//
+// They are a diagnostics surface, not a public API — nothing in the plugin
+// calls them — but they ride the shipped `dist/` into the npm artifact with
+// the rest of the module, so they are de facto public: renaming or removing
+// one is a breaking change for any consumer that reached for it. Keep the
+// shapes narrow and the doc names honest.
 
 /** Build one text's case fold (the {@link FoldedText} contract: `folded`,
  *  `cumUnits`, `cpStart`, `sourceLength`). Diagnostics surface — see the
@@ -882,6 +917,24 @@ export function foldTextForTest(text: string): FoldedText {
  *  — see the block comment above. */
 export function pinyinFoldsForTest(text: string, caseSensitive: boolean): PinyinFolds | undefined {
   return buildPinyinFolds(text, caseSensitive)
+}
+
+/** Whether `owner`'s case fold is already in the resolution cache — the
+ *  structural half of "the prewarm saved the first keystroke": a cached entry
+ *  is what makes `foldOf` return without rebuilding. Always false for the
+ *  same document before a warm. Diagnostics surface — see the block comment
+ *  above. */
+export function foldIsCachedForTest(owner: object): boolean {
+  return foldCache.has(owner)
+}
+
+/** Whether `owner`'s pinyin folds are cached in the shape `caseSensitive`
+ *  selects — `pinyinFoldsOf` validates BOTH the source length and the
+ *  sensitivity before reusing an entry, so a warm of the other shape is not
+ *  observable here. Diagnostics surface — see the block comment above. */
+export function pinyinFoldsAreCachedForTest(owner: object, caseSensitive: boolean): boolean {
+  const cached = pinyinFoldCache.get(owner)
+  return cached !== undefined && cached.caseSensitive === caseSensitive
 }
 
 /** Single-unit whitespace test: every `\s` member is one UTF-16 unit, so
@@ -1184,17 +1237,28 @@ export interface PrewarmOptions {
    * weight (see pinyinFoldsOf).
    */
   readonly pinyin?: boolean
+  /**
+   * Which shape of the pinyin cache to warm — the caller passes the scene's
+   * own `caseSensitive` config. `pinyinFoldsOf` keys its per-object entry on
+   * sensitivity, so a warm the search never reads is a warm wasted: with the
+   * setting on, an insensitive warm leaves the first sensitive letter key
+   * paying the whole build (and the other way round).
+   */
+  readonly caseSensitive?: boolean
   /** Stop after this many documents (title + messages). */
   readonly maxMessages?: number
-  /** Stop after this much wall clock. */
+  /** Stop after this much wall clock — checked at a yield boundary, so the
+   *  pass can overrun it by one chunk (see PREWARM_YIELD_EVERY). */
   readonly maxMs?: number
   /** Cancellation — checked at every yield. */
   readonly signal?: AbortSignal
   /**
    * How many documents to fold between event-loop yields. The default keeps
-   * one synchronous chunk near `PREWARM_YIELD_EVERY` × the per-document cost
-   * (tens of microseconds on a session-sized message), i.e. a few
-   * milliseconds — well inside a frame.
+   * one synchronous chunk near `PREWARM_YIELD_EVERY` × the per-document cost:
+   * building the pinyin chains measured 85-100 ns per character (480k chars of
+   * 50/50 ASCII/CJK and of all-CJK text), so a chunk of 32 max-sized messages
+   * (4000 chars each) spends ~10-13 ms — short enough not to hold a frame,
+   * which is why the pass yields at all.
    */
   readonly yieldEvery?: number
   /** The yield itself, defaulting to `setImmediate` (the scan path's own
@@ -1241,13 +1305,20 @@ const defaultYield = (): Promise<void> => new Promise(resolve => setImmediate(re
  *
  * @param sessions - The scanned index, in any order.
  * @param options - See {@link PrewarmOptions}.
- * @returns How many documents were folded and how many the budget left.
+ * @returns How many documents were folded, how many the index holds in total,
+ *   and whether the pass stopped on a budget rather than running the index
+ *   out. `timedOut` covers BOTH budgets — the `maxMs` wall clock and the
+ *   `maxMessages` document cap — and never distinguishes them; it means
+ *   "stopped early", not "stopped late".
  */
 export async function prewarmFolds(
   sessions: readonly ScannedSession[],
   options: PrewarmOptions = {},
 ): Promise<{ warmed: number; total: number; timedOut: boolean }> {
   const buildPinyin = options.pinyin === true
+  // The shape the search will probe: warming the other one fills cache entries
+  // it never reads (see PrewarmOptions.caseSensitive).
+  const caseSensitive = options.caseSensitive === true
   const maxMessages = options.maxMessages ?? Number.POSITIVE_INFINITY
   const maxMs = options.maxMs ?? Number.POSITIVE_INFINITY
   const yieldEvery = Math.max(1, options.yieldEvery ?? PREWARM_YIELD_EVERY)
@@ -1276,7 +1347,7 @@ export async function prewarmFolds(
     foldOf(owner, text)
     // No table character means no pinyin chain to build (the search skips the
     // probe entirely on such a document), so the half is skipped here too.
-    if (buildPinyin && hasTableChar(text)) pinyinFoldsOf(owner, text, false, true)
+    if (buildPinyin && hasTableChar(text)) pinyinFoldsOf(owner, text, caseSensitive, true)
     resolved += 1
     warmed += 1
     return true

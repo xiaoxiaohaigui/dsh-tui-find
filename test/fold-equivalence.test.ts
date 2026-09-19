@@ -92,6 +92,16 @@ function expectFoldEqual(
  * duplicated one would just waste memory. Phase 2a's invariant rides along:
  * an identity chain carries no prefix tables, and a non-identity one carries
  * them (the pinyin chains through the shared `PinyinFolds.cpStart`).
+ *
+ * Identity IS reachable, which is what makes the phase-2a verdict worth
+ * pinning structurally here rather than only through search results: a
+ * document of single-letter readings (一 → `y`, 啊 → `a`) or an ASCII run
+ * spells one unit per code point, needs no prefix table at all, and a build
+ * that kept the table anyway STILL scans and highlights correctly — the
+ * failure mode is a wasted table, invisible to every behavioral assertion.
+ * The four verdicts are evaluated BEFORE the code-point counter advances (see
+ * `buildPinyinFolds`); with the check after the increment nothing non-empty is
+ * ever identity, so the assertions below are what catch that regression.
  */
 function expectChainSharing(label: string, folds: NonNullable<ReturnType<typeof pinyinFoldsForTest>>): void {
   const pairs = [
@@ -126,7 +136,10 @@ function expectChainSharing(label: string, folds: NonNullable<ReturnType<typeof 
       expect(folds.cpStart, `${label}: ${name} shares the pinyin cpStart`).toBeDefined()
     }
   }
-  // The shared table is allocated exactly when some chain needs it.
+  // The shared table is allocated exactly when some chain needs it — which is
+  // the assertion that sees the phase-2a verdict: with the identity check on
+  // the wrong side of the counter it never omits a table, so a document whose
+  // four chains are all identity must leave `cpStart` undefined here.
   const anyNonIdentity = [folds.allReadings, folds.firstReading, folds.allInitials, folds.firstInitials].some(
     fold => fold.cumUnits !== undefined,
   )
@@ -137,6 +150,8 @@ const FIXTURES: readonly [string, string][] = [
   ['empty', ''],
   ['plain ascii lower', 'auth flow retry logic'],
   ['ascii mixed case', 'Auth Flow RETRY Logic'],
+  ['single-reading chains', '啊俄哦一乙'],
+  ['single-reading chained with ascii', 'x啊y一z'],
   ['digits and punctuation', 'a1b2-c3_d4 (e5) [f6] {g7} 8.9'],
   ['table chars', '张三的会话'],
   ['polyphones', '重庆长沙银行行业音乐快乐'],
@@ -235,6 +250,32 @@ describe('fold build equivalence (phase 1a-2b)', () => {
         expectFoldEqual(`${name} allInitials`, actual.allInitials, expected.allInitials, actual.cpStart)
         expectFoldEqual(`${name} firstInitials`, actual.firstInitials, expected.firstInitials, actual.cpStart)
         expectChainSharing(name, actual)
+      }
+    }
+  })
+
+  it('omits the prefix tables when every chain is identity (phase 2a reachability)', () => {
+    // One unit per code point in ALL four chains: single-letter readings
+    // (啊 → `a`, 俄 → `e`) and ASCII, so the folded index is the original index
+    // and not one prefix table is needed. This is the case the counter-order
+    // regression erases, and this case is the only assertion that sees it —
+    // a table that should have been omitted still holds the reference's
+    // values field by field, so every comparison above stays green either way.
+    for (const text of ['啊', 'x啊y俄z']) {
+      for (const caseSensitive of [false, true]) {
+        const folds = pinyinFoldsForTest(text, caseSensitive)
+        const name = `${JSON.stringify(text)} (caseSensitive ${caseSensitive})`
+        expect(folds, `${name}: builds (the text holds a table char)`).toBeDefined()
+        expect(folds!.cpStart, `${name}: all-identity chains omit the shared table`).toBeUndefined()
+        for (const [chainName, fold] of [
+          ['allReadings', folds!.allReadings],
+          ['firstReading', folds!.firstReading],
+          ['allInitials', folds!.allInitials],
+          ['firstInitials', folds!.firstInitials],
+        ] as const) {
+          expect(fold.cumUnits, `${name}: ${chainName} omits its table`).toBeUndefined()
+          expect(fold.sourceLength, `${name}: ${chainName} identity length`).toBe(fold.folded.length)
+        }
       }
     }
   })

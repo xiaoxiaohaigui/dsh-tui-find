@@ -263,6 +263,9 @@ export class WarmupDriver {
         // demand (see prewarmFolds).
         return prewarmFolds(sessions, {
           pinyin: config.pinyin,
+          // The shapes the scene will probe: a sensitive session rebuilds
+          // every chain the insensitive warm filled (see prewarmFolds).
+          caseSensitive: config.caseSensitive,
           maxMessages: PREWARM_MAX_MESSAGES,
           maxMs: PREWARM_MAX_MS,
           signal: controller.signal,

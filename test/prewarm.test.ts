@@ -12,7 +12,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { IndexedMessage } from '../src/core/events.js'
 import type { ScannedSession } from '../src/core/scan.js'
-import { prewarmFolds, searchSessions } from '../src/core/search.js'
+import {
+  foldIsCachedForTest,
+  pinyinFoldsAreCachedForTest,
+  prewarmFolds,
+  searchSessions,
+} from '../src/core/search.js'
 
 /** A session whose messages hold `chars` characters of mixed text each. */
 function makeSession(id: number, messages: number, chars: number, title?: string): ScannedSession {
@@ -45,6 +50,23 @@ function countingYield() {
 }
 
 const P = { scope: 'all', pinyin: true } as const
+
+/** One session's first message — the object whose fold the search caches, and
+ *  so the key the prewarm has to fill (see `prewarmFolds`). */
+function firstMessage(session: ScannedSession): IndexedMessage {
+  const message = session.messages[0]
+  if (message === undefined) throw new Error('fixture session has no messages')
+  return message
+}
+
+/** A search result's hit ranges per session, in order — comparable across
+ *  two fixtures whose only difference is their identity (id, path,
+ *  modifiedAt). */
+function hitRangesBySession(
+  results: ReturnType<typeof searchSessions>,
+): (readonly (readonly [number, number])[])[] {
+  return results.map(entry => entry.hits.map(hit => hit.ranges))
+}
 
 describe('prewarmFolds', () => {
   it('folds titles and every message, reporting progress', async () => {
@@ -132,12 +154,76 @@ describe('prewarmFolds', () => {
     }
   })
 
+  it('fills exactly the cache entries the search reads, in the shape it probes', async () => {
+    // Small fixtures: this case is about WHICH cache keys exist, not how long
+    // anything takes (the timing case above covers the wall clock).
+    //
+    // The search resolves a document's folds through `foldOf` /
+    // `pinyinFoldsOf`, which answer from these caches for a cached owner — so
+    // "the entry exists" is the structural form of "the first keystroke does
+    // not build it", and it does not depend on the machine's speed.
+    const unwarmed = [makeSession(1, 2, 200)]
+    const unwarmedMessage = firstMessage(unwarmed[0]!)
+    expect(foldIsCachedForTest(unwarmedMessage)).toBe(false)
+    expect(pinyinFoldsAreCachedForTest(unwarmedMessage, false)).toBe(false)
+
+    const warmed = [makeSession(2, 2, 200)]
+    const warmedMessage = firstMessage(warmed[0]!)
+    const result = await prewarmFolds(warmed, { pinyin: true, yield: async () => {} })
+    expect(result.warmed).toBe(2)
+    expect(foldIsCachedForTest(warmedMessage)).toBe(true)
+    expect(pinyinFoldsAreCachedForTest(warmedMessage, false)).toBe(true)
+
+    // Case folds only when the config has pinyin off: the pinyin entry must
+    // stay absent, which is what the old `warmed === 5` smoke assertion could
+    // only claim through the equivalence suite.
+    const caseOnly = [makeSession(3, 2, 200)]
+    const caseOnlyMessage = firstMessage(caseOnly[0]!)
+    await prewarmFolds(caseOnly, { pinyin: false, yield: async () => {} })
+    expect(foldIsCachedForTest(caseOnlyMessage)).toBe(true)
+    expect(pinyinFoldsAreCachedForTest(caseOnlyMessage, false)).toBe(false)
+
+    // A pinyin-capable search after the case-only warm still returns the
+    // same hit ranges as a fully warmed one (it simply builds the chains it
+    // needs). Compared per session: the two fixtures differ in their identity
+    // (id, path, modifiedAt), so their full result JSON could never be equal.
+    expect(hitRangesBySession(searchSessions(caseOnly, 'zs', P))).toEqual(
+      hitRangesBySession(searchSessions(warmed, 'zs', P)),
+    )
+  })
+
+  it('warms the case-sensitive pinyin shape when that is the configured one', async () => {
+    // The sensitivity rides the cached pinyin entry, so prewarming the
+    // insensitive shape leaves the first sensitive letter key paying the whole
+    // build. The two cases pin the contract from both sides.
+    const sensitive = [makeSession(1, 2, 300)]
+    const sensitiveMessage = firstMessage(sensitive[0]!)
+    await prewarmFolds(sensitive, { pinyin: true, caseSensitive: true, yield: async () => {} })
+    expect(pinyinFoldsAreCachedForTest(sensitiveMessage, true)).toBe(true)
+    expect(pinyinFoldsAreCachedForTest(sensitiveMessage, false)).toBe(false)
+    // The warm is READ, not merely written: the sensitive query below finds
+    // the folded-entry key it probes (a shape mismatch would have rebuilt it
+    // and overwritten the entry).
+    const options = { scope: 'all', pinyin: true, caseSensitive: true } as const
+    expect(searchSessions(sensitive, 'zs', options)).toHaveLength(1)
+    expect(pinyinFoldsAreCachedForTest(sensitiveMessage, true)).toBe(true)
+
+    const insensitive = [makeSession(2, 2, 300)]
+    const insensitiveMessage = firstMessage(insensitive[0]!)
+    await prewarmFolds(insensitive, { pinyin: true, caseSensitive: false, yield: async () => {} })
+    expect(pinyinFoldsAreCachedForTest(insensitiveMessage, false)).toBe(true)
+    expect(pinyinFoldsAreCachedForTest(insensitiveMessage, true)).toBe(false)
+    expect(searchSessions(insensitive, 'zs', P)).toHaveLength(1)
+    expect(pinyinFoldsAreCachedForTest(insensitiveMessage, false)).toBe(true)
+  })
+
   it('does not build the pinyin chains when the config has pinyin off', async () => {
     const sessions = [makeSession(1, 5, 300)]
     const { calls, yield: yieldTo } = countingYield()
-    // With pinyin off the case fold alone still warms; the observable claim
-    // is that the pass completes without touching the chain machinery, which
-    // the equivalence suite pins structurally. Here: it warms and yields.
+    // The structural claim — the pinyin cache entries stay absent while the
+    // case entries are filled — is pinned above ("fills exactly the cache
+    // entries the search reads"); this case keeps the pass's own accounting
+    // and yield cadence under a pinyin-off config.
     const result = await prewarmFolds(sessions, { pinyin: false, yieldEvery: 2, yield: yieldTo })
     expect(result.warmed).toBe(5)
     expect(calls.length).toBe(2)
