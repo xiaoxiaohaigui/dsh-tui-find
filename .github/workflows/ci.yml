@@ -1,4 +1,6 @@
 # CI gate: re-run every verification entry this repo has, on a clean checkout.
+# (The dual-host matrix is the one exception — see the `hosts` job: it runs on
+# pull requests and manual dispatch only, not on every push to main.)
 #
 # Dependencies install via `npm ci`, never `npm i`: the lockfile is frozen to
 # registry-resolved https entries, so `npm ci` cannot re-resolve the tree and
@@ -70,8 +72,14 @@ jobs:
   # copies the installed tree, swaps in each published host tarball and runs
   # build + test against it. Compatibility-affecting changes must be green on
   # both legs before they ship.
+  # Pull requests and manual dispatch only: a push to main is nearly always the
+  # merge of a PR that already ran this matrix, so repeating it there just pays
+  # the cost twice. The flip side is real — a change pushed straight to main
+  # does NOT exercise the host matrix, so dispatch this workflow by hand (or open
+  # a PR) when a compatibility-affecting change skips review.
   hosts:
     name: host matrix
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
