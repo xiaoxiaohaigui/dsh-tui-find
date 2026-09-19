@@ -1,0 +1,118 @@
+# CI gate: re-run every verification entry this repo has, on a clean checkout.
+#
+# Dependencies install via `npm ci`, never `npm i`: the lockfile is frozen to
+# registry-resolved https entries, so `npm ci` cannot re-resolve the tree and
+# therefore cannot trip the `workspace:*` / EUNSUPPORTEDPROTOCOL trap HANDOFF.md
+# documents (that trap belongs to `npm i`, which reifies the whole tree).
+# `--include=dev` is mandatory rather than cosmetic: every test host (vitest,
+# @deepseek-harness-tui/dsh-tui) is a devDependency, and an environment that
+# exports NODE_ENV=production would otherwise omit all of them in silence.
+#
+# No secrets are required: every @deepseek-ai/* and @deepseek-harness-tui/*
+# package this plugin depends on resolves from the public registry.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The main gate. package.json declares engines ^22.19 || >=24, so both ends of
+  # that range get exercised rather than just the newest.
+  gate:
+    name: gate (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19', '24']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Typecheck (tsc strict, noEmit)
+        run: npx tsc --noEmit
+      # pretest rebuilds dist and regenerates the fixtures, so this one step
+      # covers the build gate as well.
+      - name: Test
+        run: npm test
+
+  # The dev machines are Windows and several seams are platform-dependent
+  # (the clipboard strategy, the case-insensitive cwd default, the Windows drive
+  # and UNC root handling). A Linux-only matrix would never exercise them.
+  windows:
+    name: windows (node 24)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Test
+        run: npm test
+
+  # The dual-host compatibility matrix (0.9.3 + 0.10.x) is this repo's release
+  # gate; see docs/decisions/2026-09-12-dual-version-compat-strategy.md. It
+  # copies the installed tree, swaps in each published host tarball and runs
+  # build + test against it. Compatibility-affecting changes must be green on
+  # both legs before they ship.
+  hosts:
+    name: host matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Dual-host matrix (0.9.3 + 0.10.1)
+        run: npm run verify:hosts
+
+  # The published tarball must never carry workspace docs, scripts or tests.
+  # dist/ is gitignored, so it is built here; prepack is skipped to avoid
+  # re-running the whole gate a third time in this job.
+  pack:
+    name: pack contents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --include=dev
+      - run: npm run build
+      - name: Write the pack manifest
+        run: npm pack --dry-run --ignore-scripts --json > pack.json
+      - name: Assert the tarball ships only publishable files
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            const [tarball] = JSON.parse(readFileSync("pack.json", "utf8"))
+            const files = tarball.files.map(entry => entry.path)
+            const leaked = files.filter(path =>
+              /^(docs|test|scripts|\.github|node_modules)\//.test(path) ||
+              /^(AGENTS|HANDOFF|REVIEW)\.md$/.test(path) ||
+              path.endsWith(".tsbuildinfo"),
+            )
+            if (leaked.length > 0) {
+              console.error("these files must never ship:", leaked)
+              process.exit(1)
+            }
+            console.log(`ok: ${files.length} packed files, no workspace docs, scripts or tests`)
+          '
