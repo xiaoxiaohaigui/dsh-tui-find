@@ -11,6 +11,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { IndexedMessage } from '../src/core/events.js'
+import { PINYIN_READINGS } from '../src/core/pinyin-data.js'
 import type { ScannedSession } from '../src/core/scan.js'
 import {
   foldIsCachedForTest,
@@ -215,6 +216,52 @@ describe('prewarmFolds', () => {
     expect(pinyinFoldsAreCachedForTest(insensitiveMessage, true)).toBe(false)
     expect(searchSessions(insensitive, 'zs', P)).toHaveLength(1)
     expect(pinyinFoldsAreCachedForTest(insensitiveMessage, false)).toBe(true)
+  })
+
+  it('warms exactly the documents the generated table can read', async () => {
+    // The prewarm's "does this text hold a table character" scan is bounded by
+    // the table's own lowest code point, so the boundary is the property worth
+    // pinning — not the behaviour of one hard-coded range. Both sides are
+    // derived from the table HERE, so the case cannot go stale when the
+    // generator moves: the lowest table character must be warmed, and a code
+    // point below the minimum (no reading can be built from it) must not be.
+    // A literal bound fails the second half: 0x2E80 treats CJK Ext-A and the
+    // Kangxi radicals as table text and caches a fold build that can never
+    // match anything (see MIN_TABLE_CODE_POINT).
+    const tableMin = Math.min(...Object.keys(PINYIN_READINGS).map(char => char.codePointAt(0)!))
+    const lowest = String.fromCodePoint(tableMin)
+    expect(PINYIN_READINGS[lowest], 'the lowest table code point is a table entry').toBeDefined()
+    const belowMin = tableMin - 1
+    expect(PINYIN_READINGS[String.fromCodePoint(belowMin)], 'the code point below it is not').toBeUndefined()
+
+    /** A one-message session holding exactly `text`. */
+    const sessionWith = (id: number, text: string): ScannedSession => {
+      const message: IndexedMessage = { seq: 1, role: 'user', text, at: undefined }
+      return {
+        id: `min-${id}`,
+        path: `P:\\warm\\min\\${id}.jsonl`,
+        bytes: text.length,
+        modifiedAt: 1_700_000_000_000 - id,
+        header: { cwd: 'P:\\warm', createdAt: undefined },
+        messages: [message],
+      }
+    }
+
+    const covered = sessionWith(1, lowest.repeat(20))
+    await prewarmFolds([covered], { pinyin: true, yield: async () => {} })
+    expect(foldIsCachedForTest(firstMessage(covered))).toBe(true)
+    expect(pinyinFoldsAreCachedForTest(firstMessage(covered), false)).toBe(true)
+
+    for (const [at, code] of [0x2e80, 0x2f00, 0x3400, belowMin].entries()) {
+      if (code >= tableMin) continue
+      const uncovered = sessionWith(10 + at, String.fromCodePoint(code).repeat(20))
+      await prewarmFolds([uncovered], { pinyin: true, yield: async () => {} })
+      expect(foldIsCachedForTest(firstMessage(uncovered)), `U+${code.toString(16)}: case fold`).toBe(true)
+      expect(
+        pinyinFoldsAreCachedForTest(firstMessage(uncovered), false),
+        `U+${code.toString(16)}: no reading exists, so no pinyin chains`,
+      ).toBe(false)
+    }
   })
 
   it('does not build the pinyin chains when the config has pinyin off', async () => {
