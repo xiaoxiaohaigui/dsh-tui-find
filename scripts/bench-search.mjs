@@ -25,6 +25,20 @@
  * shares, average message length), because a fold benchmark is meaningless
  * without knowing how much of the text can expand into readings.
  *
+ * What the COLD group pays is not only the fold build: the first sample also
+ * carries V8's tier-up and the GC the run leaves behind, so the gap to the
+ * prewarmed row bundles three costs. Subtracting them with a throwaway warm-up
+ * query was measured and rejected — its side effects are scale-dependent (at
+ * 4.8M chars it inflated the very row it was meant to isolate, and at 960k it
+ * landed inside the noise). The fold build is reported directly instead, as the
+ * background sweep's own cost over a fresh index: the `fold build alone` rows
+ * run `prewarmFolds` with and without the pinyin chains. That sweep is a
+ * superset of what one query reads (it folds both shapes for every document, in
+ * one traversal, while a query interleaves folding with matching), so the
+ * difference between the two rows — the chain build — is the term to weigh
+ * against the cold-to-prewarmed gap; the residual (tier-up, GC, and the
+ * traversal-pattern difference) is not separated here (REVIEW.md R-082).
+ *
  * Usage:
  *   node --expose-gc scripts/bench-search.mjs [options]
  *
@@ -353,6 +367,10 @@ function queryOnce(list, query, options) {
  * would warm every later repetition and the "cold" label would be a lie).
  * This is the scenario phase 1 is about — the user's first letter key, which
  * pays the whole fold build today.
+ *
+ * The median covers what a cold process pays, tier-up included; the fold build
+ * inside it is measured on its own by `fold build alone`. See the module
+ * comment on R-082 for why the tier-up term is not subtracted here.
  */
 function coldOnce(query, options) {
   const samples = []
@@ -375,24 +393,32 @@ function coldOnce(query, options) {
 const PREWARM_MAX_MESSAGES = 1_000_000
 const PREWARM_MAX_MS = 60_000
 
+/** The options that make the prewarm fill the shape the timed query reads
+ *  (`pinyin` above all: warming case folds alone would leave a cold pinyin
+ *  build behind and mislabel the row that follows). Shared by the two rows
+ *  that call `prewarmFolds`, so they cannot drift apart. */
+const prewarmOptionsFor = options => ({
+  pinyin: options.pinyin === true,
+  caseSensitive: options.caseSensitive === true,
+  maxMessages: PREWARM_MAX_MESSAGES,
+  maxMs: PREWARM_MAX_MS,
+})
+
 /** The same first query after a background prewarm — what a scene open sees
  *  once phase 1b's sweep has run. The prewarm is handed the SAME query options
- *  the timed query uses (`pinyin` above all: warming case folds alone would
- *  measure a cold pinyin build and mislabel it), and every repetition uses the
- *  same seed offset as `coldOnce` so the two rows compare one index shape
- *  rather than two. Null when the build has no prewarm yet. */
+ *  the timed query uses, and every repetition uses the same seed offset as
+ *  `coldOnce` so the two rows compare one index shape rather than two. Null
+ *  when the build has no prewarm yet.
+ *
+ *  The cost this row does NOT pay is reported on its own by the
+ *  `fold build alone` rows, whose difference is the chain half (R-082). */
 async function coldPrewarmedOnce(query, options) {
   if (prewarmFolds === undefined) return null
   const samples = []
   let shape = { hits: 0, total: 0 }
   for (let at = 0; at < repeats; at++) {
     const fresh = makeIndex(sessions, messages, chars, at * 100_000)
-    await prewarmFolds(fresh, {
-      pinyin: options.pinyin === true,
-      caseSensitive: options.caseSensitive === true,
-      maxMessages: PREWARM_MAX_MESSAGES,
-      maxMs: PREWARM_MAX_MS,
-    })
+    await prewarmFolds(fresh, prewarmOptionsFor(options))
     const started = process.hrtime.bigint()
     const result = searchSessions(fresh, query, options)
     samples.push(Number(process.hrtime.bigint() - started) / 1e6)
@@ -400,6 +426,52 @@ async function coldPrewarmedOnce(query, options) {
   }
   samples.sort((left, right) => left - right)
   return { ms: samples[(samples.length - 1) >> 1], min: samples[0], max: samples[samples.length - 1], ...shape }
+}
+
+/**
+ * The background sweep's cost on its own: `prewarmFolds` over a fresh index,
+ * same shape and same seed offsets as the rows above, and nothing timed but
+ * the fold build and the traversal that feeds it. This is the isolated number
+ * R-082 asks for. Called twice — with and without the pinyin chains — because
+ * the sweep is a superset of what one query reads: it folds both shapes for
+ * every document in one traversal, while a letter query interleaves folding
+ * with matching and skips the case fold wherever the chains answered. The
+ * difference between the two calls is the chain build, the dominant term of the
+ * cold-to-prewarmed gap; the sweep's own traversal leaves it an upper bound on
+ * that gap rather than an equality (REVIEW.md R-082 carries the numbers, which
+ * belong to one machine and one run).
+ *
+ * The sweep's own yield boundaries are inside the timing: that is what the
+ * plugin actually runs, and dropping them (`yieldEvery: 1e9`) moves the figure
+ * by less than this probe's run-to-run spread, so the overshoot above is not a
+ * yield artifact. The returned counts are carried into the row so a sweep that
+ * stopped on a budget says so rather than passing a partial build off as the
+ * whole one.
+ */
+async function foldBuildOnce(options) {
+  if (prewarmFolds === undefined) return null
+  const samples = []
+  let warmed = 0
+  let total = 0
+  let timedOut = false
+  for (let at = 0; at < repeats; at++) {
+    const fresh = makeIndex(sessions, messages, chars, at * 100_000)
+    const started = process.hrtime.bigint()
+    const result = await prewarmFolds(fresh, prewarmOptionsFor(options))
+    samples.push(Number(process.hrtime.bigint() - started) / 1e6)
+    warmed = result.warmed
+    total = result.total
+    timedOut = result.timedOut
+  }
+  samples.sort((left, right) => left - right)
+  return {
+    ms: samples[(samples.length - 1) >> 1],
+    min: samples[0],
+    max: samples[samples.length - 1],
+    warmed,
+    total,
+    timedOut,
+  }
 }
 
 const scenarios = []
@@ -421,7 +493,12 @@ if (scenarioName !== 'preview') {
 
   // ── cold group: a fresh index per sample, empty fold caches ─────────────
   for (const [name, query, options, note] of [
-    ['first letter (cold folds)', letterNeedle, baseOn, 'first query on a fresh index; pinyin on'],
+    [
+      'first letter (cold folds)',
+      letterNeedle,
+      baseOn,
+      'first query on a fresh index; pinyin on; V8 tier-up lands in the first sample',
+    ],
     ['first letter (cold, pinyin off)', letterNeedle, baseOff, 'case fold build alone'],
     ['first CJK (cold, case fold)', cjkNeedle, baseOn, 'never builds the pinyin chains'],
   ]) {
@@ -435,9 +512,34 @@ if (scenarioName !== 'preview') {
     scenarios.push(
       row(
         'first letter (prewarmed folds)',
-        'same index shape as the cold row, same query, after a background prewarm of pinyin+case folds',
+        'same index shape as the cold row, same query, folds built by a background sweep of pinyin+case folds',
         prewarmedLetter,
         prewarmedLetter,
+      ),
+    )
+  }
+
+  // ── the isolated cost that prewarm removes (R-082) ──────────────────────
+  // Two rows, because one is what the background pass actually costs and the
+  // other is the half a case-only query never needs: the sweep folds every
+  // document for BOTH shapes, while a letter query on a document the table
+  // reaches reads the pinyin chains and skips the case fold entirely
+  // (`rangesOf` returns before `caseFold()` once a pinyin chain matches).
+  // Subtracting the second row from the first leaves the chain build, which is
+  // the term the cold-to-prewarmed gap is mostly made of.
+  for (const [name, options, shape] of [
+    ['fold build alone (pinyin + case folds)', baseOn, 'the shape the two rows above read'],
+    ['fold build alone (case folds only)', baseOff, 'same sweep with `pinyin: false`; the difference is the chain build'],
+  ]) {
+    const foldBuild = await foldBuildOnce(options)
+    if (foldBuild === null) break
+    scenarios.push(
+      row(
+        name,
+        foldBuild.timedOut
+          ? `stopped on a budget after ${foldBuild.warmed}/${foldBuild.total} documents — raise the probe's prewarm budgets to measure the whole build`
+          : `prewarmFolds over a fresh index, same seed as the rows above; ${foldBuild.warmed}/${foldBuild.total} documents; ${shape}`,
+        foldBuild,
       ),
     )
   }
