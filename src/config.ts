@@ -4,6 +4,21 @@
  * config, `apply(ctx, config)` receives the resolved value with schema
  * defaults applied, and every key is optional with a sane default.
  *
+ * Two host generations read this schema differently, and both must keep
+ * working (docs/decisions/2026-09-24-settings-generation-adaptation.md):
+ *
+ * - `dsh-settings` ≤0.1.6 (dsh-TUI 0.9.x/0.10.x): the `/settings` namespace is
+ *   registered by the plugin and its form values come from that registration
+ *   schema (settings.ts). The row config is a frozen value.
+ * - `dsh-settings` ≥0.1.7 (dsh-TUI 0.11+): there is no registration API — the
+ *   namespace is the profile entry id (`dsh-tui-find`) and the form schema is
+ *   *this* schema projected onto the fields marked `.volatile()`. Those fields
+ *   then reach `apply` as live refs whose value changes in place, so every
+ *   read goes through `readConfigValues` before validation.
+ *
+ * `.volatile()` landed in schemastery 3.18.3 while the 0.9.x baseline ships
+ * 3.18.1, hence the capability probe in `liveField` — never a version parse.
+ *
  * @module dsh-tui-find/config
  */
 import z from '@deepseek-ai/schemastery'
@@ -127,7 +142,83 @@ export type Config = {
   shortcut?: string
 }
 
-export const Config: Schemastery<Config> = z.object({
+/**
+ * Keys the `/settings` card owns, and therefore the keys the host may edit
+ * live. On `dsh-settings` ≥0.1.7 these are exactly the fields the plugin's
+ * form projects, so the card's field paths, this list and the marked fields
+ * must stay equal — a card field outside the list would render editable yet
+ * never be served (the failure mode the host's own status-bar `cost` field
+ * shows: `（未设置）` forever), and a marked key without a field would be
+ * live-editable with no UI. test/settings.test.ts pins both directions.
+ */
+export const LIVE_CONFIG_KEYS = [
+  'defaultScope',
+  'defaultTime',
+  'layout',
+  'caseSensitive',
+  'regex',
+  'pinyin',
+  'titleOnly',
+  'indexTools',
+  'indexThinking',
+  'sessionRoot',
+  'maxMessageChars',
+  'warmup',
+  'shortcut',
+] as const
+
+function isLiveConfigKey(key: string): boolean {
+  return (LIVE_CONFIG_KEYS as readonly string[]).includes(key)
+}
+
+/**
+ * Mark one schema field live-editable when the host's schemastery supports it.
+ *
+ * Capability-probed, never version-parsed: `.volatile()` landed in
+ * schemastery 3.18.3 while the 0.9.x/0.10.x host baseline ships 3.18.1, where
+ * the method is simply absent — the legacy namespace registration covers that
+ * generation instead (settings.ts). Calling it twice throws, so the marker is
+ * applied exactly once, from the single `LIVE_CONFIG_KEYS` list.
+ *
+ * Exported for the capability test: the repo's own schemastery is the 3.18.1
+ * baseline, so the marked branch can only be exercised with a stand-in field.
+ */
+export function liveField<T>(field: T): T {
+  const candidate = field as T & { volatile?: () => T }
+  return typeof candidate.volatile === 'function' ? candidate.volatile() : field
+}
+
+/**
+ * Read a row config down to plain values.
+ *
+ * On `dsh-settings` ≥0.1.7 (schemastery ≥3.18.3) the loader hands every
+ * `.volatile()` field to `apply` as a live ref — a frozen `{ get() }` whose
+ * value the loader rewrites in place — so reading the config object again
+ * after `loader/volatile-update` yields the edited values (settings.ts rides
+ * exactly that). Structural, not an import: the refs are cosmokit's Volatile
+ * protocol and cosmokit is not a dependency of this plugin. The row config is
+ * flat, so one unwrap level per key is enough; a nested knob would need a
+ * recursive walk here.
+ */
+export function readConfigValues(config: Config | undefined): Config {
+  const plain: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config ?? {})) plain[key] = readRef(value)
+  return plain as Config
+}
+
+/** Unwrap one live config ref (a `{ get }`-only object), if that is what it is. */
+function readRef(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value
+  const keys = Object.keys(value)
+  if (keys.length !== 1 || keys[0] !== 'get') return value
+  const ref = value as { get?: unknown }
+  return typeof ref.get === 'function' ? readRef((ref.get as () => unknown)()) : value
+}
+
+/** The row-config fields, in declaration order. Live marking is applied
+ *  afterwards from {@link LIVE_CONFIG_KEYS} so the card's editable set and the
+ *  marked set cannot drift apart (test/settings.test.ts pins the equality). */
+const configFields = {
   defaultScope: z.union(['repo', 'all']).default('repo'),
   defaultTime: z.union(['all', '7d', '30d']).default('all'),
   layout: z.union(['split', 'classic']).default('split'),
@@ -140,9 +231,20 @@ export const Config: Schemastery<Config> = z.object({
   sessionRoot: z.string().required(false),
   maxMessageChars: z.number().step(100).min(200).max(65536).default(4000),
   warmup: z.boolean().default(true),
+  // Deliberately NOT live: `lang` is pinned by DSH_TUI_LANG and has no
+  // /settings field, so it stays an ordinary row-config knob.
   lang: z.union(['auto', 'zh', 'en']).default('auto'),
   shortcut: z.string().default(DEFAULT_SHORTCUT),
-})
+}
+
+export const Config: Schemastery<Config> = z.object(
+  Object.fromEntries(
+    Object.entries(configFields).map(([key, field]) => [
+      key,
+      isLiveConfigKey(key) ? liveField(field) : field,
+    ]),
+  ) as unknown as typeof configFields,
+)
 
 /** Resolved, validated config used at runtime. */
 export interface ResolvedConfig {
@@ -163,9 +265,11 @@ export interface ResolvedConfig {
   readonly shortcut: string | undefined
 }
 
-/** Defensive resolution over a possibly-partial config (tests, drift). */
+/** Defensive resolution over a possibly-partial config (tests, drift). Live
+ *  refs are unwrapped first, so a ≥0.1.7 apply-time config (volatile refs) and
+ *  a frozen row config both resolve to the same value. */
 export function resolveConfig(raw: Config | undefined): ResolvedConfig {
-  const value = raw ?? {}
+  const value = readConfigValues(raw)
   return {
     defaultScope: value.defaultScope === 'all' ? 'all' : 'repo',
     defaultTime:

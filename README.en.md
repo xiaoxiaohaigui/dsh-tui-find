@@ -31,7 +31,7 @@ Local development install: `npm install && npm pack` (the prepack hook builds an
 
 Upgrade: re-run the install command (idempotent); if the version doesn't move, `npm cache clean --force`, then verify via `/plugins` after a restart.
 
-Uninstall: `dsh plugin --profile dsh-tui remove -w dsh-tui-find`, then restart. If the profile's `package.json → dsh.profile.bundles` still lists the entry (CLI version differences), delete it manually; settings saved through `/settings` stay in settings.yaml and reapply after a reinstall — delete the `dsh-tui-find` namespace keys for a clean slate. Uninstalling only affects this plugin: session data is strictly read-only and untouched.
+Uninstall: `dsh plugin --profile dsh-tui remove -w dsh-tui-find`, then restart. If the profile's `package.json → dsh.profile.bundles` still lists the entry (CLI version differences), delete it manually; settings saved through `/settings` live on the host side (the `settings.yaml` user layer on `@deepseek-ai/dsh-settings` ≤0.1.6, the profile patch `cordis.patch.yml` on ≥0.1.7) and reapply after a reinstall — delete that file's `dsh-tui-find` section for a clean slate. Uninstalling only affects this plugin: session data is strictly read-only and untouched.
 
 ## Usage
 
@@ -99,7 +99,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       shortcut: 'alt+f'          # global entry combo (ctrl or alt required; 'off' disables the entry)
 ```
 
-Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. Booleans/selects save on the spot, text drafts confirm with Enter — into the host settings service's user layer, overriding the plugin-row defaults by layering; the card copy follows the TUI language.
+Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. Booleans/selects save on the spot, text drafts confirm with Enter, overriding the plugin-row defaults; the card copy follows the TUI language. Where a save lands depends on the host's settings generation: the `settings.yaml` user layer on `@deepseek-ai/dsh-settings` ≤0.1.6, the active profile's patch (`cordis.patch.yml`) on ≥0.1.7 — one card drives both, with identical behavior.
 
 `lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → OS locale → zh; a `/lang` switch applies immediately.
 

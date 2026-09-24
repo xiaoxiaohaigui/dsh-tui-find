@@ -31,7 +31,7 @@ dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 
 升级：重跑安装命令（幂等）；版本未变先 `npm cache clean --force`，重启后用 `/plugins` 验证。
 
-卸载：`dsh plugin --profile dsh-tui remove -w dsh-tui-find`，重启生效。若 profile `package.json → dsh.profile.bundles` 仍残留条目（CLI 版本差异），手动删除即可；`/settings` 保存过的设置留在 settings.yaml、重装后继续生效，想归零删除 `dsh-tui-find` 命名空间键。卸载只影响本插件：会话数据全程只读、不受影响。
+卸载：`dsh plugin --profile dsh-tui remove -w dsh-tui-find`，重启生效。若 profile `package.json → dsh.profile.bundles` 仍残留条目（CLI 版本差异），手动删除即可；`/settings` 保存过的设置留在宿主那一侧（≤0.1.6 的 `settings.yaml`，或 ≥0.1.7 的 profile 补丁 `cordis.patch.yml`）、重装后继续生效，想归零删除其中的 `dsh-tui-find` 那一节。卸载只影响本插件：会话数据全程只读、不受影响。
 
 ## 使用
 
@@ -99,7 +99,7 @@ dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
       shortcut: 'alt+f'          # 全局入口组合键（必须含 ctrl 或 alt；'off' 关闭全局入口）
 ```
 
-除 `lang` 外的选项都可以在 TUI 内直接改：`/settings` → **dsh-tui-find（会话搜索）** 卡片。布尔/选择项一改即存，文本项回车确认，写入宿主设置服务的用户层并按层级覆盖插件行默认值；卡片文案跟随 TUI 语言。
+除 `lang` 外的选项都可以在 TUI 内直接改：`/settings` → **dsh-tui-find（会话搜索）** 卡片。布尔/选择项一改即存，文本项回车确认，覆盖插件行默认值；卡片文案跟随 TUI 语言。落点随宿主的设置服务世代而变：`@deepseek-ai/dsh-settings` ≤0.1.6 写进 `settings.yaml` 的用户层，≥0.1.7 写进当前 profile 的补丁（`cordis.patch.yml`）——两种世代都由插件内同一张卡片驱动，行为一致。
 
 `lang: auto` 跟随 dsh-TUI 语言链：`DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → 系统 locale → 中文，`/lang` 切换即时生效。
 

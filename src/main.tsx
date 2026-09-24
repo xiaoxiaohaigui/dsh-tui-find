@@ -37,7 +37,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
-import { Config, DEFAULT_SHORTCUT, resolveConfig, resolveShortcut, type Config as PluginConfig, type ResolvedConfig } from './config.js'
+import { Config, DEFAULT_SHORTCUT, readConfigValues, resolveConfig, resolveShortcut, type Config as PluginConfig, type ResolvedConfig } from './config.js'
 import { registerCommandTree } from './command-tree.js'
 import { SessionScanner } from './core/scan.js'
 import { dict, setLangOverride, t } from './i18n.js'
@@ -124,9 +124,17 @@ function watermarkJournalPath(): string | undefined {
  *
  * @param ctx - Cordis context (plugin activation).
  * @param config - Validated row config (schema defaults applied by the host).
+ *   On `dsh-settings` ≥0.1.7 hosts the fields marked `.volatile()` (config.ts)
+ *   arrive as live refs, so everything below reads them through
+ *   `readConfigValues` — a raw `config.shortcut` there is a ref object, not a
+ *   combo string.
  */
 export function apply(ctx: Context, config: PluginConfig = {}): void {
-  const resolved = resolveActivationConfig(config)
+  /** The live row config: refs unwrapped per read, so a later read sees
+   *  `/settings` edits (settings.ts re-resolves through this). */
+  const readRowConfig = (): PluginConfig => readConfigValues(config)
+  const rowConfig = readRowConfig()
+  const resolved = resolveActivationConfig(rowConfig)
   let runtimeConfig = resolved
   // Additive toast feedback (0.10+ `tuiToast`, structural soft-probe): the
   // shortcut-rejection warnings below and the scene's copy/resume results
@@ -136,10 +144,10 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // The global-entry combo gets its own resolution so a typo can be
   // reported (resolveConfig folds it silently; the warn below restores the
   // signal). Same pure function, so both paths agree.
-  const shortcut = resolveShortcut(config?.shortcut)
+  const shortcut = resolveShortcut(rowConfig.shortcut)
   if (shortcut.invalid) {
     ctx.logger.warn(
-      `dsh-tui-find: invalid shortcut '${config?.shortcut}' — a combo must carry ctrl or alt; using the default ${DEFAULT_SHORTCUT}`,
+      `dsh-tui-find: invalid shortcut '${rowConfig.shortcut}' — a combo must carry ctrl or alt; using the default ${DEFAULT_SHORTCUT}`,
     )
   }
   // setLangOverride pins module-level state; the disposer reverts it on
@@ -419,7 +427,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     }
   }
   if (shortcutsRuntime !== undefined) {
-    bindShortcut(shortcut.combo, config?.shortcut ?? DEFAULT_SHORTCUT)
+    bindShortcut(shortcut.combo, rowConfig.shortcut ?? DEFAULT_SHORTCUT)
     ctx.effect(() => () => {
       shortcutDispose?.()
       shortcutDispose = undefined
@@ -448,11 +456,15 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     })
   }
 
-  // Settings card over the host settings service.
-  registerSettingsSection(ctx, resolved, next => {
-    runtimeConfig = next
-    const nextShortcut = next.shortcut
-    bindShortcut(nextShortcut, next.shortcut ?? 'off')
+  // Settings card over the host settings service: a registered namespace on
+  // ≤0.1.6 hosts, the plugin's own live Config on ≥0.1.7 hosts (settings.ts).
+  registerSettingsSection(ctx, {
+    resolved,
+    readRaw: readRowConfig,
+    onResolved: next => {
+      runtimeConfig = next
+      bindShortcut(next.shortcut, next.shortcut ?? 'off')
+    },
   })
 }
 

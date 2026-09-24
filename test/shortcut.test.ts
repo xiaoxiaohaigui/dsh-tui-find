@@ -22,6 +22,10 @@ process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
+/** One live config ref, exactly as the loader hands volatile fields over:
+ *  a frozen object whose only key is `get`. */
+const liveRef = (value: unknown): unknown => Object.freeze({ get: () => value })
+
 /**
  * Mount the real extensions row (tuiShortcuts included) plus the plugin on
  * a fresh composition, then read the shortcut registry INSIDE the plugin's
@@ -270,6 +274,53 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
 
       vi.advanceTimersByTime(30)
       expect(registered).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads live Config refs as values on the ≥0.1.7 settings generation', async () => {
+    // On dsh-settings ≥0.1.7 (schemastery ≥3.18.3) the loader hands every
+    // `.volatile()` field to apply as a ref, and the namespace comes from the
+    // plugin's Config rather than a registration. Reading `config.shortcut`
+    // raw would bind the DEFAULT combo and warn about a perfectly good value;
+    // docs/decisions/2026-09-24-settings-generation-adaptation.md.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const root = new Context()
+      root.reflect.provide('agents', {})
+      const configured: unknown[] = []
+      root.reflect.provide('settings', {
+        configure(presentation: unknown): () => void {
+          configured.push(presentation)
+          return () => {}
+        },
+      })
+
+      const registered: string[] = []
+      await root.plugin({ name: plugin.name, inject: plugin.inject, apply: plugin.apply }, {
+        shortcut: liveRef('ctrl+alt+g'),
+        layout: liveRef('classic'),
+      } as never)
+      root.reflect.provide('tuiShortcuts', {
+        register(combo: string): () => void {
+          if (registered.includes(combo)) return () => {}
+          registered.push(combo)
+          return () => {
+            const index = registered.indexOf(combo)
+            if (index >= 0) registered.splice(index, 1)
+          }
+        },
+        list(): Array<{ combo: string }> {
+          return registered.map(combo => ({ combo }))
+        },
+      })
+      await Promise.resolve()
+
+      vi.advanceTimersByTime(30)
+      expect(registered).toEqual(['ctrl+alt+g'])
+      // The card is the plugin's own page: opt out of the auto-generated one.
+      expect(configured).toEqual([{ auto: false }])
     } finally {
       vi.useRealTimers()
     }

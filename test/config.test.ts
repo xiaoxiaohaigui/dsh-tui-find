@@ -1,12 +1,14 @@
 /**
  * Unit tests for the row-config resolution (src/config.ts) — the defensive
- * `resolveConfig` over a possibly-partial config. Focused on `defaultTime`
- * (the initial time window the find scene opens with) and the value-class
- * behavior of its neighbours: unknown/garbage values must fall back to the
- * documented defaults, not crash or leak through.
+ * `resolveConfig` over a possibly-partial config, plus the two host-generation
+ * concerns that live here: the capability-probed `.volatile()` marking and the
+ * unwrapping of the live refs such a field arrives as.
+ * Focused on `defaultTime` (the initial time window the find scene opens
+ * with) and the value-class behavior of its neighbours: unknown/garbage values
+ * must fall back to the documented defaults, not crash or leak through.
  */
 import { describe, expect, it } from 'vitest'
-import { Config, resolveConfig } from '../src/config.js'
+import { Config, LIVE_CONFIG_KEYS, liveField, readConfigValues, resolveConfig } from '../src/config.js'
 
 describe('resolveConfig — defaultTime', () => {
   it('defaults to all when unset', () => {
@@ -89,5 +91,40 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
     // defensive defaults (what tests/drift feed) must agree — a drift would
     // make /settings rows and README-documented defaults diverge.
     expect(resolveConfig(Config({}))).toEqual(resolveConfig(undefined))
+  })
+})
+
+describe('live config fields (dsh-settings ≥0.1.7)', () => {
+  /** The loader's Volatile protocol: a frozen ref whose value it rewrites. */
+  const ref = (value: unknown) => Object.freeze({ get: () => value })
+
+  it('marks a field only where the host schemastery has .volatile()', () => {
+    // Capability probe, not a version check: the 0.9.x/0.10.x baseline ships
+    // schemastery 3.18.1, where the method does not exist at all.
+    const marked = { volatile: () => ({ marked: true }) }
+    expect(liveField(marked)).toEqual({ marked: true })
+    const plain = { default: () => {} }
+    expect(liveField(plain)).toBe(plain)
+  })
+
+  it('readConfigValues unwraps live refs and leaves plain values alone', () => {
+    expect(readConfigValues({ layout: ref('classic'), warmup: false, shortcut: 'off' })).toEqual({
+      layout: 'classic',
+      warmup: false,
+      shortcut: 'off',
+    })
+    // Absent config and a missing key both read as "unset", never as a ref.
+    expect(readConfigValues(undefined)).toEqual({})
+  })
+
+  it('resolveConfig reads the same values through a live ref and a plain value', () => {
+    const live = readConfigValues({ layout: ref('classic'), shortcut: ref('ctrl+alt+g'), warmup: ref(false) })
+    expect(resolveConfig(live)).toEqual(
+      resolveConfig({ layout: 'classic', shortcut: 'ctrl+alt+g', warmup: false }),
+    )
+  })
+
+  it('keeps lang off the live list (row-config knob, no card field)', () => {
+    expect(LIVE_CONFIG_KEYS).not.toContain('lang')
   })
 })
