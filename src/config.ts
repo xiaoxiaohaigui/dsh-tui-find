@@ -212,13 +212,13 @@ export function liveField<T>(field: T): T {
  * Read a row config down to plain values.
  *
  * On `dsh-settings` ≥0.1.7 (schemastery ≥3.18.3) the loader hands every
- * `.volatile()` field to `apply` as a live ref — a frozen `{ get() }` whose
- * value the loader rewrites in place — so reading the config object again
- * after `loader/volatile-update` yields the edited values (settings.ts rides
- * exactly that). Structural, not an import: the refs are cosmokit's Volatile
- * protocol and cosmokit is not a dependency of this plugin. The row config is
- * flat, so one unwrap level per key is enough; a nested knob would need a
- * recursive walk here.
+ * `.volatile()` field to `apply` as a live ref — a frozen object carrying the
+ * cosmokit Volatile protocol whose value the loader rewrites in place — so
+ * reading the config object again after `loader/volatile-update` yields the
+ * edited values (settings.ts rides exactly that). Structural, not an import:
+ * the refs are cosmokit's Volatile protocol and cosmokit is not a dependency
+ * of this plugin. The row config is flat, so one unwrap level per key is
+ * enough; a nested knob would need a recursive walk here.
  */
 export function readConfigValues(config: Config | undefined): Config {
   const plain: Record<string, unknown> = {}
@@ -226,12 +226,33 @@ export function readConfigValues(config: Config | undefined): Config {
   return plain as Config
 }
 
-/** Unwrap one live config ref (a `{ get }`-only object), if that is what it is. */
+/**
+ * The cosmokit Volatile brand, read by name so it matches the host's own copy
+ * across module instances (`cosmokit/src/volatile.ts`). Absent from the
+ * schemastery 3.18.1 generations this repo also supports — probing it is a
+ * plain symbol lookup, never a version parse, and the shape fallback below
+ * still covers a hand-rolled ref.
+ */
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+
+/**
+ * Unwrap one live config ref, if that is what it is.
+ *
+ * The protocol brand (`cosmokit.volatile.write` in the value, exactly what
+ * `isVolatile` checks) is authoritative and is probed FIRST: a real ref may
+ * legitimately carry more than the `get` key, and the shape heuristic below
+ * would then hand the ref object itself to `resolveConfig`, which silently
+ * falls back to the documented defaults (no warning, no error). The shape
+ * check stays as a fallback for a ref built without the brand.
+ */
 function readRef(value: unknown): unknown {
   if (typeof value !== 'object' || value === null) return value
-  const keys = Object.keys(value)
-  if (keys.length !== 1 || keys[0] !== 'get') return value
   const ref = value as { get?: unknown }
+  const branded = VOLATILE_WRITE in value
+  if (!branded) {
+    const keys = Object.keys(value)
+    if (keys.length !== 1 || keys[0] !== 'get') return value
+  }
   return typeof ref.get === 'function' ? readRef((ref.get as () => unknown)()) : value
 }
 

@@ -22,9 +22,14 @@ process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
-/** One live config ref, exactly as the loader hands volatile fields over:
- *  a frozen object whose only key is `get`. */
-const liveRef = (value: unknown): unknown => Object.freeze({ get: () => value })
+/** The cosmokit Volatile brand, by name exactly as the runtime reads it. */
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+
+/** One live config ref, as the loader hands volatile fields over: a frozen
+ *  ref carrying the cosmokit Volatile protocol (and, for good measure, the
+ *  extra key R-086 showed the old shape heuristic could not survive). */
+const liveRef = (value: unknown): unknown =>
+  Object.freeze({ get: () => value, [VOLATILE_WRITE]: () => {}, id: 'live-ref' })
 
 /**
  * Mount the real extensions row (tuiShortcuts included) plus the plugin on

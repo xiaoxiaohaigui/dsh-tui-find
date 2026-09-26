@@ -95,8 +95,15 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
 })
 
 describe('live config fields (dsh-settings ≥0.1.7)', () => {
-  /** The loader's Volatile protocol: a frozen ref whose value it rewrites. */
-  const ref = (value: unknown) => Object.freeze({ get: () => value })
+  /** The cosmokit Volatile brand, read by name exactly as the runtime does
+   *  (`cosmokit/src/volatile.ts`: `Symbol.for('cosmokit.volatile.write')`). */
+  const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+
+  /** The loader's Volatile protocol: a frozen branded ref whose value it
+   *  rewrites. `extra` models a ref that carries more than `get` — the shape
+   *  the brand probe exists for (REVIEW R-086). */
+  const ref = (value: unknown, extra: Record<string, unknown> = {}) =>
+    Object.freeze({ get: () => value, [VOLATILE_WRITE]: () => {}, ...extra })
 
   it('prefers .volatile() and falls back to the meta marker without it', () => {
     // Capability order, not a version check: `.volatile()` exists from
@@ -133,6 +140,23 @@ describe('live config fields (dsh-settings ≥0.1.7)', () => {
     })
     // Absent config and a missing key both read as "unset", never as a ref.
     expect(readConfigValues(undefined)).toEqual({})
+  })
+
+  it('unwraps a branded ref that carries more than `get`', () => {
+    // R-086's failure mode: the protocol brand is the authority, so a ref with
+    // an extra ordinary key must still unwrap. Under the old shape heuristic
+    // (`own enumerable keys exactly ['get']`) this returned the ref object
+    // itself, resolveConfig then read it as "value not equal to the default"
+    // and silently fell back to `alt+f` — no warning at all.
+    expect(readConfigValues({ shortcut: ref('ctrl+alt+g', { id: 'live-1' }) })).toEqual({
+      shortcut: 'ctrl+alt+g',
+    })
+    expect(resolveConfig({ shortcut: ref('ctrl+alt+g', { id: 'live-1' }) }).shortcut).toBe('ctrl+alt+g')
+    // The shape check stays as a fallback for a hand-rolled ref without the
+    // brand (and for a stub built before the protocol was modelled here).
+    expect(readConfigValues({ layout: { get: () => 'classic' } })).toEqual({ layout: 'classic' })
+    // A `get` that is not a function is never unwrapped, branded or not.
+    expect(readConfigValues({ layout: { get: 'classic' } })).toEqual({ layout: { get: 'classic' } })
   })
 
   it('resolveConfig reads the same values through a live ref and a plain value', () => {

@@ -13,12 +13,43 @@ vi.hoisted(() => {
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
 import { glyphStyle, hasBackground, mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
+import type { Harness } from './harness.js'
 
 setLangOverride('en')
 // One language for the whole file (every frame assertion below is en), and
 // restored once after ALL describes — a per-describe afterAll would reset the
 // override for every later describe in this file.
 afterAll(() => setLangOverride(undefined))
+
+/** The last frame, once a full repaint has actually landed on it: each round
+ *  triggers a resize (the only thing that forces a full repaint) and then
+ *  polls `latest()` until every pattern matches, re-triggering if the frame a
+ *  dense render stream is still writing gets captured mid-flight.
+ *
+ *  Two known flake classes meet here (REVIEW R-058/R-046 and R-088): a diff
+ *  frame that suppresses or mangles content, and a capture taken while the
+ *  frame is still being written — a screen dump showed `First session` torn
+ *  to `First sesion` under a full parallel run. A full repaint after the
+ *  render queue drains fixes both, so each round resizes first and polls
+ *  between rounds; the caller keeps its own `expect` so a deadline miss still
+ *  surfaces as a normal assertion diff, never a helper error. */
+async function paintedFrame(
+  harness: Harness,
+  patterns: readonly RegExp[],
+  timeoutMs = 5_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  let frame = harness.latest()
+  for (;;) {
+    harness.toggleWidth()
+    const roundDeadline = Math.min(Date.now() + 200, deadline)
+    do {
+      await waitFor(20)
+      frame = harness.latest()
+    } while (!patterns.every(pattern => pattern.test(frame)) && Date.now() < roundDeadline)
+    if (patterns.every(pattern => pattern.test(frame)) || Date.now() >= deadline) return frame
+  }
+}
 
 /** The SGR run in front of EVERY occurrence of `glyph` in a raw frame, in
  *  frame order. `glyphStyle` reads the last one only, which cannot tell "the
@@ -677,14 +708,16 @@ describe('search filter and scan streaming wiring', () => {
       expect(harness.latest()).toMatch(/Second\s*session/)
       secondGate.resolve()
       // The completed sweep replaces the accumulation; the streamed rows
-      // stay — asserted on the final full-repaint frame, i.e. the replaced
-      // list state itself rather than the pre-replacement frames all()
-      // would also accept.
+      // stay — asserted on a full-repaint frame, i.e. the replaced list state
+      // itself rather than the pre-replacement frames all() would also
+      // accept. This is the one presence check with BOTH rows required, and
+      // it is where the frame used to come out torn under load (REVIEW R-088:
+      // the screen dump read `First sesion`), so it rides the polling
+      // full-repaint helper instead of a single resize + fixed wait.
       await waitForMatch(() => harness.all(), /First\s*session/)
-      harness.resize(81, 12)
-      await waitFor()
-      expect(harness.latest()).toMatch(/First\s*session/)
-      expect(harness.latest()).toMatch(/Second\s*session/)
+      const frame = await paintedFrame(harness, [/First\s*session/, /Second\s*session/])
+      expect(frame).toMatch(/First\s*session/)
+      expect(frame).toMatch(/Second\s*session/)
     } finally {
       harness.dispose()
     }

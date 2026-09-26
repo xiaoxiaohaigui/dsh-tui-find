@@ -40,6 +40,10 @@ export type Harness = {
   closed(): number
   /** Emits a real dimension change so the host renderer fully repaints. */
   resize(columns: number, rows: number): void
+  /** Flip between two adjacent widths (80 ⇄ 81), each a real dimension change
+   *  and therefore a full repaint — lets a poll force fresh frames without
+   *  tracking the current width. */
+  toggleWidth(): void
   dispose(): void
 }
 
@@ -255,6 +259,10 @@ export async function mount(
     resize(columns, rows) {
       stdout.columns = columns
       stdout.rows = rows
+      stdout.emit('resize')
+    },
+    toggleWidth() {
+      stdout.columns = stdout.columns === 80 ? 81 : 80
       stdout.emit('resize')
     },
     dispose() {
