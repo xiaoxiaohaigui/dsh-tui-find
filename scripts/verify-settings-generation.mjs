@@ -111,16 +111,32 @@ try {
   const plugin = name => import(pathToFileURL(join(probeRoot, 'dist', name)).href)
   const helper = name => import(pathToFileURL(join(settingsDir, 'lib', 'types', name)).href)
 
-  const { Config, LIVE_CONFIG_KEYS, readConfigValues, resolveConfig } = await plugin('config.js')
-  const { registerSettingsSection, SETTINGS_NS } = await plugin('settings.js')
+  const { Config, LIVE_CONFIG_KEYS, hasLiveConfigFields, readConfigValues, resolveConfig } = await plugin('config.js')
+  const { registerSettingsSection, resolveSettingsNamespace, SETTINGS_NS } = await plugin('settings.js')
   const { volatileForm, projectForm, plainConfig, isVolatilePath } = await helper('schema.js')
 
   const liveKeys = [...LIVE_CONFIG_KEYS].sort()
   const form = volatileForm(Config)
+  check('a live marker exists on the shipped Config', hasLiveConfigFields())
   check('volatileForm(Config) is non-empty (describe() lists the entry)', form !== undefined)
   const formKeys = Object.keys(form?.dict ?? {}).sort()
   check('live keys == form-projected keys', JSON.stringify(formKeys) === JSON.stringify(liveKeys), formKeys.join(', '))
   check('every live key passes the write gate', LIVE_CONFIG_KEYS.every(key => isVolatilePath(Config, [key])))
+
+  // The namespace follows the Loader entry id on this generation (dsh-TUI
+  // #990's fragility: the host keys by entry id, so a renamed row must move
+  // the card with it) and falls back to the constant for an unusable id.
+  const withEntry = id => ({ fiber: { entry: { options: { id } } } })
+  check(
+    'namespace follows the Loader entry id',
+    resolveSettingsNamespace(withEntry('custom-find')) === 'custom-find',
+    resolveSettingsNamespace(withEntry('custom-find')),
+  )
+  check(
+    'namespace falls back for an unusable entry id',
+    resolveSettingsNamespace(withEntry('Custom.TUI')) === SETTINGS_NS,
+  )
+  check('namespace defaults to the constant without a Loader entry', resolveSettingsNamespace({}) === SETTINGS_NS)
 
   const unset = projectForm(form, plainConfig(Config({})))
   const unsetMissing = LIVE_CONFIG_KEYS.filter(key => key !== 'sessionRoot' && unset[key] === undefined)
@@ -170,12 +186,14 @@ try {
       refresh = listener
       return () => {}
     },
-    fiber: { probe: true },
+    // The plugin's own fiber, as the Loader reports it: the namespace source.
+    fiber: { entry: { options: { id: 'dsh-tui-find' } } },
     logger: child.logger,
   }
   registerSettingsSection(ctx, { resolved: resolveConfig(undefined), readRaw, onResolved: next => applied.push(next) })
 
-  check('the namespace key is the profile entry id', SETTINGS_NS === 'dsh-tui-find', SETTINGS_NS)
+  check('the card takes the Loader entry id as its namespace', cards[0]?.ns === 'dsh-tui-find', String(cards[0]?.ns))
+  check('the default entry id equals the documented constant', SETTINGS_NS === 'dsh-tui-find', SETTINGS_NS)
   check('no namespace registration is attempted', typeof service.register === 'undefined')
   check(
     'page policy opts out of the auto page on the plugin fiber',

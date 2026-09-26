@@ -10,13 +10,19 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { LIVE_CONFIG_KEYS, resolveConfig } from '../src/config.js'
-import { registerSettingsSection, SETTINGS_NS, type SettingsWiring } from '../src/settings.js'
+import {
+  registerSettingsSection,
+  resolveSettingsNamespace,
+  SETTINGS_NS,
+  type SettingsWiring,
+} from '../src/settings.js'
 
 type Card = { ns: string; fields: Array<{ path: string[]; kind: string; options?: Array<{ value: string }> }> }
 
 type FakeOptions = {
   settings?: Record<string, unknown> | undefined
-  fiber?: unknown
+  /** Loader entry id the plugin's fiber reports (what a ≥0.1.7 host keys by). */
+  entryId?: string
   on?: (event: string, listener: () => void) => () => void
 }
 
@@ -55,7 +61,8 @@ function fakeContext(options: FakeOptions = {}): { ctx: Context; seen: Recorded 
       seen.events.push(event)
       return options.on?.(event, listener)
     },
-    fiber: options.fiber,
+    fiber:
+      options.entryId === undefined ? undefined : { entry: { options: { id: options.entryId } } },
     logger: child.logger,
   }
   return { ctx: ctx as unknown as Context, seen }
@@ -98,7 +105,6 @@ describe('settings namespace', () => {
 
   it('adopts the ≥0.1.7 generation: page policy, no namespace registration', () => {
     const configured: Array<{ presentation: unknown; owner: unknown }> = []
-    const fiber = { plugin: 'dsh-tui-find' }
     const { ctx, seen } = fakeContext({
       settings: {
         configure: (presentation: unknown, owner: unknown) => {
@@ -106,7 +112,7 @@ describe('settings namespace', () => {
           return () => {}
         },
       },
-      fiber,
+      entryId: 'dsh-tui-find',
       on: () => () => {},
     })
     const wiring = wiringOver({ current: { layout: 'classic' } })
@@ -115,12 +121,52 @@ describe('settings namespace', () => {
 
     // The card is the plugin's own page: opt out of the auto-generated one,
     // attached to the Config-owning fiber rather than the injected child.
-    expect(configured).toEqual([{ presentation: { auto: false }, owner: fiber }])
+    expect(configured).toEqual([
+      { presentation: { auto: false }, owner: (ctx as unknown as { fiber: unknown }).fiber },
+    ])
     expect(seen.logs).toEqual([])
     // The initial value comes from the live row config, not from a scope.
     expect(wiring.applied.at(-1)).toEqual({ layout: 'classic', warmup: true })
     // Exactly one listener, on the loader's live-config event.
     expect(seen.events).toEqual(['loader/volatile-update'])
+  })
+
+  it('follows the Loader entry id, on both generations', () => {
+    // A ≥0.1.7 host keys the namespace by `entry.options.id` (and the settings
+    // screen matches sections by that same string), so a renamed row must move
+    // the card with it — dsh-TUI #990's fragility. The legacy registration uses
+    // the same string so the card and the stored section cannot disagree.
+    const registered: unknown[] = []
+    const { ctx, seen } = fakeContext({
+      settings: {
+        register: (namespace: unknown) => {
+          registered.push(namespace)
+          return { get: () => ({}), watch: () => () => {} }
+        },
+      },
+      entryId: 'my-find',
+    })
+
+    registerSettingsSection(ctx, wiringOver({ current: {} }))
+    expect(resolveSettingsNamespace(ctx)).toBe('my-find')
+    expect(seen.cards[0]?.ns).toBe('my-find')
+    expect(registered).toEqual(['my-find'])
+  })
+
+  it('falls back to the constant namespace when the entry id is unusable', () => {
+    // Plugin-owned sections must satisfy the host's lowercase-kebab grammar, so
+    // an id like `Custom.TUI` cannot be registered — the card keeps the stable
+    // name and the new generation says why nothing will be served.
+    const { ctx, seen } = fakeContext({
+      settings: { configure: () => () => {} },
+      entryId: 'Custom.TUI',
+      on: () => () => {},
+    })
+
+    registerSettingsSection(ctx, wiringOver({ current: {} }))
+    expect(resolveSettingsNamespace(ctx)).toBe(SETTINGS_NS)
+    expect(seen.cards[0]?.ns).toBe(SETTINGS_NS)
+    expect(seen.logs.join('\n')).toContain('keys namespaces by Loader entry id "Custom.TUI"')
   })
 
   it('re-reads the live config on loader/volatile-update', () => {

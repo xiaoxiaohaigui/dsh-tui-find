@@ -172,20 +172,40 @@ function isLiveConfigKey(key: string): boolean {
 }
 
 /**
- * Mark one schema field live-editable when the host's schemastery supports it.
+ * Mark one schema field live-editable when the host can project it.
  *
- * Capability-probed, never version-parsed: `.volatile()` landed in
- * schemastery 3.18.3 while the 0.9.x/0.10.x host baseline ships 3.18.1, where
- * the method is simply absent — the legacy namespace registration covers that
- * generation instead (settings.ts). Calling it twice throws, so the marker is
- * applied exactly once, from the single `LIVE_CONFIG_KEYS` list.
+ * Two capability steps, never a version parse:
  *
- * Exported for the capability test: the repo's own schemastery is the 3.18.1
- * baseline, so the marked branch can only be exercised with a stand-in field.
+ * 1. `.volatile()` — schemastery 3.18.3+; returns a marked clone and runs the
+ *    framework's own volatile validation, so it is preferred wherever it
+ *    exists.
+ * 2. `meta.volatile = true` — the settings projection only reads that plain
+ *    meta field, so writing it directly works on the 3.18.1/3.18.2 baselines
+ *    too. This is the fallback dsh-TUI shipped for its own Config after issue
+ *    #990 (its `editableConfig` silently no-opped on older schemastery and the
+ *    whole settings page went dead on a 0.1.7 host). Verified against this
+ *    repo's 3.18.1: the marker survives `z.object()` and leaves validation
+ *    untouched; a frozen meta (a future schemastery could freeze it) is left
+ *    unmarked rather than throwing.
+ *
+ * Calling `.volatile()` twice throws, so the marker is applied exactly once,
+ * from the single `LIVE_CONFIG_KEYS` list.
+ *
+ * Exported for tests: the repo's own schemastery is the 3.18.1 baseline, which
+ * makes this the one place the fallback is observable in CI.
  */
 export function liveField<T>(field: T): T {
-  const candidate = field as T & { volatile?: () => T }
-  return typeof candidate.volatile === 'function' ? candidate.volatile() : field
+  const candidate = field as T & { volatile?: () => T; meta?: { volatile?: unknown } }
+  if (typeof candidate.volatile === 'function') return candidate.volatile()
+  const meta = candidate.meta
+  if (typeof meta === 'object' && meta !== null) {
+    try {
+      meta.volatile = true
+    } catch {
+      return field
+    }
+  }
+  return field
 }
 
 /**
@@ -245,6 +265,22 @@ export const Config: Schemastery<Config> = z.object(
     ]),
   ) as unknown as typeof configFields,
 )
+
+/**
+ * Whether any row-config field carries the live marker — exactly what a
+ * `dsh-settings` ≥0.1.7 host needs to serve this plugin's `/settings` page
+ * (`volatileForm()` returns undefined without it and the entry never reaches
+ * `describe()`, which the TUI renders as `命名空间未注册`).
+ *
+ * Read structurally: the schemastery 3.18.1 types this repo builds against do
+ * not expose `.dict`. settings.ts warns with this when a new-generation host
+ * cannot serve the card, instead of leaving a bare badge as the only clue.
+ */
+export function hasLiveConfigFields(): boolean {
+  const dict = (Config as unknown as { dict?: Record<string, { meta?: { volatile?: unknown } } | undefined> })
+    .dict
+  return Object.values(dict ?? {}).some(field => field?.meta?.volatile === true)
+}
 
 /** Resolved, validated config used at runtime. */
 export interface ResolvedConfig {

@@ -127,6 +127,9 @@ export async function mount(
     }
     /** Scene-level notifier spy — the toast-channel tests assert dispatch. */
     notify?: (text: string, tone: 'info' | 'error') => void
+    /** Resume outcome the stubbed channel returns — the resume feedback tests
+     *  drive the confirm flow's result branches (default: user-cancelled). */
+    resumeTo?: () => Promise<unknown>
     /** Mount inside the host's AlternateScreen (as the real host mounts
      *  plugin scenes), enabling alt-screen mouse dispatch: click/hover/
      *  context-menu delivery is gated on altScreenActive in the host ink,
@@ -170,7 +173,7 @@ export async function mount(
   const channel = {
     cwd: process.cwd(),
     working: false,
-    resumeTo: async () => ({ ok: false as const, reason: 'cancelled' as const }),
+    resumeTo: options.resumeTo ?? (async () => ({ ok: false as const, reason: 'cancelled' as const })),
   }
   const scanner = options.scanner ?? { scan: async () => [session] }
   const props = {

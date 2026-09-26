@@ -181,6 +181,12 @@ export const dict = {
   'copy-failed': { zh: '复制失败', en: 'Copy failed' },
   'resume-working': { zh: '恢复失败：当前会话仍在工作中', en: 'Resume failed: the current session is still working' },
   'resume-unavailable': { zh: '恢复失败：会话存储不可用', en: 'Resume failed: session store unavailable' },
+  // 0.11.0 widened the resume result with the occupancy case: another TUI
+  // terminal (pid) holds this session's log and refuses to hand it over.
+  'resume-occupied': {
+    zh: '恢复失败：该会话正被其他 TUI 终端占用（进程 {{pid}}）',
+    en: 'Resume failed: another TUI terminal holds this session (pid {{pid}})',
+  },
   'resume-cancelled': { zh: '已取消恢复', en: 'Resume cancelled' },
   'resume-failed': { zh: '恢复失败：{{error}}', en: 'Resume failed: {{error}}' },
   'resumed': { zh: '已恢复会话', en: 'Session resumed' },

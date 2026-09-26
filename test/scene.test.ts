@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionMarker, wheelRows } from '../src/find-types.js'
 import { setLangOverride } from '../src/i18n.js'
 import type { ScannedSession } from '../src/core/scan.js'
@@ -198,6 +198,31 @@ describe('list-mode key dispatch', () => {
       await waitFor()
       expect(harness.latest()).toMatch(/Resume\s*cancelled/)
       expect(harness.latest()).toMatch(/Type\s*to\s*search/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('names the holding process when another TUI terminal occupies the session', async () => {
+    // 0.11.0 widened the resume failure union with the occupancy case (it
+    // carries a pid, no error string). Without a branch for it the scene fell
+    // through to the generic line and printed `Resume failed: undefined`.
+    const notify = vi.fn()
+    const harness = await mount(sessionWithMessages(['body']), {
+      query: '',
+      resumeTo: async () => ({ ok: false, reason: 'occupied', pid: 4242 }),
+      notify,
+    })
+    try {
+      harness.send('\r')
+      await waitFor()
+      harness.send('\r')
+      await waitFor(300)
+      harness.resize(81, 12)
+      await waitFor()
+      expect(harness.latest()).toMatch(/Resume\s*failed:\s*another\s*TUI\s*terminal/)
+      expect(harness.latest()).not.toMatch(/undefined/)
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining('holds this session (pid 4242)'), 'error')
     } finally {
       harness.dispose()
     }

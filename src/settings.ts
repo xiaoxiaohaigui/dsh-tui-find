@@ -20,7 +20,7 @@
  *   pushes edits into the plugin.
  * - **≥0.1.7** — there is no registration API at all (`SettingsForms` projects
  *   each profile entry's *Config* instead). The namespace is this plugin's
- *   profile entry id — which equals {@link SETTINGS_NS} — and the form schema
+ *   profile entry id (see {@link resolveSettingsNamespace}) — and the form schema
  *   is `Config` filtered to its `.volatile()` fields (config.ts). Edits land in
  *   the profile patch, the loader rewrites those same refs in place, and
  *   `loader/volatile-update` announces it; this module re-reads the live config
@@ -38,13 +38,44 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { TuiSettingsSection } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 import type { ResolvedConfig } from './config.js'
-import { DEFAULT_SHORTCUT, resolveConfig } from './config.js'
+import { DEFAULT_SHORTCUT, hasLiveConfigFields, resolveConfig } from './config.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 
-/** Settings namespace owned by this plugin. It is also the plugin's profile
- *  entry id (`cordis.patch.yml`), which is what the ≥0.1.7 generation keys
- *  namespaces by — cite both when one of them ever changes. */
+/** Settings namespace this plugin owns by default, and the fallback when the
+ *  Loader entry id is unusable. On ≥0.1.7 hosts the *entry id* is the
+ *  namespace the host keys by, so the effective value is
+ *  `resolveSettingsNamespace(ctx)`: a default install lands on exactly this
+ *  string (`cordis.patch.yml` pins `id: dsh-tui-find`), and it stays the name
+ *  the README documents for settings storage. */
 export const SETTINGS_NS = 'dsh-tui-find'
+
+/** The grammar plugin-owned sections must satisfy
+ *  (`tuiSettingsSections.register`; the host only relaxes it for its own
+ *  sections, which may carry opaque Loader ids). */
+const NAMESPACE_PATTERN = /^[a-z][a-z0-9_-]*$/
+
+/** The plugin's Loader entry id, when the host gives us one. */
+function loaderEntryId(ctx: Context): string | undefined {
+  const fiber = ctx.fiber as (typeof ctx.fiber & { entry?: { options?: { id?: unknown } } }) | undefined
+  const id = fiber?.entry?.options?.id
+  return typeof id === 'string' ? id : undefined
+}
+
+/**
+ * The namespace this plugin's settings live under: the Loader entry id when it
+ * satisfies the section grammar, {@link SETTINGS_NS} otherwise.
+ *
+ * A `dsh-settings` ≥0.1.7 host keys namespaces by the Loader entry id
+ * (`SettingsForms.describe()` → `entry.options.id`), so keying the card off
+ * anything else breaks the moment the row is renamed — the fragility dsh-TUI
+ * #990 records, where even the host's own section had to stop hard-coding its
+ * name. Both generations resolve to the same string here, so the card, the
+ * legacy registration and the host's projection cannot disagree.
+ */
+export function resolveSettingsNamespace(ctx: Context): string {
+  const id = loaderEntryId(ctx)
+  return id !== undefined && NAMESPACE_PATTERN.test(id) ? id : SETTINGS_NS
+}
 
 /** Keep the settings service structural rather than importing its types into
  *  the plugin's required surface; the peer remains optional at runtime. */
@@ -82,9 +113,9 @@ export interface SettingsWiring {
 const zh = (text: string): { zh: string } => ({ zh: text })
 
 /** The card, mirroring the row config keys one-to-one. */
-function section(): TuiSettingsSection {
+function section(ns: string): TuiSettingsSection {
   return {
-    ns: SETTINGS_NS,
+    ns,
     title: 'dsh-tui-find (session search)',
     descriptions: zh('dsh-tui-find（会话搜索）'),
     fields: [
@@ -221,7 +252,8 @@ function section(): TuiSettingsSection {
  * itself keep working.
  */
 export function registerSettingsSection(ctx: Context, wiring: SettingsWiring): void {
-  registerCard(ctx)
+  const ns = resolveSettingsNamespace(ctx)
+  registerCard(ctx, ns)
 
   const apply = (value: ConfigValue): void => {
     wiring.onResolved(resolveConfig(value), value)
@@ -236,7 +268,7 @@ export function registerSettingsSection(ctx: Context, wiring: SettingsWiring): v
     if (settings === undefined) return
 
     if (typeof settings.register === 'function') {
-      registerNamespaceScope(settingsCtx, settings, wiring, apply)
+      registerNamespaceScope(settingsCtx, settings, wiring, apply, ns)
       return
     }
     if (typeof settings.configure !== 'function') {
@@ -245,6 +277,7 @@ export function registerSettingsSection(ctx: Context, wiring: SettingsWiring): v
       )
       return
     }
+    diagnoseNewGeneration(ctx, ns)
     configureOwnPage(ctx, settingsCtx, settings)
     // Initial value: the row config already carries the host-resolved layers
     // (defaults → composition base → profile patch), so an unchanged session
@@ -254,12 +287,31 @@ export function registerSettingsSection(ctx: Context, wiring: SettingsWiring): v
   })
 }
 
+/**
+ * Explain the two ways a ≥0.1.7 host can leave this card unserved, instead of
+ * letting `命名空间未注册` be the only clue (the diagnosis cost of dsh-TUI #990).
+ * Both are warnings, not failures: the row config and `/find` keep working.
+ */
+function diagnoseNewGeneration(ctx: Context, ns: string): void {
+  const entryId = loaderEntryId(ctx)
+  if (entryId !== undefined && entryId !== ns) {
+    ctx.logger.warn(
+      `dsh-tui-find: the settings service keys namespaces by Loader entry id "${entryId}", which is not a valid section namespace — the settings card cannot be served; rename the plugin row to a lowercase kebab-case id`,
+    )
+  }
+  if (!hasLiveConfigFields()) {
+    ctx.logger.warn(
+      'dsh-tui-find: no row-config field carries the live marker — this host cannot serve the settings card (needs a schemastery that accepts volatile fields); the row config keeps working',
+    )
+  }
+}
+
 /** The card itself: one registration, retried across the boot-liveness window. */
-function registerCard(ctx: Context): void {
+function registerCard(ctx: Context, ns: string): void {
   const sectionsRuntime = ctx.get('tuiSettingsSections', false)
   const register = (cardRuntime: NonNullable<typeof sectionsRuntime>): void => {
     try {
-      const dispose = cardRuntime.register(section())
+      const dispose = cardRuntime.register(section(ns))
       ctx.effect(() => dispose)
     } catch (error) {
       // A boot-window liveness rejection must retry, not degrade: a plain warn
@@ -269,7 +321,7 @@ function registerCard(ctx: Context): void {
       registerSeamWithRetry(
         ctx,
         'settings section',
-        () => cardRuntime.register(section()),
+        () => cardRuntime.register(section(ns)),
         dispose => ctx.effect(() => dispose),
         error,
       )
@@ -291,6 +343,7 @@ function registerNamespaceScope(
   settings: SettingsService,
   wiring: SettingsWiring,
   apply: (value: ConfigValue) => void,
+  ns: string,
 ): void {
   const resolved = wiring.resolved
   try {
@@ -321,7 +374,7 @@ function registerNamespaceScope(
     })
     // Namespace brands are type-only; alpha.2 validates the raw string in
     // register() itself, and the constant satisfies the older provider too.
-    const scope = settings.register?.(SETTINGS_NS, schema) as SettingsScope<ConfigValue>
+    const scope = settings.register?.(ns, schema) as SettingsScope<ConfigValue>
     apply(scope.get())
     const unwatch = scope.watch(next => {
       apply(next)

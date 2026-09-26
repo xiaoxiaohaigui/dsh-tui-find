@@ -382,18 +382,29 @@ export function FindScene(props: TuiSceneProps & {
         close()
         return
       }
-      if (result.reason === 'working') {
+      // 0.11.0 widened the failure union with the occupancy case (another TUI
+      // terminal holds the session log and reports its pid). Read structurally:
+      // the 0.9.3 build baseline does not declare it, and the dual-version
+      // strategy keeps newer-host surfaces as local structural types
+      // (docs/decisions/2026-09-12-dual-version-compat-strategy.md).
+      const failure = result as { reason?: string; error?: string; pid?: number }
+      if (failure.reason === 'working') {
         setStatus({ text: t('resume-working'), tone: 'error' })
         notify(t('resume-working'), 'error')
-      } else if (result.reason === 'cancelled') {
+      } else if (failure.reason === 'cancelled') {
         setStatus({ text: t('resume-cancelled'), tone: 'info' })
         notify(t('resume-cancelled'), 'info')
-      } else if (result.reason === 'unavailable') {
+      } else if (failure.reason === 'unavailable') {
         setStatus({ text: t('resume-unavailable'), tone: 'error' })
         notify(t('resume-unavailable'), 'error')
+      } else if (failure.reason === 'occupied') {
+        const occupied = t('resume-occupied', { pid: failure.pid ?? 0 })
+        setStatus({ text: occupied, tone: 'error' })
+        notify(occupied, 'error')
       } else {
-        setStatus({ text: t('resume-failed', { error: result.error }), tone: 'error' })
-        notify(t('resume-failed', { error: result.error }), 'error')
+        const detail = t('resume-failed', { error: failure.error ?? 'unknown' })
+        setStatus({ text: detail, tone: 'error' })
+        notify(detail, 'error')
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)

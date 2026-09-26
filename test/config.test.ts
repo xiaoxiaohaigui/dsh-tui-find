@@ -8,7 +8,7 @@
  * must fall back to the documented defaults, not crash or leak through.
  */
 import { describe, expect, it } from 'vitest'
-import { Config, LIVE_CONFIG_KEYS, liveField, readConfigValues, resolveConfig } from '../src/config.js'
+import { Config, LIVE_CONFIG_KEYS, hasLiveConfigFields, liveField, readConfigValues, resolveConfig } from '../src/config.js'
 
 describe('resolveConfig — defaultTime', () => {
   it('defaults to all when unset', () => {
@@ -98,13 +98,31 @@ describe('live config fields (dsh-settings ≥0.1.7)', () => {
   /** The loader's Volatile protocol: a frozen ref whose value it rewrites. */
   const ref = (value: unknown) => Object.freeze({ get: () => value })
 
-  it('marks a field only where the host schemastery has .volatile()', () => {
-    // Capability probe, not a version check: the 0.9.x/0.10.x baseline ships
-    // schemastery 3.18.1, where the method does not exist at all.
-    const marked = { volatile: () => ({ marked: true }) }
-    expect(liveField(marked)).toEqual({ marked: true })
-    const plain = { default: () => {} }
-    expect(liveField(plain)).toBe(plain)
+  it('prefers .volatile() and falls back to the meta marker without it', () => {
+    // Capability order, not a version check: `.volatile()` exists from
+    // schemastery 3.18.3 and is the validated path; below that the settings
+    // projection still reads `meta.volatile`, so the marker is written
+    // directly (dsh-TUI #990's fix for its own Config).
+    const capable = { volatile: () => ({ marked: true }), meta: {} }
+    expect(liveField(capable)).toEqual({ marked: true })
+    const legacy = { meta: {} as { volatile?: unknown } }
+    expect(liveField(legacy)).toBe(legacy)
+    expect(legacy.meta.volatile).toBe(true)
+    // A host that froze its meta must degrade, not throw.
+    const frozen = { meta: Object.freeze({}) as { volatile?: unknown } }
+    expect(liveField(frozen)).toBe(frozen)
+    expect(frozen.meta.volatile).toBeUndefined()
+  })
+
+  it('marks the shipped Config on this repo 3.18.1 baseline via meta', () => {
+    // The real end-to-end proof of the fallback: the repo's schemastery has no
+    // `.volatile()`, so these markers exist only because the meta path ran —
+    // exactly what a 0.1.7 host projects when the plugin resolved an old copy.
+    const dict = (Config as unknown as { dict: Record<string, { meta?: { volatile?: unknown } }> }).dict
+    expect(dict['layout']?.meta?.volatile).toBe(true)
+    expect(dict['shortcut']?.meta?.volatile).toBe(true)
+    expect(dict['lang']?.meta?.volatile).toBeUndefined()
+    expect(hasLiveConfigFields()).toBe(true)
   })
 
   it('readConfigValues unwraps live refs and leaves plain values alone', () => {
