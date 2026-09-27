@@ -89,21 +89,45 @@ function expectFoldEqual(
  * Phase 2b's invariant: two chains share ONE fold object exactly when they
  * spell the same string AND carry the same syllable bitmap, and never
  * otherwise — a shared chain that differed would silently drop matches, and a
- * duplicated one would just waste memory. Phase 2a's invariant rides along:
- * an identity chain carries no prefix tables, and a non-identity one carries
- * them (the pinyin chains through the shared `PinyinFolds.cpStart`).
+ * duplicated one would just waste memory.
  *
- * Identity IS reachable, which is what makes the phase-2a verdict worth
- * pinning structurally here rather than only through search results: a
- * document of single-letter readings (一 → `y`, 啊 → `a`) or an ASCII run
- * spells one unit per code point, needs no prefix table at all, and a build
- * that kept the table anyway STILL scans and highlights correctly — the
- * failure mode is a wasted table, invisible to every behavioral assertion.
- * The four verdicts are evaluated BEFORE the code-point counter advances (see
- * `buildPinyinFolds`); with the check after the increment nothing non-empty is
- * ever identity, so the assertions below are what catch that regression.
+ * Phase 2a's invariant rides along, and this is the only place it is asserted:
+ * a chain carries a `cumUnits` table exactly when it is NOT identity, and a
+ * non-identity chain's table is counted in CODE POINTS (`<= codePoints + 1`
+ * rows) rather than in UTF-16 units (`text.length + 1`, which over-allocates by
+ * one row per surrogate pair).
+ *
+ * Identity IS reachable, which is what makes the phase-2a verdict worth pinning
+ * structurally here rather than only through search results: a document of
+ * single-letter readings (一 → `y`, 啊 → `a`) or an ASCII run spells one unit
+ * per code point, needs no prefix table at all, and a build that allocated one
+ * anyway STILL scans and highlights correctly — the failure mode is a wasted
+ * table, invisible to every behavioral assertion.
+ *
+ * The expected verdict is derived from the CONTRACT, not read back from the
+ * build: a chain is identity exactly when every code point of the document is
+ * one UTF-16 unit and the chain spells one unit per code point (see
+ * `FoldedText`). Every chain appends at least one unit per code point — a
+ * folded literal is `length >= 1` and no reading is empty — so an equal unit
+ * count cannot hide a length change. Both assertions were checked against a
+ * mutated build (each mutation reverted afterwards):
+ *
+ *   - opening every chain's table unconditionally fails the verdict, e.g.
+ *     `single-reading chains (caseSensitive false): allInitials identity
+ *     verdict: expected false to be true` and the same for `"一"`;
+ *   - sizing the rows by `text.length + 1` breaks the bound: `"😀x啊y中z"` then
+ *     carries 8 rows against a bound of 7 (and an 8-row `cpStart`), measured
+ *     with a temporary probe; the reference comparison in this file reports the
+ *     same 8-vs-7 difference on `cumUnits` first, since a table's row count is
+ *     part of the frozen shape it compares.
  */
-function expectChainSharing(label: string, folds: NonNullable<ReturnType<typeof pinyinFoldsForTest>>): void {
+function expectChainSharing(
+  label: string,
+  folds: NonNullable<ReturnType<typeof pinyinFoldsForTest>>,
+  text: string,
+): void {
+  const codePoints = [...text].length
+  const oneUnitPerCodePoint = codePoints === text.length
   const pairs = [
     ['allReadings', 'firstReading', folds.allReadings, folds.firstReading],
     ['allInitials', 'firstInitials', folds.allInitials, folds.firstInitials],
@@ -129,17 +153,20 @@ function expectChainSharing(label: string, folds: NonNullable<ReturnType<typeof 
     ['firstInitials', folds.firstInitials],
   ] as const) {
     const identity = fold.cumUnits === undefined
+    expect(identity, `${label}: ${name} identity verdict`).toBe(
+      oneUnitPerCodePoint && fold.folded.length === codePoints,
+    )
     if (identity) {
       expect(fold.cpStart, `${label}: ${name} identity carries no cpStart`).toBeUndefined()
       expect(fold.sourceLength, `${label}: ${name} identity length`).toBe(fold.folded.length)
     } else {
       expect(folds.cpStart, `${label}: ${name} shares the pinyin cpStart`).toBeDefined()
+      expect(fold.cumUnits!.length, `${label}: ${name} table rows`).toBeLessThanOrEqual(codePoints + 1)
     }
   }
   // The shared table is allocated exactly when some chain needs it — which is
-  // the assertion that sees the phase-2a verdict: with the identity check on
-  // the wrong side of the counter it never omits a table, so a document whose
-  // four chains are all identity must leave `cpStart` undefined here.
+  // the assertion that sees the phase-2a verdict: a document whose four chains
+  // are all identity must leave `cpStart` undefined here.
   const anyNonIdentity = [folds.allReadings, folds.firstReading, folds.allInitials, folds.firstInitials].some(
     fold => fold.cumUnits !== undefined,
   )
@@ -174,6 +201,22 @@ const FIXTURES: readonly [string, string][] = [
   ['combining marks', 'e\u0301a\u0308'],
   ['fullwidth latin', 'ＡＵＴＨ ｆｌｏｗ'],
   ['mixed everything', 'İß 张三😀 auth 龘\nAUTH 重庆 zs'],
+  // The shapes the identity/row-count assertions in `expectChainSharing` need
+  // and nothing else in this list covers:
+  //
+  //   `aaaaaaaaaa中` — a long ASCII run plus ONE multi-letter reading: the
+  //   initials chains stay identity while both reading chains break, the
+  //   "part of the chains is identity" case a per-chain verdict exists for;
+  //   `😀x啊y中z` — non-BMP, so `text.length` (7) exceeds the code-point count
+  //   (6) and the table's row count distinguishes the two;
+  //   `İ啊` / `İ啊İ` — `İ` folds to two units, so the chains break on a length
+  //   change at a code point that is ONE original unit: the verdict that the
+  //   unit-delta term alone decides (`ß` cannot stand in — this V8's
+  //   `toLowerCase('ß')` does not lengthen).
+  ['ascii run then a reading', 'aaaaaaaaaa中'],
+  ['non-bmp mixed with readings', '😀x啊y中z'],
+  ['length-changing fold and a reading', 'İ啊'],
+  ['length-changing fold around a reading', 'İ啊İ'],
 ]
 
 /** Deterministic LCG so a failure reproduces exactly. */
@@ -249,7 +292,7 @@ describe('fold build equivalence (phase 1a-2b)', () => {
         expectFoldEqual(`${name} firstReading`, actual.firstReading, expected.firstReading, actual.cpStart)
         expectFoldEqual(`${name} allInitials`, actual.allInitials, expected.allInitials, actual.cpStart)
         expectFoldEqual(`${name} firstInitials`, actual.firstInitials, expected.firstInitials, actual.cpStart)
-        expectChainSharing(name, actual)
+        expectChainSharing(name, actual, text)
       }
     }
   })
@@ -257,10 +300,14 @@ describe('fold build equivalence (phase 1a-2b)', () => {
   it('omits the prefix tables when every chain is identity (phase 2a reachability)', () => {
     // One unit per code point in ALL four chains: single-letter readings
     // (啊 → `a`, 俄 → `e`) and ASCII, so the folded index is the original index
-    // and not one prefix table is needed. This is the case the counter-order
-    // regression erases, and this case is the only assertion that sees it —
-    // a table that should have been omitted still holds the reference's
-    // values field by field, so every comparison above stays green either way.
+    // and not one prefix table is needed. This is the case the identity
+    // shortcut exists for, and it is what the assertions above cannot see on
+    // their own: a table that should have been omitted still holds the
+    // reference's values field by field, so every comparison above stays green
+    // either way. The half-identity shape (initials identity, readings not) and
+    // the row count are asserted by `expectChainSharing`, which every fixture
+    // goes through — see its `ascii run then a reading` and `non-bmp mixed with
+    // readings` entries.
     for (const text of ['啊', 'x啊y俄z']) {
       for (const caseSensitive of [false, true]) {
         const folds = pinyinFoldsForTest(text, caseSensitive)
@@ -303,7 +350,7 @@ describe('fold build equivalence (phase 1a-2b)', () => {
           expected.firstReading,
           actual.cpStart,
         )
-        expectChainSharing(`${label} (sensitive ${caseSensitive})`, actual)
+        expectChainSharing(`${label} (sensitive ${caseSensitive})`, actual, text)
       }
     }
   })
@@ -331,7 +378,7 @@ describe('fold build equivalence (phase 1a-2b)', () => {
           expected.firstInitials,
           actual.cpStart,
         )
-        expectChainSharing(JSON.stringify(text), actual)
+        expectChainSharing(JSON.stringify(text), actual, text)
       }
     }
   }, 30_000)

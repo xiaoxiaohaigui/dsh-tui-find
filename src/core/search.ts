@@ -355,6 +355,39 @@ function foldCodePoint(
  */
 const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff
 
+/**
+ * The UTF-16 length of the code point starting at `at`: two for a surrogate
+ * pair, one for everything else — a lone surrogate included, since it pairs
+ * with nothing and is therefore its own code point.
+ *
+ * Every walk over a text's code points goes through this one definition, and
+ * {@link countCodePoints} sizes the prefix tables with it, so a table can never
+ * be sized for a different number of code points than the build writes rows
+ * for.
+ */
+function codePointSize(text: string, at: number): number {
+  const high = text.charCodeAt(at)
+  return high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
+}
+
+/**
+ * How many code points `text` holds — the exact number of rows a prefix table
+ * needs (one more for the empty prefix). A plain char-code scan: no expansion
+ * of the text into a per-character array and no `codePointAt` decode.
+ *
+ * Sizing the tables from this instead of `text.length + 1` is what stops a
+ * document of surrogate pairs from allocating a row per surplus UTF-16 unit,
+ * and the pass it costs is about 1% of the pinyin fold sweep it feeds
+ * (measured: 11.5 ms over 4.92M units against 1185 ms for the whole
+ * 4.8M-character bench index, pinyin and case folds together), against a
+ * grow-on-demand path inside the build loop itself.
+ */
+function countCodePoints(text: string): number {
+  let count = 0
+  for (let at = 0; at < text.length; at += codePointSize(text, at)) count += 1
+  return count
+}
+
 /** Build the fold of one text: one pass over the ORIGINAL string, one lookup
  *  per code point, no `[...text]` expansion of the whole text into a
  *  per-character array.
@@ -381,12 +414,11 @@ function buildFold(text: string): FoldedText {
   let units = 0
   let produced = 0
   while (utf16 < text.length) {
+    // A surrogate pair is ONE code point and therefore one table row: the low
+    // unit is consumed inside `size` and never becomes a row of its own.
     const at = utf16
-    const high = text.charCodeAt(at)
-    // A surrogate pair is ONE code point and therefore one table row: the
-    // low unit is consumed here and never becomes a row of its own.
-    utf16 += high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
-    const size = utf16 - at
+    const size = codePointSize(text, at)
+    utf16 += size
     cpStart[units] = at
     foldCodePoint(text, at, size, false, sink)
     const folded = sink.units - produced
@@ -596,13 +628,35 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   // would hold only uppercase forms a lowercase needle can never hit — so the
   // build stops after this pass and nothing is cached but the negative
   // verdict (see pinyinFoldsOf).
-  const cpStart = new Uint32Array(text.length + 1)
-  const cumUnits = {
-    all: new Uint32Array(text.length + 1),
-    first: new Uint32Array(text.length + 1),
-    allInit: new Uint32Array(text.length + 1),
-    firstInit: new Uint32Array(text.length + 1),
+  //
+  // The prefix tables are allocated PER CHAIN and only on the step that chain
+  // stops being identity. A chain that never does — an ASCII run, a
+  // single-letter reading, the initials half of most documents — carries no
+  // table at all, and none of them is ever pre-sized to `text.length + 1`
+  // (four such tables were the old build's largest transient allocation on
+  // every warm-up). The rows before a late break are identity rows (row `c`
+  // == `c`), so they are regenerated rather than stored, and the exact row
+  // count comes from `countCodePoints` — one cheap extra pass that keeps a
+  // table sized for the CODE POINTS instead of the UTF-16 units (a surrogate
+  // pair is one code point and two units).
+  const rowCount = countCodePoints(text) + 1
+  /** One chain's prefix table, opened with the first `filled` rows regenerated
+   *  as identity rows; the build fills in the rest as it goes. */
+  const openRows = (filled: number): Uint32Array => {
+    const rows = new Uint32Array(rowCount)
+    for (let row = 0; row < filled; row++) rows[row] = row
+    return rows
   }
+  /** The shared per-code-point start table (see {@link PinyinFolds.cpStart}),
+   *  created by the first chain to stop being identity — which is exactly when
+   *  some chain starts needing a mapping — and undefined until then. */
+  let cpStart: Uint32Array | undefined
+  /** Per-chain prefix tables: undefined while the chain is identity, created on
+   *  its first non-identity step (see {@link FoldedText}). */
+  let allRows: Uint32Array | undefined
+  let firstRows: Uint32Array | undefined
+  let allInitRows: Uint32Array | undefined
+  let firstInitRows: Uint32Array | undefined
   const all = new FoldSink()
   const first = new FoldSink()
   const allInit = new FoldSink()
@@ -623,19 +677,12 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   /** Characters the table covers — the length bound for the initials chains
    *  (see {@link PinyinFolds.tableChars}). */
   let tableChars = 0
-  // Per-chain identity verdicts, evaluated with the same rule as buildFold: a
-  // chain is identity only when EVERY code point is one original unit and one
-  // folded unit, so folded index == original index (see buildFold).
-  let identity = { all: true, first: true, allInit: true, firstInit: true }
   let utf16 = 0
   let codePoints = 0
   while (utf16 < text.length) {
     const at = utf16
-    const high = text.charCodeAt(at)
-    const size = high >= 0xd800 && high <= 0xdbff && isLowSurrogate(text.charCodeAt(at + 1)) ? 2 : 1
+    const size = codePointSize(text, at)
     utf16 += size
-    cpStart[codePoints] = at
-    if (size !== 1) identity = { all: false, first: false, allInit: false, firstInit: false }
     const before = { all: allUnits, first: firstUnits, allInit: allInitUnits, firstInit: firstInitUnits }
     const parsed = readingsOf(text.slice(at, utf16))
     if (parsed !== undefined) tableChars += 1
@@ -698,23 +745,49 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
       firstInit.append(literal)
       firstInitUnits += literal.length
     }
-    // Each chain is identity only while every step produced exactly one unit
-    // at exactly this code point's index, so the verdict is taken BEFORE the
-    // counter advances: `at === codePoints` is this iteration's code point
-    // index, and the check would otherwise compare a unit offset against an
-    // already-incremented count and fail for every non-empty text — which is
-    // what makes it matter (see withBits).
-    if (size !== 1 || allUnits - before.all !== 1 || at !== codePoints) identity.all = false
-    if (size !== 1 || firstUnits - before.first !== 1 || at !== codePoints) identity.first = false
-    if (size !== 1 || allInitUnits - before.allInit !== 1 || at !== codePoints) identity.allInit = false
-    if (size !== 1 || firstInitUnits - before.firstInit !== 1 || at !== codePoints) identity.firstInit = false
+    // Each chain is identity only while every step produced exactly one folded
+    // unit out of exactly one original unit, so the folded index IS the
+    // original index and no table is needed (see buildFold). The verdict is
+    // taken BEFORE the counter advances, and it is also what opens the chain's
+    // table: rows 0..codePoints are the identity rows this step's break makes
+    // stale, and row codePoints + 1 is the first one worth storing.
+    //
+    // `at !== codePoints` — the third term the old build tested here — is gone.
+    // It compared a UTF-16 offset against a code-point count, so it could only
+    // ever diverge after a surrogate pair, and that pair already failed the
+    // `size !== 1` term on its own step; it never decided a verdict alone.
+    if (allRows === undefined && (size !== 1 || allUnits - before.all !== 1)) allRows = openRows(codePoints + 1)
+    if (firstRows === undefined && (size !== 1 || firstUnits - before.first !== 1)) {
+      firstRows = openRows(codePoints + 1)
+    }
+    if (allInitRows === undefined && (size !== 1 || allInitUnits - before.allInit !== 1)) {
+      allInitRows = openRows(codePoints + 1)
+    }
+    if (firstInitRows === undefined && (size !== 1 || firstInitUnits - before.firstInit !== 1)) {
+      firstInitRows = openRows(codePoints + 1)
+    }
+    if (allRows !== undefined) allRows[codePoints + 1] = allUnits
+    if (firstRows !== undefined) firstRows[codePoints + 1] = firstUnits
+    if (allInitRows !== undefined) allInitRows[codePoints + 1] = allInitUnits
+    if (firstInitRows !== undefined) firstInitRows[codePoints + 1] = firstInitUnits
+    // The start table is shared by all four chains, so it is opened by the
+    // first of them to break — and ONLY then: a document whose four chains all
+    // stay identity carries no table at all, which is the all-identity case
+    // `test/fold-equivalence.test.ts` pins structurally. Rows before this code
+    // point are identity rows for the same reason the chains' are.
+    if (
+      cpStart === undefined &&
+      (allRows !== undefined ||
+        firstRows !== undefined ||
+        allInitRows !== undefined ||
+        firstInitRows !== undefined)
+    ) {
+      cpStart = openRows(codePoints)
+    }
+    if (cpStart !== undefined) cpStart[codePoints] = at
     codePoints += 1
-    cumUnits.all[codePoints] = allUnits
-    cumUnits.first[codePoints] = firstUnits
-    cumUnits.allInit[codePoints] = allInitUnits
-    cumUnits.firstInit[codePoints] = firstInitUnits
   }
-  cpStart[codePoints] = utf16
+  if (cpStart !== undefined) cpStart[codePoints] = utf16
   if (!hasTable) return undefined
   // Two chains that spell the SAME string with the SAME syllable bitmap are
   // one fold, not two: sharing it halves both the cached typed arrays and the
@@ -722,44 +795,38 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   const shareReadings =
     all.take() === first.take() && sameBits(bitmap(allStarts, allUnits), bitmap(firstStarts, firstUnits))
   const shareInitials = allInit.take() === firstInit.take()
-  // A shared prefix table is allocated for the whole PinyinFolds object
-  // unless ALL four chains are identity — a chain of single-letter readings
-  // (一 → `y`) or an ASCII run spells one unit per code point and needs no
-  // mapping, so the table is allocated exactly when some chain needs it. When
-  // it is undefined every chain maps through its own indices (originalSpan),
-  // which is only sound because the four verdicts are per-chain: a chain that
-  // is NOT identity still gets its own `cumUnits` and would keep the table
-  // alive.
-  const sharedStart =
-    identity.all && identity.first && identity.allInit && identity.firstInit
-      ? undefined
-      : cpStart.slice(0, codePoints + 1)
+  // Every non-identity chain maps through its own `cumUnits` (in `openRows`)
+  // plus the shared `cpStart`, while an identity chain maps through its own
+  // indices (originalSpan) and carries neither. That is only sound because the
+  // four verdicts are per-chain, which is what the chain tables are: a table
+  // exists exactly for the chain that produced it.
   const withBits = (
     folded: string,
-    isIdentity: boolean,
-    table: Uint32Array,
+    table: Uint32Array | undefined,
     starts: readonly number[] | undefined,
     units: number,
   ): FoldedText => ({
     folded,
-    // An identity chain needs no prefix table at all: every code point
-    // occupies the same units before and after folding (see FoldedText).
-    ...(isIdentity ? {} : { cumUnits: table.slice(0, codePoints + 1), cpStart: sharedStart }),
+    // An identity chain needs no prefix table at all, and the table handed in
+    // is a non-identity chain's own — already exactly `codePoints + 1` rows
+    // (see FoldedText). `cpStart` is the shared one and is defined here
+    // whenever a table is.
+    ...(table === undefined ? {} : { cumUnits: table, cpStart }),
     sourceLength: text.length,
     // The initials chains carry NO bitmap: they are scanned contiguously, one
     // letter per character, so the syllable-start rule never applies to them
     // (see PinyinFolds).
     ...(starts === undefined ? {} : { segmentStarts: bitmap(starts, units) }),
   })
-  const allReadings = withBits(all.take(), identity.all, cumUnits.all, allStarts, allUnits)
+  const allReadings = withBits(all.take(), allRows, allStarts, allUnits)
   const firstReading = shareReadings
     ? allReadings
-    : withBits(first.take(), identity.first, cumUnits.first, firstStarts, firstUnits)
-  const allInitials = withBits(allInit.take(), identity.allInit, cumUnits.allInit, undefined, allInitUnits)
+    : withBits(first.take(), firstRows, firstStarts, firstUnits)
+  const allInitials = withBits(allInit.take(), allInitRows, undefined, allInitUnits)
   const firstInitials = shareInitials
     ? allInitials
-    : withBits(firstInit.take(), identity.firstInit, cumUnits.firstInit, undefined, firstInitUnits)
-  return { allReadings, firstReading, allInitials, firstInitials, cpStart: sharedStart, tableChars }
+    : withBits(firstInit.take(), firstInitRows, undefined, firstInitUnits)
+  return { allReadings, firstReading, allInitials, firstInitials, cpStart, tableChars }
 }
 
 /** Build one chain's dense syllable-boundary bitmap from the recorded starts.
