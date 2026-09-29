@@ -162,6 +162,49 @@ describe('split rendering and anchoring', () => {
     }
   })
 
+  it('re-anchors when the query only moves the hit count past the cap', async () => {
+    // The cap's own blind spot (REVIEW R-091): MESSAGE_RANGE_LIMIT keeps the
+    // first 64 merged segments of a message, so extending a query that adds
+    // matches only PAST the cap moves nothing the anchor key's range walk can
+    // see. The key carries the session's uncapped segment count for exactly
+    // this shape — without it the pane stayed where the manual scroll left it
+    // while the highlights behind it changed.
+    //
+    // The corpus isolates that one variable: message #2 holds 70 separated
+    // `a`s plus a trailing `q`, and message #3 (`zzz…`) matches neither term,
+    // so `a` → 70 segments and `a q` → 71 leave the hit MESSAGES and the first
+    // 64 ranges identical. The reader still needs scroll room below the
+    // anchored head, hence the long tail.
+    const session = sessionWithMessages(['intro', `${'aZZ'.repeat(70)}q`, 'zzz '.repeat(40)])
+    const harness = await mount(session, { ...wide, query: 'a' })
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      // → hands the keyboard to the reader; ↓ three rows scrolls the message
+      // head off the top, and the forced repaint proves the manual scroll
+      // survives an unrelated render (the dedup's own contract).
+      harness.send('\u001b[C')
+      await waitFor()
+      harness.send('\u001b[B\u001b[B\u001b[B')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(paneText(harness.latest())).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      // ← back to the list, then extend the query: the document's segments go
+      // from 70 to 71 — the trailing `q` is the only new match — while the
+      // first 64 ranges, all the cap keeps, stay untouched.
+      harness.send('\u001b[D')
+      await waitFor()
+      harness.send(' q')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      // The pane re-lands on the hit instead of staying parked below it.
+      expect(paneText(harness.latest())).toMatch(/✦\s*AI\s*#2\s*◆/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('shows one focus marker at a time: the list, never the reader', async () => {
     // Two emphasized surfaces at once read as two focuses. The reader has
     // no selection vocabulary of its own, so the panes never add a marker —

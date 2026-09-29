@@ -79,15 +79,25 @@ function anchorMessageOf(row: FlatRow): number {
 
 /**
  * Identity of a session's hit set for the reader's anchor dedup: every
- * matched message with its highlight ranges. Two renders of the same query
- * produce the same signature, so unrelated repaints (toasts, progress ticks,
- * wheel scrolls) keep the manual-scroll truce; a query edit that moves a
- * match produces a new one and re-lands the reader on the hit — the everyday
- * case of typing a keyword that sits deep inside the already-selected
- * session's message, where the target message never changes but its hit does.
+ * matched message with its highlight ranges, plus the session's own
+ * UNCAPPED segment count. Two renders of the same query produce the same
+ * signature, so unrelated repaints (toasts, progress ticks, wheel scrolls)
+ * keep the manual-scroll truce; a query edit that moves a match produces a
+ * new one and re-lands the reader on the hit — the everyday case of typing
+ * a keyword that sits deep inside the already-selected session's message,
+ * where the target message never changes but its hit does.
+ *
+ * The count is what keeps that promise on a PATHOLOGICAL document: `ranges`
+ * stops at `MESSAGE_RANGE_LIMIT` segments per message, so a query edit that
+ * only adds matches past the cap moves nothing the range walk can see
+ * (REVIEW R-091). `total` is uncapped, so the signature still changes and
+ * the reader re-lands. It is a count and not the full range list, so two
+ * queries that agree on the first `MESSAGE_RANGE_LIMIT` segments AND on the
+ * segment total stay indistinguishable — the tail's SHAPE is the one thing
+ * this key still cannot see.
  */
-function hitSignature(hits: readonly MessageHit[]): string {
-  let signature = ''
+function hitSignature(hits: readonly MessageHit[], total: number | undefined): string {
+  let signature = `${total ?? ''}:`
   for (const hit of hits) {
     signature += `${hit.sourceIndex ?? -1}:`
     for (const [start, end] of hit.ranges) signature += `${start}-${end},`
@@ -217,8 +227,15 @@ export function usePreviewModel(
         // extending a query can move the match inside the very message the
         // reader shows, and that must re-land the window on the new hit —
         // typing a keyword without touching the selection is the everyday
-        // case. Same query, same shape: the manual-scroll truce holds.
-        const key = `${session?.id ?? ''}:${target}:${hitSignature(hits)}`
+        // case. Same query, same shape: the manual-scroll truce holds. The
+        // shape is the capped range walk PLUS the uncapped segment count, so a
+        // query edit the cap hides still re-lands (R-091), and the count is
+        // the session's own on both row kinds — a card and its hit rows keep
+        // ONE key, so moving between them never re-lands.
+        const key = `${session?.id ?? ''}:${target}:${hitSignature(
+          hits,
+          row.kind === 'message' ? row.hit.total : row.hitTotal,
+        )}`
         if (selectionAnchorRef.current !== key) {
           selectionAnchorRef.current = key
           anchored = target

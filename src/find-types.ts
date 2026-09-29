@@ -102,6 +102,15 @@ export type FlatRow =
       session: ScannedSession
       titleHit: MessageHit | undefined
       hits?: readonly MessageHit[]
+      /**
+       * `SessionHit.total` of the bundle `hits` came from — the UNCAPPED
+       * merged-segment count. The reader's anchor signature needs it because
+       * the per-message `ranges` it can see stop at `MESSAGE_RANGE_LIMIT`
+       * (REVIEW R-091): without the count, a query edit that only moves
+       * matches past the cap leaves the pane parked where it was. Recent-mode
+       * cards carry no hit bundle and set nothing (exactOptionalPropertyTypes).
+       */
+      hitTotal?: number
       /** `s:<session id>` — unique against that session's own hit rows. */
       rowId: string
     }

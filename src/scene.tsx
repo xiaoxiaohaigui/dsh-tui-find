@@ -196,7 +196,14 @@ export function FindScene(props: TuiSceneProps & {
       const messageHits = hit.hits.filter(entry => entry.kind === 'message')
       const isExpanded = expanded.has(hit.session.id)
       const shown = isExpanded ? messageHits.length : Math.min(PREVIEW_HITS, messageHits.length)
-      rows.push({ kind: 'session', session: hit.session, titleHit, hits: hit.hits, rowId: `s:${hit.session.id}` })
+      rows.push({
+        kind: 'session',
+        session: hit.session,
+        titleHit,
+        hits: hit.hits,
+        hitTotal: hit.total,
+        rowId: `s:${hit.session.id}`,
+      })
       // The fold badge belongs to the final visible hit row only, and only
       // when the card actually has hidden hits or shows them under a state
       // the badge can leave: attaching it to every row would repeat the same
