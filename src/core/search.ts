@@ -386,7 +386,9 @@ function codePointSize(text: string, at: number): number {
  * and the pass it costs is about 1% of the pinyin fold sweep it feeds
  * (measured: 11.5 ms over 4.92M units against 1185 ms for the whole
  * 4.8M-character bench index, pinyin and case folds together), against a
- * grow-on-demand path inside the build loop itself.
+ * grow-on-demand path inside the build loop itself. Callers take it lazily —
+ * on the first table a build actually opens — so a document whose chains all
+ * stay identity never pays it (REVIEW R-093).
  */
 function countCodePoints(text: string): number {
   let count = 0
@@ -399,23 +401,28 @@ function countCodePoints(text: string): number {
  *  per-character array.
  *
  *  The prefix tables are allocated only when the fold turns out NOT to be
- *  identity. Sizing them here (one row per UTF-16 unit is an upper bound on
- *  the code-point rows) avoids a separate counting pass, and the identity
- *  verdict is known before the first row is written — a fold whose mappings
- *  never change a code point's length needs no table at all, which is every
- *  document that holds no length-changing mapping.
+ *  identity — on the first code point that is not one UTF-16 unit wide or does
+ *  not fold to exactly one unit. An identity fold (any pure ASCII document,
+ *  the commonest shape by far) therefore allocates nothing at all, where the
+ *  eager version's two per-unit tables became garbage the moment the verdict
+ *  came back identity (measured: 4,100 documents × two 1,201-row tables ≈
+ *  15 ms and 39 MB of garbage per case-fold sweep, REVIEW R-093). Sizing them
+ *  at that break with the old one-row-per-UTF-16-unit upper bound avoids a
+ *  separate counting pass, and the rows the walk already passed are identity
+ *  rows, regenerated as such; the final `slice` still trims the tables to the
+ *  exact code-point count.
  */
 function buildFold(text: string): FoldedText {
-  const cpStart = new Uint32Array(text.length + 1)
-  const cumUnits = new Uint32Array(text.length + 1)
   const sink = new FoldSink()
   // Identity requires every code point to occupy EXACTLY ONE original unit and
   // exactly one folded unit: then folded index == original index, and no
   // table is needed. Anything else — a non-BMP pair (one code point, two
   // units), a fold that grows (İ, ß) or shrinks — shifts the indices apart
-  // and keeps the tables. Testing "code point index == unit index" instead
-  // would wrongly call a surrogate-pair document identity.
-  let identity = true
+  // and opens the tables, which is exactly the verdict's lifetime. Testing
+  // "code point index == unit index" instead would wrongly call a
+  // surrogate-pair document identity.
+  let cpStart: Uint32Array | undefined
+  let cumUnits: Uint32Array | undefined
   let utf16 = 0
   let units = 0
   let produced = 0
@@ -425,17 +432,31 @@ function buildFold(text: string): FoldedText {
     const at = utf16
     const size = codePointSize(text, at)
     utf16 += size
-    cpStart[units] = at
     foldCodePoint(text, at, size, false, sink)
     const folded = sink.units - produced
-    if (size !== 1 || folded !== 1 || at !== units) identity = false
+    if (cpStart === undefined && (size !== 1 || folded !== 1 || at !== units)) {
+      cpStart = new Uint32Array(text.length + 1)
+      cumUnits = new Uint32Array(text.length + 1)
+      // Every row the walk has passed so far is an identity row — each of
+      // those code points was one unit wide and folded to one unit, so
+      // `cpStart[c] === c` for them — and the unit count before this code
+      // point is the code-point count itself (`cumUnits[units] === units`).
+      // Both are the very values the eager build had written there before the
+      // verdict was known.
+      for (let row = 0; row < units; row++) {
+        cpStart[row] = row
+        cumUnits[row] = row
+      }
+      cumUnits[units] = units
+    }
+    if (cpStart !== undefined) cpStart[units] = at
+    if (cumUnits !== undefined) cumUnits[units + 1] = sink.units
     produced = sink.units
     units += 1
-    cumUnits[units] = produced
   }
-  cpStart[units] = utf16
   const folded = sink.take()
-  if (identity) return { folded, sourceLength: text.length }
+  if (cpStart === undefined || cumUnits === undefined) return { folded, sourceLength: text.length }
+  cpStart[units] = utf16
   return {
     folded,
     cumUnits: cumUnits.slice(0, units + 1),
@@ -577,10 +598,13 @@ const pinyinFoldCache = new WeakMap<object, PinyinFoldEntry>()
  *  {@link MIN_TABLE_CODE_POINT} is skipped without a lookup. It is a
  *  sufficient (not exact) test on the positive side — a code point above the
  *  bound that the table does not list still returns true — which only costs
- *  the prewarm a build it would have skipped, never a missing warm.
+ *  the build a pass it would have thrown away, never a missing warm.
  *
  *  Not just about speed: the search path makes the same distinction for free,
- *  by looking the reading up while it folds. */
+ *  by looking the reading up while it folds, and the fold build now starts
+ *  with this scan as well — a negative here means no chain can leave identity,
+ *  so the whole build (four fold strings and their start lists) is skipped
+ *  (REVIEW R-093). */
 function hasTableChar(text: string): boolean {
   for (let at = 0; at < text.length; at++) {
     if (text.charCodeAt(at) >= MIN_TABLE_CODE_POINT) return true
@@ -626,6 +650,15 @@ function pinyinFoldsOf(
 }
 
 function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | undefined {
+  // A text whose code points all sit below the table's own lower bound cannot
+  // hold a single reading, so the build is skipped before it starts. The test
+  // is the cheap scan the prewarm already uses (see hasTableChar): one
+  // char-code comparison per UTF-16 unit against four fold strings, their
+  // piece lists and their syllable-start lists — all of which the old build
+  // produced and then threw away on the negative verdict. It is sufficient,
+  // not exact, so a document it accepts (non-BMP text, say) still runs the
+  // build and still returns undefined when the table has no entry for it.
+  if (!hasTableChar(text)) return undefined
   // One pass over the original string builds all four chains, the shared
   // per-code-point UTF-16 start table, and the two syllable-boundary
   // bitmaps. A document without a single table character has no readings to
@@ -641,14 +674,17 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   // table at all, and none of them is ever pre-sized to `text.length + 1`
   // (four such tables were the old build's largest transient allocation on
   // every warm-up). The rows before a late break are identity rows (row `c`
-  // == `c`), so they are regenerated rather than stored, and the exact row
-  // count comes from `countCodePoints` — one cheap extra pass that keeps a
-  // table sized for the CODE POINTS instead of the UTF-16 units (a surrogate
-  // pair is one code point and two units).
-  const rowCount = countCodePoints(text) + 1
+  // == `c`), so they are regenerated rather than stored. The exact row count
+  // comes from `countCodePoints`, and it is taken LAZILY for the same reason
+  // the tables are: a build whose chains all stay identity never opens a
+  // table and so never pays the pass, while a table is still sized for the
+  // CODE POINTS instead of the UTF-16 units (a surrogate pair is one code
+  // point and two units).
+  let rowCount = 0
   /** One chain's prefix table, opened with the first `filled` rows regenerated
    *  as identity rows; the build fills in the rest as it goes. */
   const openRows = (filled: number): Uint32Array => {
+    if (rowCount === 0) rowCount = countCodePoints(text) + 1
     const rows = new Uint32Array(rowCount)
     for (let row = 0; row < filled; row++) rows[row] = row
     return rows
