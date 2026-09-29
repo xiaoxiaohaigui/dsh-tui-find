@@ -15,7 +15,7 @@ import { resolveConfig, type Config } from '../src/config.js'
 import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/scan.js'
 import { setLangOverride } from '../src/i18n.js'
 import { REGISTER_RETRY_DELAY_MS, REGISTER_RETRY_MAX_ATTEMPTS } from '../src/seam.js'
-import { PREWARM_YIELD_EVERY } from '../src/core/search.js'
+import { foldIsCachedForTest, PREWARM_YIELD_EVERY } from '../src/core/search.js'
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
 import { stripAnsi } from './harness.js'
 import {
@@ -310,27 +310,37 @@ describe('WarmupDriver', () => {
 
   // The phase-1b half of the sweep: once the decode is done, the same run
   // builds the fold caches the first keystroke would otherwise buy. The
-  // driver tests below pin the wiring (it runs, it reports, the three
-  // cancellation layers stop it); prewarm.test.ts pins the pass's own
-  // budgets and its effect on a cold query.
+  // driver tests below pin the wiring (it runs, it stops on all three
+  // cancellation layers, and it never swaps the progress row's unit);
+  // prewarm.test.ts pins the pass's own budgets and its effect on a cold
+  // query.
   //
   // These cases drop the fake clock after firing the delayed start: the
   // prewarm yields with a real `setImmediate`, and a fake clock would leave
   // those yields pending behind the test's own timeout.
-  it('prewarms the folds after the sweep and reports the documents it folded', async () => {
+  it('prewarms the folds after the sweep without swapping the row to document counts', async () => {
     const { driver, store, scanner } = makeDriver()
-    const phases: string[] = []
+    const snapshots: WarmupSnapshot[] = []
     store.subscribe(() => {
-      phases.push(store.getSnapshot().phase)
+      snapshots.push(store.getSnapshot())
     })
     driver.arm()
     await vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS)
     vi.useRealTimers()
-    scanner.calls[0]!.resolve([stubSession(1, 2, 200), stubSession(2, 2, 200)])
+    // The decode half's file counts are what the row shows.
+    scanner.calls[0]!.options.onProgress?.(PROGRESS_3_57)
+    // Two sessions of two messages: four documents to fold — the unit the row
+    // must never adopt (it would read as 4/4 after the user saw 3/57).
+    const sessions = [stubSession(1, 2, 200), stubSession(2, 2, 200)]
+    scanner.calls[0]!.resolve(sessions)
     await flushPrewarm()
-    const snapshot = store.getSnapshot()
-    expect(snapshot.phase).toBe('idle')
-    expect(phases).toContain('running')
+    // The pass really ran: the folds sit on the scanner's own objects.
+    expect(sessions.every(session => session.messages.every(message => foldIsCachedForTest(message)))).toBe(true)
+    // …while the store carried the decode snapshot, then settled idle.
+    expect(snapshots).toEqual([
+      { phase: 'running', resolved: 3, total: 57 },
+      { phase: 'idle', resolved: 0, total: undefined },
+    ])
     expect(scanner.calls[0]!.options.signal!.aborted).toBe(false)
   })
 
@@ -345,7 +355,8 @@ describe('WarmupDriver', () => {
     vi.useRealTimers()
     // Enough documents that the pass must yield before finishing.
     const messages = PREWARM_YIELD_EVERY * 4
-    scanner.calls[0]!.resolve([stubSession(1, messages, 2_000)])
+    const session = stubSession(1, messages, 2_000)
+    scanner.calls[0]!.resolve([session])
     // One macrotask turn lands the scan's `.then` and lets the prewarm fold
     // its first chunk and yield — i.e. the pass is in flight.
     await new Promise(resolve => setImmediate(resolve))
@@ -353,8 +364,12 @@ describe('WarmupDriver', () => {
     expect(scanner.calls[0]!.options.signal!.aborted).toBe(true)
     await flushPrewarm()
     expect(store.getSnapshot()).toEqual({ phase: 'idle', resolved: 0, total: undefined })
-    // The pass really stopped early: it never reported folding every message.
-    expect(snapshots.every(entry => entry.total !== messages || entry.resolved < messages)).toBe(true)
+    // The pass really stopped early: its tail document was never folded.
+    expect(foldIsCachedForTest(session.messages[messages - 1]!)).toBe(false)
+    // …and no snapshot ever carried the fold pass's document total. The pass
+    // does tick before the cancel (it yields as it goes), so this pins the
+    // driver change itself, not just the abort.
+    expect(snapshots.some(entry => entry.total === messages)).toBe(false)
   })
 
   it('stops the prewarm when /find opens mid-pass', async () => {

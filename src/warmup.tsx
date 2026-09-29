@@ -8,7 +8,10 @@
  * design trade-offs live in docs/decisions/2026-09-12-background-warmup-index.md.
  *
  * Progress rides the 0.10+ `tuiStatus.registerView` seam (a rich status view
- * above the prompt, maxRows 1, pointer-only kit). The 0.9.3 build baseline's
+ * above the prompt, maxRows 1, pointer-only kit). The row reports the decode
+ * half only — log files, the unit the sweep starts in; the fold half counts
+ * documents, a different unit, and stays off the row (see `begin()`). The
+ * 0.9.3 build baseline's
  * `TuiStatusRuntime` carries only `set(key, text)`, so the surface is reached
  * structurally — soft probe plus an `unknown` narrowing (notify.ts precedent).
  * A 0.9.x host (or any composition without the view seam) still warms up,
@@ -230,7 +233,9 @@ export class WarmupDriver {
    *  would otherwise buy. The second half is what lets a letter query be
    *  served without a cold build on its first key press; both halves share
    *  the one controller, so the view's cancel and an opening scene stop the
-   *  prewarm at its next yield.
+   *  prewarm at its next yield. Only the decode half writes the progress row:
+   *  its unit (log files) is the one the row was opened with, and the fold
+   *  half's document counts would silently replace it (see the callbacks).
    */
   private begin(): void {
     this.started = true
@@ -258,9 +263,8 @@ export class WarmupDriver {
         // The scan already answered for an aborted or superseded run; the
         // prewarm must not start one that nobody is waiting for.
         if (this.superseded(controller)) return
-        // A partial warm is the normal outcome of the budget: the view
-        // reports what was warmed, and the search simply builds the rest on
-        // demand (see prewarmFolds).
+        // A partial warm is the normal outcome of the budget: the search
+        // simply builds the rest on demand (see prewarmFolds).
         return prewarmFolds(sessions, {
           pinyin: config.pinyin,
           // The shapes the scene will probe: a sensitive session rebuilds
@@ -269,9 +273,18 @@ export class WarmupDriver {
           maxMessages: PREWARM_MAX_MESSAGES,
           maxMs: PREWARM_MAX_MS,
           signal: controller.signal,
-          onProgress: progress => {
-            if (this.superseded(controller)) return
-            this.store.update('running', progress.warmed, progress.total)
+          onProgress: () => {
+            // The tick is consumed for its gate, never for its numbers. The
+            // fold pass counts DOCUMENTS (messages + titles) where the decode
+            // half counted LOG FILES, and it is short enough (<1s on a
+            // multi-thousand-document library) that nobody can read it: feeding
+            // it to the row would swap units mid-sweep, and a count that keeps
+            // climbing past a denominator the user just watched reach 200/200
+            // reads as a runaway counter, not as progress. So the row keeps the
+            // decode half's last snapshot until this sweep settles. The gate
+            // below still has to run — it is the prewarm's only supersede
+            // checkpoint before its first yield.
+            void this.superseded(controller)
           },
         })
       })
