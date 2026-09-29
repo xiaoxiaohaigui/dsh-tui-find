@@ -8,7 +8,9 @@
  * the same index (v0.2 toggle, compiled once per query and deliberately
  * NOT term-split: inside a regex a space is pattern syntax, not a
  * separator, so splitting would be ambiguous), the optional time window
- * over session modification times, and per-message highlight ranges.
+ * over session modification times, and per-message highlight ranges — the
+ * union of its terms' matches, materialised up to {@link MESSAGE_RANGE_LIMIT}
+ * segments per document while `SessionHit.total` keeps counting every one.
  *
  * Scope filter mirrors the host's `/resume` project filter semantics
  * (`sessionCwdMatches`): exact cwd match plus subdirectory descendants and
@@ -59,7 +61,9 @@ export interface MessageHit {
   /**
    * Half-open [start, end) character ranges to highlight — sorted and
    * disjoint (a multi-term hit carries the merged union of its terms'
-   * ranges).
+   * ranges), truncated to the first {@link MESSAGE_RANGE_LIMIT} segments.
+   * The cap only ever drops the tail of a pathological document's highlight
+   * list; {@link SessionHit.total} still counts every segment.
    */
   readonly ranges: readonly (readonly [number, number])[]
   /**
@@ -76,7 +80,9 @@ export interface SessionHit {
   readonly hits: readonly MessageHit[]
   /**
    * Total match count across messages (title included), counting the
-   * merged highlight spans — the segments the renderer actually draws.
+   * merged highlight spans — the EXACT segment count, which the
+   * per-message `ranges` cap never reduces (see
+   * {@link MESSAGE_RANGE_LIMIT}).
    */
   readonly total: number
 }
@@ -492,7 +498,7 @@ function foldOf(owner: object, text: string): FoldedText {
  * `firstReading` (one reading per character, no separator to distinguish
  * them), and the same holds for the two initials chains; when the built
  * strings and bitmaps agree, the folds are shared instead of duplicated.
- * `pinyinRanges` scans each distinct fold once, so a shared chain is also
+ * `pushPinyinCursors` scans each distinct fold once, so a shared chain is also
  * half the `indexOf` work on such a document — the everyday case, since the
  * table's 3500 characters hold only a few hundred polyphones.
  */
@@ -797,9 +803,9 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
   const shareInitials = allInit.take() === firstInit.take()
   // Every non-identity chain maps through its own `cumUnits` (in `openRows`)
   // plus the shared `cpStart`, while an identity chain maps through its own
-  // indices (originalSpan) and carries neither. That is only sound because the
-  // four verdicts are per-chain, which is what the chain tables are: a table
-  // exists exactly for the chain that produced it.
+  // indices (see FoldCursor) and carries neither. That is only sound because
+  // the four verdicts are per-chain, which is what the chain tables are: a
+  // table exists exactly for the chain that produced it.
   const withBits = (
     folded: string,
     table: Uint32Array | undefined,
@@ -830,9 +836,9 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
 }
 
 /** Build one chain's dense syllable-boundary bitmap from the recorded starts.
- *  `rangesInPinyinFold` asks `starts[indexOf(...)]`, and every index
- *  `indexOf` can return is a folded-unit position, so a bitmap covering the
- *  chain's unit total is exactly enough. */
+ *  {@link FoldCursor} asks `starts[found]`, and every index `indexOf` can
+ *  return is a folded-unit position, so a bitmap covering the chain's unit
+ *  total is exactly enough. */
 function bitmap(starts: readonly number[], units: number): Uint8Array {
   const out = new Uint8Array(units + 1)
   for (const start of starts) out[start] = 1
@@ -861,58 +867,173 @@ function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefine
   return /^[a-z]+$/.test(lowered) ? lowered : undefined
 }
 
-/** Every pinyin occurrence of `needle` — both reading chains and both
- *  initials chains together, as ranges over the ORIGINAL text. Chains that
- *  share one fold object (a document without polyphones, see
- *  {@link PinyinFolds}) are scanned once, not twice. */
-function pinyinRanges(folds: PinyinFolds, needle: string): [number, number][] {
-  const ranges: [number, number][] = []
-  const seen = new Set<FoldedText>()
-  // An initials chain spells one letter per reading (and one per character for
-  // the first-only chain), so a needle longer than the document's table
-  // character count cannot occur in it: skip both `indexOf` scans outright.
-  // The reading chains are exempt — one character's reading can be several
-  // letters, so their folds are longer than the count.
-  const initialsViable = needle.length <= folds.tableChars
-  for (const [fold, bySegment] of [
-    [folds.allReadings, true],
-    [folds.firstReading, true],
-    [folds.allInitials, false],
-    [folds.firstInitials, false],
-  ] as const) {
-    if (seen.has(fold)) continue
-    seen.add(fold)
-    if (!bySegment && !initialsViable) continue
-    ranges.push(
-      ...(bySegment ? rangesInPinyinFold(fold, needle, folds.cpStart) : rangesInFold(fold, needle, folds.cpStart)),
-    )
+/**
+ * One cursor per distinct pinyin chain `needle` can occur in — the same set
+ * `pinyinRanges` used to concatenate, now as streams {@link drainPrimed}
+ * pulls from: chains that share one fold object (a document without
+ * polyphones, see {@link PinyinFolds}) are scanned once, and a needle longer
+ * than the document's table-character count cannot occur in an initials chain
+ * at all, so both of those are skipped without an `indexOf`.
+ *
+ * The reading chains carry the syllable boundary that keeps a query from
+ * starting mid-syllable; the initials chains run contiguously and pass no
+ * bitmap (see {@link PinyinFolds}).
+ */
+function pushPinyinCursors(out: RangeCursor[], folds: PinyinFolds, needle: string): void {
+  const cpStart = folds.cpStart
+  out.push(new FoldCursor(folds.allReadings, needle, cpStart, folds.allReadings.segmentStarts))
+  if (folds.firstReading !== folds.allReadings) {
+    out.push(new FoldCursor(folds.firstReading, needle, cpStart, folds.firstReading.segmentStarts))
   }
-  return ranges
+  // An initials chain spells one letter per reading (and one per character for
+  // the first-only chain), so a needle longer than the table's character count
+  // cannot occur in it: skip both `indexOf` scans outright. The reading chains
+  // are exempt — one character's reading can be several letters, so their
+  // folds are longer than the count.
+  if (needle.length > folds.tableChars) return
+  out.push(new FoldCursor(folds.allInitials, needle, cpStart, undefined))
+  if (folds.firstInitials !== folds.allInitials) {
+    out.push(new FoldCursor(folds.firstInitials, needle, cpStart, undefined))
+  }
 }
 
-/** Match pinyin only at syllable boundaries. This prevents a query from
- * taking the tail of one syllable and the head of the next (for example
- * `is` in `shi sou`), while still allowing a prefix inside one syllable such
- * as `zhang` in 张.
+/**
+ * How many highlight segments one document's `ranges` array keeps. The
+ * scanners always COUNT every match — `SessionHit.total` stays the exact
+ * merged segment count — but only the first `MESSAGE_RANGE_LIMIT` segments
+ * are MATERIALISED, which is what keeps a single-letter query on a
+ * multi-million-character index from retaining a heap tuple per match. The
+ * consumers read almost none of them: the list highlights `PREVIEW_HITS`
+ * rows per session, the reader only the selected session's messages, and
+ * `scene.tsx` sums `total` without touching the arrays at all.
+ *
+ * 64 is several reader viewports' worth of highlights inside ONE message and
+ * far above a realistic hit count (a normal message matches a handful of
+ * times), so the cap only ever drops the tail of a pathological document's
+ * highlight list — never a match verdict, never a hit message, never a
+ * `total`. Truncation is from the HEAD, and therefore deterministic: the same
+ * query keeps the same leading segments, so the preview signature and the
+ * rendered highlights are stable across keystrokes.
  */
-function rangesInPinyinFold(fold: FoldedText, needle: string, cpStart: Uint32Array | undefined): [number, number][] {
-  const starts = fold.segmentStarts
-  if (starts === undefined) return rangesInFold(fold, needle, cpStart)
-  const ranges: [number, number][] = []
-  let searchFrom = 0
-  for (;;) {
-    const found = fold.folded.indexOf(needle, searchFrom)
-    if (found === -1) break
-    const finish = found + needle.length
-    // Once a query starts at a syllable boundary it may continue through
-    // following syllables and stop at any prefix of the final one. The only
-    // forbidden shape is a query that starts in the middle of a syllable.
-    if (starts[found] === 1) {
-      ranges.push(originalSpan(fold, cpStart, found, finish - 1))
-    }
-    searchFrom = found + Math.max(1, needle.length)
+export const MESSAGE_RANGE_LIMIT = 64
+
+/** One document's highlights: the capped list the renderer reads, plus the
+ *  UNCAPPED segment count that feeds `SessionHit.total` (see
+ *  {@link MESSAGE_RANGE_LIMIT}). */
+interface DocumentRanges {
+  readonly ranges: readonly (readonly [number, number])[]
+  readonly count: number
+}
+
+/** A document the query does not match — also the empty range set the
+ *  no-title case hands the caller without scanning anything. */
+const NO_RANGES: DocumentRanges = { ranges: [], count: 0 }
+
+/**
+ * A pull cursor over ONE ascending, disjoint stream of original-text ranges.
+ *
+ * The cap in {@link MESSAGE_RANGE_LIMIT} needs to COUNT every match without
+ * materialising any of them, and a multi-term or pinyin document's highlights
+ * are the union of several such streams (the term's own scan plus each pinyin
+ * chain; every term of an AND). A cursor is one stream: it holds the scan
+ * position and the range it is on, so the merge can pull one range at a time
+ * and the only memory retained is the capped output.
+ */
+interface RangeCursor {
+  /** Current range start — valid after a `next()` that returned true. */
+  start: number
+  /** Current range end (exclusive), likewise. */
+  end: number
+  /** Advance to the next range; false once the stream is exhausted. */
+  next(): boolean
+}
+
+/** The verbatim scan: `needle` straight over the ORIGINAL text, which is the
+ *  case-sensitive path (it folds nothing, see `matchRanges`). */
+class VerbatimCursor implements RangeCursor {
+  start = 0
+  end = 0
+  private at = 0
+  private readonly text: string
+  private readonly needle: string
+
+  constructor(text: string, needle: string) {
+    this.text = text
+    this.needle = needle
   }
-  return ranges
+
+  next(): boolean {
+    const needle = this.needle
+    // An empty needle would never advance the scan (and matches nothing, the
+    // same verdict `matchRanges` returns for it).
+    if (needle.length === 0) return false
+    const found = this.text.indexOf(needle, this.at)
+    if (found === -1) return false
+    this.at = found + needle.length
+    this.start = found
+    this.end = this.at
+    return true
+  }
+}
+
+/**
+ * One folded-text scan: `needle` over a fold, mapped back onto the original
+ * text. `starts` is the pinyin syllable bitmap — when it is given, a match is
+ * only accepted where a syllable begins (the full-reading rule); the initials
+ * chains and the plain case fold pass nothing and match anywhere.
+ *
+ * The mapping is the span arithmetic the array scans used to do inline on
+ * every match: an identity fold IS its own mapping, a table-carrying one goes
+ * through `cumUnits` (binary search) and the shared `cpStart`. It lives here
+ * because this is the hot path — one range per match, counted and thrown away,
+ * so it must not allocate.
+ */
+class FoldCursor implements RangeCursor {
+  start = 0
+  end = 0
+  private at = 0
+  private readonly fold: FoldedText
+  private readonly needle: string
+  private readonly cpStart: Uint32Array | undefined
+  private readonly starts: Uint8Array | undefined
+
+  constructor(
+    fold: FoldedText,
+    needle: string,
+    cpStart: Uint32Array | undefined,
+    starts: Uint8Array | undefined,
+  ) {
+    this.fold = fold
+    this.needle = needle
+    this.cpStart = cpStart
+    this.starts = starts
+  }
+
+  next(): boolean {
+    const fold = this.fold
+    const needle = this.needle
+    const length = needle.length
+    // An empty needle would never advance the scan (and matches nothing).
+    if (length === 0) return false
+    for (;;) {
+      const found = fold.folded.indexOf(needle, this.at)
+      if (found === -1) return false
+      // Both scans advance by the needle: the boundary-aware scan's
+      // `Math.max(1, needle.length)` only differed on an empty needle, which
+      // the guard above has already turned into "no match".
+      this.at = found + length
+      if (this.starts !== undefined && this.starts[found] !== 1) continue
+      const cpStart = this.cpStart
+      if (cpStart === undefined) {
+        this.start = found
+        this.end = this.at
+      } else {
+        this.start = cpStart[charOfUnit(fold, found)]!
+        this.end = cpStart[charOfUnit(fold, this.at - 1) + 1]!
+      }
+      return true
+    }
+  }
 }
 
 /** The code point a folded UTF-16 index belongs to (binary search). An
@@ -930,34 +1051,108 @@ function charOfUnit(fold: FoldedText, unit: number): number {
   return low - 1
 }
 
-/** The ORIGINAL-text span the folded units `[from, to]` cover — through the
- *  prefix tables when the fold carries them, and as the indices themselves
- *  when the fold is identity. */
-function originalSpan(
-  fold: FoldedText,
-  cpStart: Uint32Array | undefined,
-  from: number,
-  to: number,
-): [number, number] {
-  if (cpStart === undefined) return [from, to + 1]
-  return [cpStart[charOfUnit(fold, from)]!, cpStart[charOfUnit(fold, to) + 1]!]
-}
-
-/** Every occurrence of `needle` in a fold, as ranges over the ORIGINAL text. */
+/** Every occurrence of `needle` in a fold, as ranges over the ORIGINAL text.
+ * The collecting edge of {@link FoldCursor}, kept for the standalone
+ * {@link matchRanges} entry point; the search path pulls cursors instead. */
 function rangesInFold(
   fold: FoldedText,
   needle: string,
   cpStart: Uint32Array | undefined = fold.cpStart,
 ): [number, number][] {
   const ranges: [number, number][] = []
-  let searchFrom = 0
-  for (;;) {
-    const found = fold.folded.indexOf(needle, searchFrom)
-    if (found === -1) break
-    ranges.push(originalSpan(fold, cpStart, found, found + needle.length - 1))
-    searchFrom = found + needle.length
-  }
+  const cursor = new FoldCursor(fold, needle, cpStart, undefined)
+  while (cursor.next()) ranges.push([cursor.start, cursor.end])
   return ranges
+}
+
+/**
+ * Prime one term's cursors and keep the live ones. The first `indexOf` of
+ * each stream is the probe that decides whether the term matched at all, and
+ * a term with no match anywhere kills the document (the per-document AND), so
+ * the caller stops there instead of merging.
+ */
+function primeInto(created: readonly RangeCursor[], live: RangeCursor[]): boolean {
+  let any = false
+  for (const cursor of created) {
+    if (cursor.next()) {
+      live.push(cursor)
+      any = true
+    }
+  }
+  return any
+}
+
+/**
+ * Merge the primed cursors into the union the renderer draws: ascending,
+ * disjoint (touching segments merge), counted in full and materialised up to
+ * `limit` segments. A k-way sweep over the cursors' heads, so the union costs
+ * O(streams) state and never a per-match tuple — `limit` is what keeps the
+ * retained structure proportional to what the UI reads instead of to how many
+ * times the query matched, while `count` still sees every merged segment.
+ *
+ * `live` is consumed: exhausted cursors are swapped out of it.
+ */
+function drainPrimed(live: RangeCursor[], limit: number): DocumentRanges {
+  const ranges: [number, number][] = []
+  let count = 0
+
+  // The everyday case is ONE stream (a plain term, or a letter term on a
+  // document without table characters): skip the k-way machinery and walk it
+  // directly — still merging touching segments, which `mergeRanges` did for
+  // the collected array (e.g. `aa` in `aaaa` is one span, not two).
+  if (live.length === 1) {
+    const cursor = live[0]!
+    let segStart = cursor.start
+    let segEnd = cursor.end
+    while (cursor.next()) {
+      if (cursor.start <= segEnd) {
+        if (cursor.end > segEnd) segEnd = cursor.end
+        continue
+      }
+      count += 1
+      if (ranges.length < limit) ranges.push([segStart, segEnd])
+      segStart = cursor.start
+      segEnd = cursor.end
+    }
+    count += 1
+    if (ranges.length < limit) ranges.push([segStart, segEnd])
+    return { ranges, count }
+  }
+
+  let has = false
+  let segStart = 0
+  let segEnd = 0
+  while (live.length > 0) {
+    // The smallest head; ties may pick either stream, the union is the same.
+    let best = 0
+    for (let at = 1; at < live.length; at++) {
+      if (live[at]!.start < live[best]!.start) best = at
+    }
+    const cursor = live[best]!
+    const start = cursor.start
+    const end = cursor.end
+    if (!has) {
+      segStart = start
+      segEnd = end
+      has = true
+    } else if (start <= segEnd) {
+      if (end > segEnd) segEnd = end
+    } else {
+      count += 1
+      if (ranges.length < limit) ranges.push([segStart, segEnd])
+      segStart = start
+      segEnd = end
+    }
+    if (!cursor.next()) {
+      const last = live.pop()!
+      if (best < live.length) live[best] = last
+    }
+  }
+  if (has) {
+    count += 1
+    if (ranges.length < limit) ranges.push([segStart, segEnd])
+  }
+  return { ranges, count }
 }
 
 /**
@@ -970,9 +1165,18 @@ function rangesInFold(
  * edge is widened onto the whole code point (unpairable lone units at the
  * string edges stay as they are) and a widened match folded into the
  * previous range, keeping the output disjoint like `matchRanges` does.
+ *
+ * Capped and counted like the substring path ({@link MESSAGE_RANGE_LIMIT}),
+ * but NOT passing through the substring union: a regex match is a highlight
+ * span of its own, so touching matches stay separate here (`matchRanges`
+ * merges them) and `count` is exactly the list the uncapped call returns.
+ * The merge state rides `previousEnd` rather than the last pushed range, so
+ * it survives the cap.
  */
-function regexRanges(pattern: RegExp, text: string): [number, number][] {
+function regexRanges(pattern: RegExp, text: string, limit: number): DocumentRanges {
   const ranges: [number, number][] = []
+  let count = 0
+  let previousEnd = -1
   pattern.lastIndex = 0
   for (;;) {
     const match = pattern.exec(text)
@@ -988,14 +1192,21 @@ function regexRanges(pattern: RegExp, text: string): [number, number][] {
     if (start > 0 && startUnit >= 0xdc00 && startUnit <= 0xdfff) start -= 1
     const endUnit = text.charCodeAt(end - 1)
     if (end < text.length && endUnit >= 0xd800 && endUnit <= 0xdbff) end += 1
-    const previous = ranges[ranges.length - 1]
-    if (previous !== undefined && start < previous[1]) {
-      if (end > previous[1]) previous[1] = end
+    if (start < previousEnd) {
+      if (end > previousEnd) {
+        previousEnd = end
+        // The segment this extends is still materialised exactly when every
+        // segment so far is (count ≤ limit); past the cap nothing is
+        // retained, and only the running end matters.
+        if (ranges.length === count) ranges[count - 1]![1] = end
+      }
       continue
     }
-    ranges.push([start, end])
+    count += 1
+    previousEnd = end
+    if (ranges.length < limit) ranges.push([start, end])
   }
-  return ranges
+  return { ranges, count }
 }
 
 /**
@@ -1153,9 +1364,11 @@ export function parseQueryTerms(query: string, caseSensitive = false): string[] 
  * touch (share an endpoint) merged into one span. A multi-term AND hit
  * unions per-term ranges that can nest (`auth` inside `authentication`) or
  * touch; the renderer's highlight walk and the `total` count both assume
- * ordered disjoint spans, so every multi-term result passes through here.
- * Single-term results are already sorted and disjoint — they come out
- * unchanged.
+ * ordered disjoint spans. The search path no longer calls this for its own
+ * results — {@link drainPrimed} takes the same union straight off the cursors,
+ * which is what lets the cap avoid materialising the tail — so it stands as
+ * the public collecting helper and as the equivalence tests' reference for the
+ * pre-cap behavior.
  *
  * Already-ordered input (one term; the pinyin chains and `indexOf` both
  * produce ascending ranges) skips the sort entirely: the verification scan
@@ -1270,20 +1483,25 @@ export function searchSessions(
   // case fold stands in for them on the insensitive path, and the
   // sensitive path gains nothing from them (see buildPinyinFolds).
   const pinyinOn = options.pinyin === true
-  const rangesOf = (text: string, owner: object): [number, number][] => {
-    if (pattern !== undefined) return regexRanges(pattern, text)
-    const matches: [number, number][] = []
+  const rangesOf = (text: string, owner: object): DocumentRanges => {
+    if (pattern !== undefined) return regexRanges(pattern, text, MESSAGE_RANGE_LIMIT)
+    // The terms' ranges are unioned by a k-way sweep over lazy cursors rather
+    // than by collecting tuples for `mergeRanges`: per-term ranges can nest or
+    // touch (`auth` inside `authentication`) and the renderer walks ordered
+    // disjoint spans, but only the first MESSAGE_RANGE_LIMIT segments of the
+    // union are ever materialised (see drainPrimed).
+    const live: RangeCursor[] = []
     if (caseSensitive) {
       for (const term of terms) {
-        const termRanges = matchRanges(text, term, true)
+        // The verbatim scan always applies under sensitivity; the pinyin
+        // chains are additive on top of it.
+        const created: RangeCursor[] = [new VerbatimCursor(text, term)]
         const pinyinNeedle = pinyinOn ? pinyinNeedleOf(term, true) : undefined
-        let extended = termRanges
         if (pinyinNeedle !== undefined) {
           const folds = pinyinFoldsOf(owner, text, true, true)
-          if (folds !== undefined) extended = [...termRanges, ...pinyinRanges(folds, pinyinNeedle)]
+          if (folds !== undefined) pushPinyinCursors(created, folds, pinyinNeedle)
         }
-        if (extended.length === 0) return []
-        for (const range of extended) matches.push(range)
+        if (!primeInto(created, live)) return NO_RANGES
       }
     } else {
       let fold: FoldedText | undefined
@@ -1293,21 +1511,20 @@ export function searchSessions(
       }
       for (const needle of needles) {
         const pinyinNeedle = pinyinOn ? pinyinNeedleOf(needle, false) : undefined
-        let needleRanges: [number, number][]
-        if (pinyinNeedle === undefined) {
-          needleRanges = rangesInFold(caseFold(), needle)
+        const folds = pinyinNeedle === undefined ? undefined : pinyinFoldsOf(owner, text, false, true)
+        const created: RangeCursor[] = []
+        if (pinyinNeedle !== undefined && folds !== undefined) {
+          // The reading chains carry the folded literal text already, so the
+          // case fold would only repeat the same occurrences.
+          pushPinyinCursors(created, folds, pinyinNeedle)
         } else {
-          const folds = pinyinFoldsOf(owner, text, false, pinyinOn)
-          needleRanges =
-            folds === undefined ? rangesInFold(caseFold(), needle) : pinyinRanges(folds, pinyinNeedle)
+          const folded = caseFold()
+          created.push(new FoldCursor(folded, needle, folded.cpStart, undefined))
         }
-        if (needleRanges.length === 0) return []
-        for (const range of needleRanges) matches.push(range)
+        if (!primeInto(created, live)) return NO_RANGES
       }
     }
-    // Per-term ranges can nest or touch (`auth` inside `authentication`);
-    // the renderer walks ordered disjoint spans, so union and merge once.
-    return mergeRanges(matches)
+    return drainPrimed(live, MESSAGE_RANGE_LIMIT)
   }
 
   const hits: SessionHit[] = []
@@ -1326,18 +1543,20 @@ export function searchSessions(
     // keystrokes only the indexOf scan repeats, never the fold. Title-only
     // mode stops here: messages are not searched, so the title is the only
     // document a session can match through.
-    const titleRanges = session.title === undefined ? [] : rangesOf(session.title, session)
-    if (titleRanges.length > 0) {
+    const titleRanges = session.title === undefined ? NO_RANGES : rangesOf(session.title, session)
+    if (titleRanges.count > 0) {
       messageHits.push({
         kind: 'title',
         role: undefined,
         seq: undefined,
         text: session.title ?? '',
         at: undefined,
-        ranges: titleRanges,
+        ranges: titleRanges.ranges,
         sourceIndex: undefined,
       })
-      total += titleRanges.length
+      // The count, not the array: a capped range list still reports every
+      // merged segment (see MESSAGE_RANGE_LIMIT).
+      total += titleRanges.count
     }
 
     if (options.titleOnly === true) {
@@ -1346,18 +1565,18 @@ export function searchSessions(
     }
 
     for (const [sourceIndex, message] of session.messages.entries()) {
-      const ranges = rangesOf(message.text, message)
-      if (ranges.length === 0) continue
+      const rangeSet = rangesOf(message.text, message)
+      if (rangeSet.count === 0) continue
       messageHits.push({
         kind: 'message',
         role: message.role,
         seq: message.seq,
         text: message.text,
         at: message.at,
-        ranges,
+        ranges: rangeSet.ranges,
         sourceIndex,
       })
-      total += ranges.length
+      total += rangeSet.count
     }
 
     if (messageHits.length > 0) {

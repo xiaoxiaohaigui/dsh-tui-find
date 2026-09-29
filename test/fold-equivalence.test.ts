@@ -435,9 +435,11 @@ describe('fold build equivalence (phase 1a-2b)', () => {
 // `searchSessions` itself cannot serve as its own oracle, so the expected
 // highlights are computed here from the FROZEN folds: build them with the
 // reference implementation, then scan them with the same contract the live
-// `rangesInFold` / `rangesInPinyinFold` implement. Comparing the JSON of the
-// two result sets covers the fold tables, the mapping back onto the original
-// text, the syllable-boundary rule and the range merge in one assertion.
+// `FoldCursor` implements (a folded scan whose hits map back onto the original
+// text, plus the syllable-boundary rule for the reading chains). Comparing the
+// JSON of the two result sets covers the fold tables, the mapping back onto
+// the original text, the syllable-boundary rule and the range merge in one
+// assertion.
 
 interface RefHit {
   readonly kind: 'title' | 'message'
@@ -505,7 +507,7 @@ function refMergeRanges(ranges: readonly (readonly [number, number])[]): [number
   return merged
 }
 
-/** Every pinyin occurrence, in the live `pinyinRanges` contract: the shared
+/** Every pinyin occurrence, in the live pinyin-cursor contract: the shared
  *  folds (a document without polyphones spells two chains identically) are
  *  scanned ONCE, which phase 2b introduced — scanning a shared chain twice
  *  would double every range it produces. */
