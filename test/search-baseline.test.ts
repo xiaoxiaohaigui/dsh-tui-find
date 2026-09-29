@@ -9,6 +9,16 @@
  * apart) passes every table comparison and still shifts ranges by one. That
  * bug was real during development, which is why this oracle exists.
  *
+ * The one INTENTIONAL difference is the per-message cap: the live search
+ * materialises at most `MESSAGE_RANGE_LIMIT` segments per document where the
+ * baseline materialises every one. The oracle's output is therefore capped
+ * before comparing (see `capped`), which turns the frozen implementation
+ * into the reference for the capped shape too — head truncation and the
+ * exact, uncapped count together, on documents whose hit count exceeds the
+ * cap. Without those `TEXTS` entries this suite never reached the cap at all
+ * (every fixture stayed far below it), so "the cap applies at the mapping"
+ * had no oracle-backed assertion (REVIEW R-092).
+ *
  * The oracle is the parent revision's `search.ts`, read out of git and
  * transpiled on the fly next to copies of its sibling modules. It is frozen
  * by SHA on purpose: it must never follow the working tree. If git cannot
@@ -23,17 +33,51 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { IndexedMessage } from '../src/core/events.js'
 import type { ScannedSession } from '../src/core/scan.js'
-import { searchSessions } from '../src/core/search.js'
+import { MESSAGE_RANGE_LIMIT, searchSessions } from '../src/core/search.js'
 
 /** The last revision before the perf work (phase 1a landed in e6ccb2a). */
 const BASELINE_REVISION = 'fbc09cd'
+
+/** One hit entry of the baseline module. Only `ranges` is named — the rest of
+ *  the shape (kind, role, seq, text, at, sourceIndex) rides along and is
+ *  compared as data by the JSON equality below. */
+interface MessageHitLike {
+  readonly ranges: readonly (readonly [number, number])[]
+  readonly [field: string]: unknown
+}
+
+/** One session entry of the baseline module, likewise. */
+interface SessionHitLike {
+  readonly hits: readonly MessageHitLike[]
+  readonly total: number
+  readonly [field: string]: unknown
+}
 
 interface BaselineModule {
   searchSessions(
     sessions: readonly ScannedSession[],
     query: string,
     options: Record<string, unknown>,
-  ): readonly { readonly hits: readonly { readonly ranges: readonly (readonly [number, number])[] }[] }[]
+  ): readonly SessionHitLike[]
+}
+
+/**
+ * The baseline is the PRE-cap pipeline, so its own per-message `ranges` are
+ * the full list; the live search keeps the first `MESSAGE_RANGE_LIMIT` and
+ * reports the rest through `total`. Capping the ORACLE (and leaving the live
+ * result untouched) is what makes this comparison bite in both directions:
+ * a live range list that overruns the cap fails, and so does a `total` that
+ * follows the truncation — while the cap suite's own reference cannot see
+ * either, because it shares the live segment mapping.
+ *
+ * `total` is the uncapped merged-segment count on BOTH sides, so it is
+ * compared as it stands — that is the second half of the contract.
+ */
+function capped(result: readonly SessionHitLike[]): unknown {
+  return result.map(hit => ({
+    ...hit,
+    hits: hit.hits.map(entry => ({ ...entry, ranges: entry.ranges.slice(0, MESSAGE_RANGE_LIMIT) })),
+  }))
 }
 
 /** Load the frozen baseline module, or undefined when git cannot serve it. */
@@ -86,6 +130,16 @@ const TEXTS: readonly string[] = [
   'e\u0301a\u0308 auth 中文',
   'ＡＵＴＨ ｆｌｏｗ',
   'line one\nline two\tline three\n',
+  // Over-cap documents: more merged segments than MESSAGE_RANGE_LIMIT keeps,
+  // which is the only shape where the cap bites. They are searched as
+  // messages AND as titles (see `make`), and they cover the three mappings the
+  // cap has to survive — the literal scan (`a` every third unit), the pinyin
+  // chains (`中` under a letter needle, read through the fold tables), and a
+  // non-BMP document (surrogate pairs, where a shifted row is the classic
+  // silent failure this oracle exists for).
+  'aZZ'.repeat(200),
+  '中x'.repeat(200),
+  '\u{1F600}aZZ'.repeat(80),
 ]
 
 const QUERIES: readonly string[] = [
@@ -141,7 +195,7 @@ describe('search baseline (frozen parent revision)', () => {
             const before = baseline.searchSessions(pool, query, options)
             const after = searchSessions(pool, query, options)
             const label = `${JSON.stringify(query)} sensitive=${caseSensitive} pinyin=${pinyin} titleOnly=${titleOnly}`
-            expect(JSON.stringify(after), label).toBe(JSON.stringify(before))
+            expect(JSON.stringify(after), label).toBe(JSON.stringify(capped(before)))
             comparisons += 1
           }
         }
@@ -159,7 +213,7 @@ describe('search baseline (frozen parent revision)', () => {
       for (const caseSensitive of [false, true]) {
         const options = { scope: 'all', caseSensitive, pinyin: true }
         expect(JSON.stringify(searchSessions(pool, query, options)), query).toBe(
-          JSON.stringify(baseline.searchSessions(pool, query, options)),
+          JSON.stringify(capped(baseline.searchSessions(pool, query, options))),
         )
       }
     }
