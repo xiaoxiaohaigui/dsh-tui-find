@@ -848,10 +848,14 @@ describe('offset watermark (incremental decode)', () => {
         'session.jsonl',
       )
       // mtimeMs must be bit-identical before and after the rewrite: pin it to
-      // an integral millisecond first (utimesSync writes ms precision), or the
-      // mtime half of the token would miss on its own and the test would prove
-      // nothing about ctime.
-      const pinned = new Date(Date.now() - 60_000)
+      // an exact timestamp first, or the mtime half of the token would miss on
+      // its own and the test would prove nothing about ctime. A whole second is
+      // the only pin that reads back EXACTLY everywhere: utimes takes float
+      // seconds, so on Linux (ext4/overlayfs) an integral millisecond lands on
+      // ...964999 microseconds and statSync reports ...964.999 instead of the
+      // ...965 that was asked for — the assertion below would then fail on a
+      // timestamp the filesystem never stored wrongly.
+      const pinned = new Date(Math.floor((Date.now() - 60_000) / 1000) * 1000)
       utimesSync(path, pinned, pinned)
       const before = statSync(path)
       expect(before.mtimeMs).toBe(pinned.getTime())
