@@ -17,6 +17,12 @@ import { FindScene } from '../src/scene.js'
 // without it the copy status rows the tests assert on are suppressed.
 process.env['SSH_CONNECTION'] ??= 'scene-harness'
 
+/** The prop bag a scene receives from the host renderer — what `mount` builds
+ *  for FindScene, and what a plugin-registered component (`options.component`)
+ *  is handed instead. Exported so the tests that mount the plugin's own
+ *  wrapper can name the shape without importing the host ui kit themselves. */
+export type HarnessSceneProps = React.ComponentProps<typeof FindScene>
+
 export type Harness = {
   send(input: string): void
   /** Pointer move (no-button motion) at a 1-indexed terminal cell — the
@@ -139,6 +145,12 @@ export async function mount(
      *  context-menu delivery is gated on altScreenActive in the host ink,
      *  so pointer-driven wiring tests need this. */
     fullscreen?: boolean
+    /** Component to render in place of the bare FindScene — for the tests
+     *  that mount the component the PLUGIN registered (main.tsx wiring, where
+     *  the query can arrive from a `/find <words>` seed). Such a wrapper
+     *  carries its own config/scanner/notify/initialQuery and overrides the
+     *  matching options above. */
+    component?: React.ComponentType<HarnessSceneProps>
   } = {},
 ): Promise<Harness> {
   const columns = options.columns ?? 80
@@ -195,10 +207,11 @@ export async function mount(
     initialQuery: () => options.query ?? 'needle',
     notify: options.notify,
   }
+  const Component = options.component ?? FindScene
   const instance = await hostUi.render(
     options.fullscreen === true
-      ? React.createElement(hostUi.AlternateScreen, null, React.createElement(FindScene, props))
-      : React.createElement(FindScene, props),
+      ? React.createElement(hostUi.AlternateScreen, null, React.createElement(Component, props))
+      : React.createElement(Component, props),
     {
       stdout,
       stdin,

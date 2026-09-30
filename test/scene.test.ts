@@ -227,6 +227,32 @@ describe('list-mode key dispatch', () => {
       harness.dispose()
     }
   })
+
+  it('reports the host success on a landed resume and closes the scene', async () => {
+    // The happy path of the confirm flow. The scene closes itself on a landed
+    // resume (the resumed session takes the terminal over), so the transcript
+    // is not the assertion surface: the toast is, because it outlives the
+    // closing scene — and the close count is what proves the handoff happened
+    // rather than the confirm quietly staying up.
+    const notify = vi.fn()
+    const harness = await mount(sessionWithMessages(['body']), {
+      query: '',
+      resumeTo: async () => ({ ok: true }),
+      notify,
+    })
+    try {
+      harness.send('\r')
+      await waitFor()
+      harness.send('\r')
+      await waitFor(300)
+      // One close, from the resume itself: the earlier Esc-backed confirm and
+      // the cancelled result both stay on the list.
+      expect(harness.closed()).toBe(1)
+      expect(notify).toHaveBeenCalledWith('Session resumed', 'info')
+    } finally {
+      harness.dispose()
+    }
+  })
 })
 
 describe('preview scrolling', () => {
