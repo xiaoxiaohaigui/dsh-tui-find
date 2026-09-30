@@ -15,6 +15,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { apply as extensionsApply, name as extensionsName } from '@deepseek-harness-tui/dsh-tui/extensions'
 import plugin, { apply } from '../dist/main.js'
 import { DEFAULT_SHORTCUT, isPlausibleShortcut, resolveConfig, resolveShortcut, type Config } from '../dist/config.js'
+import { dict } from '../src/i18n.js'
 
 // These mounts activate the real plugin; keep the watermark journal off so
 // no test ever writes against the real ~/.dsh-tui tree.
@@ -36,18 +37,20 @@ const liveRef = (value: unknown): unknown =>
  * a fresh composition, then read the shortcut registry INSIDE the plugin's
  * fiber — the registry scopes `list()` to the registering caller.
  */
-async function mountAndList(config: Config): Promise<string[]> {
+async function mountEntries(config: Config): Promise<Array<{ combo: string; description: string }>> {
   const root = new Context()
   root.plugin({ name: extensionsName, apply: extensionsApply })
   await sleep(30)
-  const observed: string[] = []
+  const observed: Array<{ combo: string; description: string }> = []
   let applied = false
   root.plugin({
     name: plugin.name,
     apply: (ctx: Context) => {
       apply(ctx, config)
       const shortcuts = ctx.get('tuiShortcuts', false)
-      observed.push(...(shortcuts?.list().map(entry => entry.combo) ?? []))
+      observed.push(
+        ...(shortcuts?.list().map(entry => ({ combo: entry.combo, description: entry.description })) ?? []),
+      )
       applied = true
     },
   })
@@ -55,6 +58,11 @@ async function mountAndList(config: Config): Promise<string[]> {
   // intentionally empty registry (`shortcut: 'off'`) must be observable too.
   await vi.waitFor(() => expect(applied).toBe(true), { timeout: 5000, interval: 10 })
   return observed
+}
+
+/** The combos-only view most registration tests assert on. */
+async function mountAndList(config: Config): Promise<string[]> {
+  return (await mountEntries(config)).map(entry => entry.combo)
 }
 
 describe('resolveShortcut (config normalization)', () => {
@@ -105,6 +113,21 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
     const combos = await mountAndList({})
     expect(combos).toContain('alt+f')
     expect(combos).not.toContain('ctrl+shift+f')
+  })
+
+  it('localizes the binding description through the plugin dictionary (R-109)', async () => {
+    // The host renders this description on its own help surfaces, and the
+    // plugin's language is pinned per activation (`lang` config, which rides
+    // resolveActivationConfig). A hardcoded English line showed up
+    // untranslated on a zh host. The registry sanitizes the text on the way
+    // in (whitespace folding, cell cap), so the assertion compares against
+    // the dictionary's own copy rather than a literal.
+    expect(await mountEntries({ lang: 'zh' })).toEqual([
+      { combo: DEFAULT_SHORTCUT, description: dict['shortcut-desc-find'].zh },
+    ])
+    expect(await mountEntries({ lang: 'en' })).toEqual([
+      { combo: DEFAULT_SHORTCUT, description: dict['shortcut-desc-find'].en },
+    ])
   })
 
   it('binds a custom combo from the shortcut config', async () => {

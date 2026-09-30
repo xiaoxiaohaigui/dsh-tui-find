@@ -340,7 +340,11 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       const dispose = shortcutsRuntime.register(
         combo,
         {
-          description: 'Find in all sessions (dsh-tui-find)',
+          // Localized through t() (i18n.ts), like every other string the
+          // user reads: the host renders this description on its own help
+          // surfaces, so a hardcoded English line would show up untranslated
+          // on a zh host (REVIEW R-109).
+          description: t('shortcut-desc-find'),
           handler: () => {
             const scenes = ctx.get('tuiScenes', false)
             if (scenes === undefined) return

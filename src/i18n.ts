@@ -233,6 +233,14 @@ export const dict = {
     zh: '跨会话全文检索所有本地会话',
     en: 'Search all local dsh sessions (cross-session full-text)',
   },
+  // The global-entry binding's description (`tuiShortcuts.register`): the
+  // host shows it on its own help surfaces. Unlike the pair above, that API
+  // takes ONE string, so this one resolves through t() at registration time
+  // rather than being handed over wholesale — same language as the scene copy.
+  'shortcut-desc-find': {
+    zh: '在所有会话中查找（dsh-tui-find）',
+    en: 'Find in all sessions (dsh-tui-find)',
+  },
 
   // ── help overlay (Alt+H) ─────────────────────────────────────────────
   // The keys column of the help sheet is language-free (src/help.tsx owns

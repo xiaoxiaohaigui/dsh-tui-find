@@ -35,11 +35,24 @@ const TOAST_ERROR_MS = 4000
  *  shortcut registry's cold-boot liveness window). */
 export function makeNotifier(ctx: Context): Notifier {
   return (text, tone) => {
-    const toast = ctx.get('tuiToast', false) as ToastSurface | undefined
-    if (toast === undefined) return
-    toast.show(text, {
-      ...(tone === 'error' ? { color: 'error' as const } : { color: 'success' as const }),
-      timeoutMs: tone === 'error' ? TOAST_ERROR_MS : TOAST_INFO_MS,
-    })
+    // Both the probe and the delivery are guarded, because the toast is the
+    // ONE additive channel here: several call sites sit on an error path
+    // itself (the scene's copy/resume catch blocks, the shortcut-rejection
+    // warnings in main.tsx), where an escaping throw would replace the
+    // failure being reported with a second, unexplained one. The host's
+    // liveness gate rejects timer- or event-originated calls (ctx.get and
+    // the service methods alike), and its delivery is documented
+    // fire-and-forget — so a drop is a no-op, never a caller's problem.
+    try {
+      const toast = ctx.get('tuiToast', false) as ToastSurface | undefined
+      if (toast === undefined) return
+      toast.show(text, {
+        ...(tone === 'error' ? { color: 'error' as const } : { color: 'success' as const }),
+        timeoutMs: tone === 'error' ? TOAST_ERROR_MS : TOAST_INFO_MS,
+      })
+    } catch {
+      // Dropped delivery: every caller keeps its own channel (the scene's
+      // status footer, the logger), so nothing is left to report here.
+    }
   }
 }

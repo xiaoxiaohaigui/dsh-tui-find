@@ -2,7 +2,10 @@
  * The host toast seam (0.10+ `tuiToast`): the notifier routes feedback to
  * the service with a tone-picked colour and auto-dismiss window, resolves
  * the service lazily per call, and no-ops when the host has none (0.9.x) —
- * every existing channel stands alone either way.
+ * every existing channel stands alone either way. A host that THROWS on the
+ * probe or on the delivery is a drop too: the toast is the additive channel,
+ * and some callers sit on an error path where an escaping throw would report
+ * the reporter's own failure instead (REVIEW R-109).
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
@@ -42,5 +45,29 @@ describe('makeNotifier', () => {
     toast = { show }
     notify('after mount', 'info')
     expect(show).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows a delivery that throws — the error path must survive', () => {
+    // Reachable on purpose: the scene's copy/resume catch blocks and
+    // main.tsx's shortcut-rejection warnings all call the notifier from
+    // inside the very handler that reports a failure. A toast that throws
+    // there (the host's liveness gate does, for timer- and event-originated
+    // calls) would escape as a second, unexplained error.
+    const show = vi.fn((): boolean => {
+      throw new Error('dsh-tui: tuiToast.show requires a live activation')
+    })
+    const notify = makeNotifier(ctxWith({ show }))
+    expect(() => notify('copy failed', 'error')).not.toThrow()
+    expect(show).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows a probe that throws (liveness gate on ctx.get)', () => {
+    const ctx = {
+      get: () => {
+        throw new Error('dsh-tui: requires a live Cordis activation context')
+      },
+    } as unknown as Context
+    const notify = makeNotifier(ctx)
+    expect(() => notify('anything', 'info')).not.toThrow()
   })
 })
