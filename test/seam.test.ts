@@ -11,16 +11,24 @@ import {
   REGISTER_RETRY_MAX_ATTEMPTS,
   SEAM_MOUNT_DELAY_MS,
   SEAM_MOUNT_MAX_ATTEMPTS,
+  SEAM_SLOW_DELAY_MS,
+  SEAM_TOTAL_BUDGET_MS,
   registerSeamWithRetry,
   whenSeamMounted,
 } from '../dist/seam.js'
 
 const LIVENESS_ERROR = new Error('dsh-tui: tuiScenes.register requires a live Cordis activation context')
 
+/** Ticks the two-phase budget yields before giving up: the fast window, then
+ *  the slow cadence over whatever is left of the total budget. */
+const TICKS_BEFORE_GIVE_UP =
+  SEAM_MOUNT_MAX_ATTEMPTS + Math.floor((SEAM_TOTAL_BUDGET_MS - SEAM_MOUNT_MAX_ATTEMPTS * SEAM_MOUNT_DELAY_MS) / SEAM_SLOW_DELAY_MS)
+
 /** Minimal activation-context stand-in: warn/info capture + effect collection. */
 function stubCtx() {
   const warns: string[] = []
   const infos: string[] = []
+  const toasts: string[] = []
   const disposers: Array<() => void> = []
   const ctx = {
     logger: {
@@ -31,13 +39,16 @@ function stubCtx() {
         infos.push(message)
       },
     },
+    // The give-up announcement probes the host toast seam (0.10+); without
+    // it the plugin's own log line stands alone.
+    get: (name: string) => (name === 'tuiToast' ? { show: (text: string) => (toasts.push(text), true) } : undefined),
     effect: (callback: () => () => void) => {
       const dispose = callback()
       disposers.push(dispose)
       return dispose
     },
   } as unknown as Context
-  return { ctx, warns, infos, disposers }
+  return { ctx, warns, infos, toasts, disposers }
 }
 
 describe('registerSeamWithRetry', () => {
@@ -82,23 +93,61 @@ describe('registerSeamWithRetry', () => {
     expect(warns).toHaveLength(1)
   })
 
-  it('gives up after the bounded budget with a single warning', () => {
-    const { ctx, warns } = stubCtx()
+  it('gives up after the bounded budget with a single warning and a toast', () => {
+    const { ctx, warns, toasts } = stubCtx()
     const register = vi.fn(() => {
       throw LIVENESS_ERROR
     })
     const attach = vi.fn()
     registerSeamWithRetry(ctx, 'scene', register, attach, LIVENESS_ERROR)
 
-    vi.advanceTimersByTime(REGISTER_RETRY_DELAY_MS * REGISTER_RETRY_MAX_ATTEMPTS)
-    expect(register).toHaveBeenCalledTimes(REGISTER_RETRY_MAX_ATTEMPTS)
+    // R-107: the give-up is the END of a 5 s fast window plus a 5 s slow
+    // cadence, not a 0.5 s guess — and it is terminal, so it must reach the
+    // user instead of only the log.
+    vi.advanceTimersByTime(SEAM_TOTAL_BUDGET_MS)
+    expect(register).toHaveBeenCalledTimes(TICKS_BEFORE_GIVE_UP)
     expect(attach).not.toHaveBeenCalled()
     expect(warns).toHaveLength(1)
     expect(warns[0]).toContain('failed after')
     expect(warns[0]).toContain(LIVENESS_ERROR.message)
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]).toContain('dsh-tui-find')
     // Past the give-up the timer must stay cleared.
     vi.advanceTimersByTime(REGISTER_RETRY_DELAY_MS * 10)
-    expect(register).toHaveBeenCalledTimes(REGISTER_RETRY_MAX_ATTEMPTS)
+    expect(register).toHaveBeenCalledTimes(TICKS_BEFORE_GIVE_UP)
+    expect(toasts).toHaveLength(1)
+  })
+
+  it('keeps retrying on the slow cadence past the old 500 ms window', () => {
+    const { ctx, warns } = stubCtx()
+    // The pre-R-107 budget gave up after 20 attempts (500 ms). This one keeps
+    // failing for 250 — long past it — and must still be polling.
+    const lastFailure = REGISTER_RETRY_MAX_ATTEMPTS + 50
+    let attempts = 0
+    const dispose = (): void => {}
+    const attach = vi.fn()
+    registerSeamWithRetry(
+      ctx,
+      'scene',
+      () => {
+        attempts += 1
+        if (attempts <= lastFailure) throw LIVENESS_ERROR
+        return dispose
+      },
+      attach,
+      LIVENESS_ERROR,
+    )
+    // 200 fast ticks (5 s), then 50 slow ticks (250 s): still nothing attached.
+    vi.advanceTimersByTime(
+      REGISTER_RETRY_DELAY_MS * REGISTER_RETRY_MAX_ATTEMPTS + SEAM_SLOW_DELAY_MS * 50,
+    )
+    expect(attach).not.toHaveBeenCalled()
+    // One slow tick later the retry lands, well inside the total budget.
+    vi.advanceTimersByTime(SEAM_SLOW_DELAY_MS)
+    expect(attach).toHaveBeenCalledTimes(1)
+    expect(attach).toHaveBeenCalledWith(dispose)
+    expect(warns).toHaveLength(1)
+    expect(warns[0]).toContain(`registered on retry #${lastFailure + 1}`)
   })
 
   it('cleans the retry timer up when the activation disposes', () => {
@@ -163,23 +212,46 @@ describe('whenSeamMounted', () => {
     expect(infos).toHaveLength(0)
   })
 
-  it('gives up after the bounded budget with a single info and stops probing', () => {
-    const { ctx, warns, infos } = stubCtx()
+  it('gives up after the total budget with a single info, a toast and no further probing', () => {
+    const { ctx, warns, infos, toasts } = stubCtx()
     const probe = vi.fn(() => undefined)
     const use = vi.fn()
     whenSeamMounted(ctx, 'tuiScenes', probe, use)
-    vi.advanceTimersByTime(SEAM_MOUNT_DELAY_MS * SEAM_MOUNT_MAX_ATTEMPTS)
+    vi.advanceTimersByTime(SEAM_TOTAL_BUDGET_MS)
     expect(use).not.toHaveBeenCalled()
     // Give-up is the designed no-op posture on compositions without the
-    // TUI runtimes — an info naming the seam, exactly once.
+    // TUI runtimes — an info naming the seam, exactly once, plus the toast
+    // that makes it visible to a TUI user (R-107).
     expect(infos).toHaveLength(1)
     expect(infos[0]).toContain('tuiScenes never mounted')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]).toContain('dsh-tui-find')
     // One synchronous probe plus one per tick, including the giving-up one.
-    expect(probe).toHaveBeenCalledTimes(SEAM_MOUNT_MAX_ATTEMPTS + 1)
+    expect(probe).toHaveBeenCalledTimes(TICKS_BEFORE_GIVE_UP + 1)
     // Past the give-up the timer must stay cleared.
     vi.advanceTimersByTime(SEAM_MOUNT_DELAY_MS * 10)
-    expect(probe).toHaveBeenCalledTimes(SEAM_MOUNT_MAX_ATTEMPTS + 1)
+    expect(probe).toHaveBeenCalledTimes(TICKS_BEFORE_GIVE_UP + 1)
     expect(warns).toHaveLength(0)
+    expect(toasts).toHaveLength(1)
+  })
+
+  it('keeps polling on the slow cadence past the old 5 s mount window', () => {
+    const { ctx, infos } = stubCtx()
+    const seam = { mounted: true }
+    let mounted = false
+    const probe = vi.fn(() => (mounted ? seam : undefined))
+    const use = vi.fn()
+    whenSeamMounted(ctx, 'scene', probe, use)
+    // The pre-R-107 window gave up here (200 × 25 ms). This one must not.
+    vi.advanceTimersByTime(SEAM_MOUNT_DELAY_MS * SEAM_MOUNT_MAX_ATTEMPTS)
+    expect(infos).toHaveLength(0)
+    expect(use).not.toHaveBeenCalled()
+    // A slow tick later the seam mounts and still lands.
+    mounted = true
+    vi.advanceTimersByTime(SEAM_SLOW_DELAY_MS)
+    expect(use).toHaveBeenCalledTimes(1)
+    expect(use).toHaveBeenCalledWith(seam)
+    expect(infos).toHaveLength(0)
   })
 
   it('cleans the poll timer up when the activation disposes', () => {

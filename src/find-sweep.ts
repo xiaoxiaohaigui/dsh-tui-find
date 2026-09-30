@@ -49,9 +49,12 @@ export function useSessionSweep(
       onProgress: setProgress,
       onSession: (session: ScannedSession) => {
         partial.push(session)
-        // Arrivals are enumeration order; interleaving in the scanner's own
-        // recency order keeps the partial list MRU-sorted so the completed
-        // sweep never reshuffles what is already on screen. A cold sweep
+        // Arrivals are enumeration order (readdir), sorted here into the
+        // scanner's recency order, so each flush is internally MRU-sorted —
+        // but a LATER arrival can still be more recent than everything already
+        // on screen and insert above it, shifting the displayed rows down.
+        // That is why the scene anchors its selection by `rowId` instead of
+        // trusting the index across a flush (REVIEW R-103). A cold sweep
         // delivers each arrival in its own event-loop turn, and every flush
         // hands the memos a fresh `sessions` identity — one full search over
         // the accumulated prefix, in query mode. So the flush interval

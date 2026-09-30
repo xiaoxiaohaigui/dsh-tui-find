@@ -128,6 +128,25 @@ describe('prewarmFolds', () => {
     expect(calls).toHaveLength(5)
   })
 
+  it('paces by characters, so one max-sized document cannot hold a frame (REVIEW R-108)', async () => {
+    // One legal `maxMessageChars` document costs hundreds of milliseconds to
+    // fold (340 ms measured at 65536), so a DOCUMENT-count chunk let a single
+    // document blow straight through the frame budget and the pass could
+    // overrun `maxMs` by ~8x. The character budget caps the chunk no matter
+    // how large the documents are.
+    const sessions = [makeSession(1, 8, 4_000)]
+    const { calls, yield: yieldTo } = countingYield()
+    const result = await prewarmFolds(sessions, {
+      yieldEvery: 1_000, // never reached: 8 documents
+      yieldEveryChars: 8_000,
+      yield: yieldTo,
+    })
+    // 8 messages x 4000 characters = 32k characters → a yield every other
+    // document (4 in total), not one per 1000 documents.
+    expect(result.warmed).toBe(8)
+    expect(calls).toHaveLength(4)
+  })
+
   it('hands the search warm folds: the first query no longer builds them', async () => {
     // Big enough that a cold fold build is unmistakable against the noise
     // floor, small enough to stay a fast unit test.

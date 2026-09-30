@@ -1,7 +1,7 @@
 /**
- * Dual-host verification matrix — run the plugin's build + test suite
- * against every supported dsh-tui host version in an isolated copy of the
- * workspace (the compatibility gate for the dual-version strategy; see
+ * Host verification matrix — run the plugin's build + test suite against
+ * every pinned dsh-tui host version in an isolated copy of the workspace
+ * (the compatibility gate for the multi-version strategy; see
  * docs/decisions/2026-09-12-dual-version-compat-strategy.md).
  *
  * Why an isolated copy instead of swapping in place: the workspace tree
@@ -26,8 +26,8 @@
  * narrow: drop the host directory's own package-lock.json and retry once.
  *
  * Usage:
- *   node scripts/verify-host-matrix.mjs                 # both pinned hosts
- *   node scripts/verify-host-matrix.mjs --host 0.10.1   # one host
+ *   node scripts/verify-host-matrix.mjs                 # every pinned host
+ *   node scripts/verify-host-matrix.mjs --host 0.11.2   # one extra host
  *   node scripts/verify-host-matrix.mjs --keep          # keep the copies
  *
  * Exit code is non-zero if any host fails (pack, build or test); each
@@ -51,8 +51,11 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 const PACKAGE = '@deepseek-harness-tui/dsh-tui'
-/** The compatibility matrix: the 0.9.3 build baseline and the 0.10.x line. */
-const DEFAULT_HOSTS = ['0.9.3', '0.10.1']
+/** The compatibility matrix: the 0.9.3 build baseline, the 0.10.x line that
+ *  introduced the 0.10-only seams, and the 0.12.0 line the live host runs
+ *  (added 2026-09-30 after a real-host compatibility pass; 0.11.x is covered
+ *  by 0.12.0 for every seam this plugin uses, so it is not pinned). */
+const DEFAULT_HOSTS = ['0.9.3', '0.10.1', '0.12.0']
 
 function parseArgs(argv) {
   const hosts = []

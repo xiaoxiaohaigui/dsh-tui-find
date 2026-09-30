@@ -136,7 +136,9 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
     // (register() swallows the rejection into a no-op disposer, list()
     // throws), so the live registry cannot deterministically exercise the
     // poll here; the real boot was verified on an actual 0.10.1 host.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    // The late-mount poll is a `setTimeout` chain (seam.ts, R-107) — these
+    // tests must fake the timer that is actually armed.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const root = new Context()
       root.reflect.provide('agents', {})
@@ -196,7 +198,9 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
     // runtime. The late-mount poll must then bind the LIVE runtimeConfig
     // value: binding the apply-time row-config combo would silently override
     // the user's saved setting for the whole session.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    // The late-mount poll is a `setTimeout` chain (seam.ts, R-107) — these
+    // tests must fake the timer that is actually armed.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const root = new Context()
       root.reflect.provide('agents', {})
@@ -244,7 +248,9 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
     // The same ordering as above with a persisted `off`: the restore is
     // dropped on the unmounted runtime and the poll must not resurrect the
     // row-config combo.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    // The late-mount poll is a `setTimeout` chain (seam.ts, R-107) — these
+    // tests must fake the timer that is actually armed.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const root = new Context()
       root.reflect.provide('agents', {})
@@ -290,7 +296,9 @@ describe('global entry registration (live tuiShortcuts registry)', () => {
     // plugin's Config rather than a registration. Reading `config.shortcut`
     // raw would bind the DEFAULT combo and warn about a perfectly good value;
     // docs/decisions/2026-09-24-settings-generation-adaptation.md.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    // The late-mount poll is a `setTimeout` chain (seam.ts, R-107) — these
+    // tests must fake the timer that is actually armed.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const root = new Context()
       root.reflect.provide('agents', {})

@@ -282,3 +282,134 @@ describe('preview scrolling', () => {
     }
   })
 })
+
+describe('copy guard (REVIEW R-101)', () => {
+  it('copies a message whose timestamp is finite but outside the Date range', async () => {
+    // 1e18 is finite, so the scanner's own finiteness screen passes it — and
+    // `new Date(1e18).toISOString()` throws a RangeError. That throw used to
+    // escape the key handler before its try: no copy, no feedback, and the
+    // keys batched behind it in the same chunk were lost.
+    const base = sessionWithMessages(['needle body'])
+    const session = {
+      ...base,
+      title: undefined,
+      messages: base.messages.map(message => ({ ...message, at: 1e18 })),
+    }
+    const harness = await mount(session, { query: 'needle' })
+    const writes = vi.spyOn(process.stdout, 'write')
+    try {
+      harness.send('\u001b[B') // card row → the hit row
+      await waitFor()
+      harness.send('\u001bc')
+      await waitFor(200)
+      // The body simply carries no timestamp instead of throwing.
+      expect(lastClipboard(writes.mock.calls.map(call => call[0]))).toBe('[You]\nneedle body')
+      harness.toggleWidth()
+      await waitFor()
+      expect(harness.latest()).toMatch(/Copied\s*17\s*chars/)
+    } finally {
+      writes.mockRestore()
+      harness.dispose()
+    }
+  })
+})
+
+/** Force fresh frames until `pattern` shows up in the last painted one, or
+ *  the deadline lapses (the repaint is the only way to read the CURRENT
+ *  paint; the cumulative stream keeps stale frames too). */
+async function painted(harness: { latest(): string; toggleWidth(): void }, pattern: RegExp, timeoutMs = 3_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const frame = harness.latest()
+    if (pattern.test(frame)) return frame
+    if (Date.now() >= deadline) return frame
+    harness.toggleWidth()
+    await waitFor(50)
+  }
+}
+
+/** The clipboard text the scene last handed the terminal (OSC 52 payload). */
+function lastClipboard(writes: readonly unknown[]): string {
+  const payloads = writes
+    .map(chunk => String(chunk))
+    .filter(text => text.includes(']52;c;'))
+  const match = /\]52;c;([A-Za-z0-9+/=]+)/.exec(payloads[payloads.length - 1] ?? '')
+  return match === null ? '' : Buffer.from(match[1]!, 'base64').toString('utf8')
+}
+
+describe('cursor identity (REVIEW R-102/R-103)', () => {
+  it('acts on the row a same-chunk movement key selected', async () => {
+    // ↓ + Alt+C arrive as ONE stdin chunk: React batches both handlers, so
+    // the copy used to read the render closure's pre-move index. On a card
+    // that was a silent no-op; one row further it copied the WRONG message
+    // while the frame showed the moved cursor.
+    const session = { ...sessionWithMessages(['needle first', 'needle second long']), title: undefined }
+    const harness = await mount(session, { query: 'needle' })
+    const writes = vi.spyOn(process.stdout, 'write')
+    try {
+      // Row 0 is the session card, rows 1/2 the two hit rows: the two ↓
+      // land on the SECOND message and the Alt+C of the same chunk must
+      // copy that one.
+      harness.send('\u001b[B\u001b[B\u001bc')
+      await waitFor(200)
+      harness.toggleWidth()
+      await waitFor()
+      expect(lastClipboard(writes.mock.calls.map(call => call[0]))).toBe('[AI]\nneedle second long')
+      // The status note is the second half of the proof: the pre-move row
+      // would have reported its own (shorter) body.
+      expect(harness.latest()).toMatch(/Copied\s*23\s*chars/)
+    } finally {
+      writes.mockRestore()
+      harness.dispose()
+    }
+  })
+
+  it('keeps the selected session when a sweep flush reorders the list', async () => {
+    // The progressive sweep sorts every flush; a later arrival can be MORE
+    // recent than what is already on screen and lands above it. The index
+    // used to stay put and silently re-point the cursor at another session.
+    const alpha: ScannedSession = {
+      ...sessionWithMessages(['needle alpha body']),
+      id: 'alpha-session',
+      path: 'alpha.jsonl',
+      title: 'needle Alpha',
+      modifiedAt: 1_000,
+    }
+    const beta: ScannedSession = {
+      ...sessionWithMessages(['needle beta body']),
+      id: 'beta-session',
+      path: 'beta.jsonl',
+      title: 'needle Beta',
+      modifiedAt: 2_000,
+    }
+    let deliver: ((session: ScannedSession) => void) | undefined
+    let finish: ((sessions: readonly ScannedSession[]) => void) | undefined
+    const harness = await mount(alpha, {
+      query: 'needle',
+      scanner: {
+        scan(options: { onSession?: (session: ScannedSession) => void }) {
+          deliver = options.onSession
+          return new Promise<readonly ScannedSession[]>(resolve => {
+            finish = resolve
+          })
+        },
+      },
+    })
+    try {
+      deliver?.(alpha)
+      expect(await painted(harness, /❯\s*needle\s*Alpha/)).toMatch(/❯\s*needle\s*Alpha/)
+      expect(harness.latest()).not.toMatch(/needle\s*Beta/)
+      // Past the first flush's gap (100 ms, doubling), the more recent
+      // arrival flushes in above Alpha.
+      await waitFor(150)
+      deliver?.(beta)
+      const frame = await painted(harness, /needle\s*Beta/)
+      expect(frame).toMatch(/needle\s*Beta/)
+      expect(frame).toMatch(/❯\s*needle\s*Alpha/)
+      expect(frame).not.toMatch(/❯\s*needle\s*Beta/)
+      finish?.([beta, alpha])
+    } finally {
+      harness.dispose()
+    }
+  })
+})

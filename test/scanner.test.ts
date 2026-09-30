@@ -82,6 +82,21 @@ describe('enumerateLogs', () => {
       expect(enumerateLogs(root).get('93000000-0000-4000-8000-000000000003')?.path).toBe(
         join(numeric, 'session.v10.jsonl'),
       )
+      // The live migration window on the 0.12.0 host line holds two COMPRESSED
+      // siblings: a real store that migrated v3 → v4 has
+      // `session.v3.jsonl.zstd` and `session.v4.jsonl.zstd` in one session
+      // directory (verified against `~/.dsh/sessions`), and the highest
+      // generation still wins.
+      const window = write('95000000-0000-4000-8000-000000000015', ['session.v3.jsonl.zstd', 'session.v4.jsonl.zstd'])
+      expect(enumerateLogs(root).get('95000000-0000-4000-8000-000000000015')?.path).toBe(
+        join(window, 'session.v4.jsonl.zstd'),
+      )
+      // Generation order outranks encoding even when the two disagree: a v4
+      // PLAIN log beside the retired v3 compressed one is still the v4 log.
+      const crossed = write('97000000-0000-4000-8000-000000000017', ['session.v3.jsonl.zstd', 'session.v4.jsonl'])
+      expect(enumerateLogs(root).get('97000000-0000-4000-8000-000000000017')?.path).toBe(
+        join(crossed, 'session.v4.jsonl'),
+      )
       // A non-file winner falls through to the next candidate, generation
       // order included.
       const shadowed = write('94000000-0000-4000-8000-000000000004', ['session.jsonl'])
@@ -119,7 +134,10 @@ describe('enumerateLogs', () => {
     }
   })
 
-  it('decodes a generation-named log end to end', async () => {
+  it.each([3, 4])('decodes a v%s generation-named log end to end', async version => {
+    // v4 is the generation the live 0.12.0 host writes (`session.v4.jsonl.zstd`;
+    // confirmed against a real `~/.dsh/sessions` store); v3 stays covered as
+    // the generation it retired.
     const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-gen-'))
     try {
       const id = '96000000-0000-4000-8000-000000000006'
@@ -128,7 +146,14 @@ describe('enumerateLogs', () => {
       const chain = Buffer.concat([
         zstdCompressSync(
           Buffer.from(
-            `${JSON.stringify({ type: 'session', version: 3, id, createdAt: 1_750_000_000_000, cwd: 'D:/work/v3' })}\n`,
+            `${JSON.stringify({
+              type: 'session',
+              version,
+              id,
+              createdAt: 1_750_000_000_000,
+              cwd: `D:/work/v${version}`,
+              isSeeded: false,
+            })}\n`,
             'utf8',
           ),
         ),
@@ -138,20 +163,64 @@ describe('enumerateLogs', () => {
               type: 'user/message',
               seq: 1,
               time: 1_750_000_000_001,
-              data: { content: [{ type: 'text', text: 'v3 世代日志要能被搜到' }], source: { kind: 'user' } },
+              data: { content: [{ type: 'text', text: `v${version} 世代日志要能被搜到` }], source: { kind: 'user' } },
             })}\n`,
             'utf8',
           ),
         ),
       ])
-      writeFileSync(join(dir, 'session.v3.jsonl.zstd'), chain)
+      writeFileSync(join(dir, `session.v${version}.jsonl.zstd`), chain)
 
       const sessions = await new SessionScanner().scan({ sessionRoot: root })
       expect(sessions).toHaveLength(1)
-      expect(sessions[0]!.path).toBe(join(dir, 'session.v3.jsonl.zstd'))
-      expect(sessions[0]!.header.cwd).toBe('D:/work/v3')
-      expect(sessions[0]!.messages.map(m => m.text)).toEqual(['v3 世代日志要能被搜到'])
+      expect(sessions[0]!.path).toBe(join(dir, `session.v${version}.jsonl.zstd`))
+      expect(sessions[0]!.header.cwd).toBe(`D:/work/v${version}`)
+      expect(sessions[0]!.messages.map(m => m.text)).toEqual([`v${version} 世代日志要能被搜到`])
       expect(searchSessions(sessions, '世代', { scope: 'all' })).toHaveLength(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('serves v4 end to end from a compressed v3 → v4 migration window', async () => {
+    // The window's real shape: two compressed siblings in one session
+    // directory. Enumeration picks the highest generation and the sweep folds
+    // that conversation — the retired v3 text stays invisible even though it
+    // sits beside the current one in the same encoding.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-window-'))
+    try {
+      const id = '98000000-0000-4000-8000-000000000018'
+      const dir = join(root, 'ws', id)
+      mkdirSync(dir, { recursive: true })
+      const chain = (version: number, text: string): Buffer =>
+        Buffer.concat([
+          zstdCompressSync(
+            Buffer.from(
+              `${JSON.stringify({ type: 'session', version, id, createdAt: 1_750_000_000_000, cwd: 'D:/work/window' })}\n`,
+              'utf8',
+            ),
+          ),
+          zstdCompressSync(
+            Buffer.from(
+              `${JSON.stringify({
+                type: 'user/message',
+                seq: 1,
+                time: 1_750_000_000_001,
+                data: { content: [{ type: 'text', text }], source: { kind: 'user' } },
+              })}\n`,
+              'utf8',
+            ),
+          ),
+        ])
+      writeFileSync(join(dir, 'session.v3.jsonl.zstd'), chain(3, '已退役 v3 压缩兄弟的正文'))
+      writeFileSync(join(dir, 'session.v4.jsonl.zstd'), chain(4, '当前压缩世代的正文'))
+
+      const sessions = await new SessionScanner().scan({ sessionRoot: root })
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0]!.path).toBe(join(dir, 'session.v4.jsonl.zstd'))
+      expect(sessions[0]!.messages.map(m => m.text)).toEqual(['当前压缩世代的正文'])
+      expect(searchSessions(sessions, '当前压缩', { scope: 'all' })).toHaveLength(1)
+      expect(searchSessions(sessions, '已退役', { scope: 'all' })).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -159,10 +228,12 @@ describe('enumerateLogs', () => {
 
   it('sweeps the generation fixtures and never serves a retired generation', async () => {
     // Real stores grew from the v0 name to `session.vN.jsonl[.zstd]` when the
-    // backend moved to generation-addressed artifacts: before this, every
-    // session created by a current host was invisible to /find. These
-    // fixtures pin the three shapes (compressed v3, plaintext v3, and a
-    // migration window holding v0 beside v3).
+    // backend moved to generation-addressed artifacts, and the live
+    // generation has since moved v3 → v4 (the 0.12.0 host line). These
+    // fixtures pin the shapes a current host writes (compressed v4), the
+    // retired generation still enumerating on the plaintext backend, and a
+    // v0 + v3 + v4 migration window in which only the current text may be
+    // indexed — the window's v3 sibling is compressed, as on the real store.
     const scanner = new SessionScanner()
     const sessions = await scanner.scan({ sessionRoot: FIXTURE_ROOT })
     const pick = (id: string): ScannedSession => {
@@ -171,20 +242,29 @@ describe('enumerateLogs', () => {
       return found!
     }
 
-    const compressedV3 = pick('77777777-7777-4777-8777-777777777777')
-    expect(compressedV3.path.endsWith('session.v3.jsonl.zstd')).toBe(true)
-    expect(compressedV3.title).toBe('v3 generation session')
-    expect(compressedV3.messages.map(m => m.text)).toContain('新世代会话的日志名带 v3 后缀')
+    const liveV4 = pick('77777777-7777-4777-8777-777777777777')
+    expect(liveV4.path.endsWith('session.v4.jsonl.zstd')).toBe(true)
+    expect(liveV4.title).toBe('v4 generation session')
+    expect(liveV4.messages.map(m => m.text)).toContain('新世代会话的日志名带 v4 后缀')
 
     const plainV3 = pick('99999999-9999-4999-8999-999999999999')
     expect(plainV3.path.endsWith('session.v3.jsonl')).toBe(true)
     expect(plainV3.messages.map(m => m.text)).toContain('明文新世代会话也要枚举到')
 
-    // The migration window: the v3 conversation is the one indexed; the
-    // retired v0 artifact beside it must not leak its text.
+    // The migration window, shaped like a real store: the retired v3
+    // artifact is COMPRESSED (`session.v3.jsonl.zstd` beside
+    // `session.v4.jsonl.zstd`) and the v0 plaintext name predates the
+    // generation scheme. The v4 conversation is the one indexed; neither
+    // retired artifact beside it may leak its text.
     const migrated = pick('88888888-8888-4888-8888-888888888888')
-    expect(migrated.path.endsWith('session.v3.jsonl.zstd')).toBe(true)
+    expect(migrated.path.endsWith('session.v4.jsonl.zstd')).toBe(true)
+    expect(readdirSync(dirname(migrated.path)).sort()).toEqual([
+      'session.jsonl',
+      'session.v3.jsonl.zstd',
+      'session.v4.jsonl.zstd',
+    ])
     expect(migrated.messages.map(m => m.text)).toContain('迁移后当前世代的正文')
+    expect(migrated.messages.map(m => m.text)).not.toContain('已退役 v3 世代的正文')
     expect(migrated.messages.map(m => m.text)).not.toContain('已退役 v0 世代的正文')
     expect(searchSessions(sessions, '已退役', { scope: 'all' })).toEqual([])
     expect(searchSessions(sessions, '迁移后', { scope: 'all' })).toHaveLength(1)
@@ -743,6 +823,84 @@ describe('offset watermark (incremental decode)', () => {
       })
       expect(resumed).toBe(0)
       expect(decoded).toBe(rewritten!.length)
+      expect(second[0]!.messages.map(m => m.text)).toEqual([rewrittenText])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('full-decodes an equal-length rewrite whose mtime was restored (ctime is the token)', async () => {
+    // R-105: the cache-hit path reads nothing, so `bytes:mtimeMs` alone
+    // cannot tell a same-size in-place rewrite from an untouched log once
+    // the writer restores the mtime (`cp -p`, `rsync -a`, `tar -x`, or a
+    // coarse-grained mtime filesystem) — the retired text would be served
+    // forever. ctime is the one stamp a writer cannot set: it moves on the
+    // rewrite, the token misses, and the resume path's prefix digest then
+    // forces the full decode.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a9000000-0000-4000-8000-000000000009'
+      const originalText = 'text before the untimed rewrite, kept long so the padded twin fits'
+      const path = writeSession(
+        root,
+        id,
+        Buffer.from([headerLine(id, 'D:/work/wm-ctime'), env('user/message', 1, originalText)].join('\n') + '\n', 'utf8'),
+        'session.jsonl',
+      )
+      // mtimeMs must be bit-identical before and after the rewrite: pin it to
+      // an integral millisecond first (utimesSync writes ms precision), or the
+      // mtime half of the token would miss on its own and the test would prove
+      // nothing about ctime.
+      const pinned = new Date(Date.now() - 60_000)
+      utimesSync(path, pinned, pinned)
+      const before = statSync(path)
+      expect(before.mtimeMs).toBe(pinned.getTime())
+
+      const scanner = new SessionScanner()
+      const first = await scanner.scan({ sessionRoot: root })
+      expect(first[0]!.messages.map(m => m.text)).toEqual([originalText])
+
+      // The rewrite is padded to the exact original byte length (the newline
+      // layout stays intact), then the mtime is put back. The sleep keeps the
+      // ctime tick apart (NTFS file stamps come from a ~15 ms system clock).
+      const target = readFileSync(path).length
+      let rewritten: Buffer | undefined
+      let rewrittenText = ''
+      for (let pad = 0; pad <= target; pad++) {
+        rewrittenText = `untimed rewrite ${'x'.repeat(pad)}`
+        const candidate = Buffer.from(
+          [headerLine(id, 'D:/work/wm-ctime'), env('user/message', 1, rewrittenText)].join('\n') + '\n',
+          'utf8',
+        )
+        if (candidate.length === target) {
+          rewritten = candidate
+          break
+        }
+      }
+      expect(rewritten).toBeDefined()
+      await new Promise(resolve => setTimeout(resolve, 50))
+      writeFileSync(path, rewritten!)
+      utimesSync(path, pinned, pinned)
+      const after = statSync(path)
+      expect(after.size).toBe(before.size)
+      expect(after.mtimeMs).toBe(before.mtimeMs)
+      // The token half under test — if the platform aliased the two ctimes,
+      // the negative control for this case could not go red.
+      expect(after.ctimeMs).not.toBe(before.ctimeMs)
+
+      let decoded = -1
+      let resumed = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+          resumed = progress.resumed
+        },
+      })
+      // Not a cache hit: the rewrite was decoded from zero, and the digest
+      // refused the stale fold, so nothing was resumed either.
+      expect(decoded).toBe(rewritten!.length)
+      expect(resumed).toBe(0)
       expect(second[0]!.messages.map(m => m.text)).toEqual([rewrittenText])
     } finally {
       rmSync(root, { recursive: true, force: true })

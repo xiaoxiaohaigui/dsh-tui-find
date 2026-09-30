@@ -37,7 +37,7 @@ import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
 import type { Notifier } from './notify.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
-import { compileRegex, searchSessions, sessionCwdMatches, type MessageHit, type SearchScope } from './core/search.js'
+import { regexRejection, searchSessions, sessionCwdMatches, type SearchScope } from './core/search.js'
 import { messageAtLine } from './preview.js'
 import { displayWidth, spreadRow, truncateWidth } from './width.js'
 import { HelpOverlay } from './help.js'
@@ -48,6 +48,7 @@ import {
   PANE_CHROME_LINES,
   formatWhen,
   hasTerminalImageHooks,
+  isoWhen,
   splitLayout,
   wheelRows,
   type ContextBoxProps,
@@ -136,6 +137,21 @@ export function FindScene(props: TuiSceneProps & {
   const actionPendingRef = useRef(false)
   const menuRef = useRef<SceneMenuState | undefined>(undefined)
   menuRef.current = menu
+  // The list selection, in mirror form. The index alone cannot say which row
+  // the user is on, for two independent reasons (REVIEW R-102/R-103): the
+  // progressive sweep's flushes re-sort the list under the cursor (a later
+  // arrival can be MORE recent and insert above the rows already on screen),
+  // and React batches every parsed key of one stdin chunk, so a key that
+  // moves the cursor and a key that acts on it run against the same render
+  // closure. `selectedRef` is what the dispatcher reads and writes;
+  // `rowsRef` is the row list that index addresses; the selected row's stable
+  // `rowId` is the anchor the next render reconciles the index against.
+  const selectedRef = useRef(0)
+  const rowsRef = useRef<readonly FlatRow[]>([])
+  /** The session an open confirm pane commits — written when the pane opens,
+   *  so a second Enter inside the SAME stdin chunk cannot fall back to the
+   *  pre-move render closure (R-102). */
+  const resumeTargetRef = useRef<ScannedSession | undefined>(undefined)
 
   useSessionSweep(React, { scanner, config, setSessions, setProgress, setStatus })
 
@@ -163,14 +179,15 @@ export function FindScene(props: TuiSceneProps & {
       }),
     [sessions, query, scope, channel, config.caseSensitive, config.pinyin, useRegex, titleOnly, sinceMs],
   )
-  // The scene mirrors the core's own regex compilation so a pattern that is
-  // not (yet) valid mid-typing can be explained instead of silently showing
-  // "no results".
-  const regexInvalid = useMemo(
+  // The scene mirrors the core's own regex screening so a pattern that is not
+  // usable mid-typing can be explained instead of silently showing "no
+  // results" — and so a valid-but-refused pattern (R-099's backtracking
+  // screen) is not libelled as a syntax error.
+  const regexRejected = useMemo(
     () =>
-      useRegex &&
-      query.trim().length > 0 &&
-      compileRegex(query.trim(), config.caseSensitive) === undefined,
+      useRegex && query.trim().length > 0
+        ? regexRejection(query.trim(), config.caseSensitive)
+        : undefined,
     [useRegex, query, config.caseSensitive],
   )
 
@@ -236,12 +253,51 @@ export function FindScene(props: TuiSceneProps & {
 
   // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
   // from the top), hit rows answer the full hit vocabulary. The selection is
-  // a flat index into `rows` directly.
+  // a flat index into `rows` — mirrored, and anchored by identity (see the
+  // refs above).
 
-  // Keep the selection valid as results change.
+  /** The one selection writer: it clamps, updates the mirror, and only then
+   *  hands the value to React — so the next key of the same stdin chunk reads
+   *  what this one chose (the mirror discipline the mode/query refs use,
+   *  extended to the cursor; REVIEW R-102). */
+  const selectTo = useCallback((next: number | ((current: number) => number)) => {
+    const requested = typeof next === 'function' ? next(selectedRef.current) : next
+    const clamped = Math.min(Math.max(0, requested), Math.max(0, rowsRef.current.length - 1))
+    selectedRef.current = clamped
+    setSelected(clamped)
+  }, [])
+
+  /** The selected row resolved through the mirrors — what a key must act on,
+   *  even when the render closure it arrived with is already stale. */
+  const resolveSelectedRow = useCallback((): FlatRow | undefined => {
+    return rowsRef.current[selectedRef.current]
+  }, [])
+
+  // Re-anchor the selection DURING this render, not in an effect: the flushes
+  // that reorder the list commit their own frame, and a passive effect would
+  // leave that one frame showing (and highlighting) a different session than
+  // the one the user was on (R-103). The anchor is the previously selected
+  // row's `rowId`; only a row that left the list falls back to the clamp.
+  if (rowsRef.current !== flat) {
+    const anchor = rowsRef.current[selectedRef.current]?.rowId
+    rowsRef.current = flat
+    const found = anchor === undefined ? -1 : flat.findIndex(row => row.rowId === anchor)
+    const next = found === -1 ? Math.min(selectedRef.current, Math.max(0, flat.length - 1)) : found
+    if (next !== selectedRef.current) {
+      selectedRef.current = next
+      // The render-phase state adjustment React sanctions for exactly this
+      // shape ("adjusting state when props change"): the discarded pass is
+      // never committed, so the wrong row is never painted.
+      setSelected(next)
+    }
+  }
+
+  // Keep the selection valid as results change (the re-anchor above already
+  // covers it; this stays as the belt-and-braces clamp for a list that shrank
+  // without its identity changing).
   useEffect(() => {
-    setSelected(current => Math.min(current, Math.max(0, flat.length - 1)))
-  }, [flat.length])
+    selectTo(current => Math.min(current, Math.max(0, flat.length - 1)))
+  }, [flat.length, selectTo])
 
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
@@ -291,19 +347,16 @@ export function FindScene(props: TuiSceneProps & {
 
   // Reset selection when the query, scope, time window or match mode changes shape.
   useEffect(() => {
-    setSelected(0)
-  }, [query, scope, timeFilter, useRegex, titleOnly])
+    selectTo(0)
+  }, [query, scope, timeFilter, useRegex, titleOnly, selectTo])
 
-  /** The session a resume would target, whatever kind of row is selected. */
+  /** The session a resume would target, whatever kind of row is selected. The
+   *  render-time view of the mirror; the dispatcher resolves its own (see
+   *  {@link beginResume}). */
   const resumeTarget = useMemo<ScannedSession | undefined>(() => {
     const row = selectedRow
     if (row === undefined) return undefined
     return row.kind === 'session' ? row.session : row.hit.session
-  }, [selectedRow])
-
-  const selectedMessage = useCallback((): MessageHit | undefined => {
-    const row = selectedRow
-    return row !== undefined && row.kind === 'message' ? row.message : undefined
   }, [selectedRow])
 
   /** The shared copy body: the list's Alt+C copies the selected hit row,
@@ -314,20 +367,26 @@ export function FindScene(props: TuiSceneProps & {
    *  was copied. */
   const copyMessage = useCallback(
     (entry: CopyEntry, hit?: { index: number; total: number }) => {
-      const when = entry.at === undefined ? '' : ` ${new Date(entry.at).toISOString()}`
-      const role = entry.role === 'user' ? t('role-user') : entry.role === 'assistant' ? t('role-assistant') : t('role-tool')
-      const body = `[${role}${when}]\n${entry.text}`
-      const note =
-        hit === undefined
-          ? t('copied', { chars: body.length })
-          : t('copied-hit', {
-              index: hit.index,
-              total: hit.total,
-              role,
-              when: entry.at === undefined ? '' : ` · ${formatWhen(entry.at)}`,
-              chars: body.length,
-            })
       try {
+        // Everything that can throw is INSIDE the guard: a finite but
+        // unrepresentable timestamp used to make `new Date(at).toISOString()`
+        // throw a RangeError before the try, which took the whole key handler
+        // with it — the copy silently did nothing and the keys batched behind
+        // it were lost (REVIEW R-101). `isoWhen` screens the range; the try
+        // still wraps the construction so a future field cannot escape either.
+        const when = isoWhen(entry.at)
+        const role = entry.role === 'user' ? t('role-user') : entry.role === 'assistant' ? t('role-assistant') : t('role-tool')
+        const body = `[${role}${when}]\n${entry.text}`
+        const note =
+          hit === undefined
+            ? t('copied', { chars: body.length })
+            : t('copied-hit', {
+                index: hit.index,
+                total: hit.total,
+                role,
+                when: entry.at === undefined ? '' : ` · ${formatWhen(entry.at)}`,
+                chars: body.length,
+              })
         copyToClipboard(body, process.stdout)
         setStatus({ text: note, tone: 'info' })
         notify(note, 'info')
@@ -341,11 +400,14 @@ export function FindScene(props: TuiSceneProps & {
     [],
   )
 
+  /** Alt+C targets the row the mirrors point at, for the same reason Enter
+   *  does (R-102): a copy key that follows a movement key in one stdin chunk
+   *  must copy what the movement selected, not what the frame still showed. */
   const copySelected = useCallback(() => {
-    const hit = selectedMessage()
-    if (hit === undefined) return
-    copyMessage(hit)
-  }, [copyMessage, selectedMessage])
+    const row = resolveSelectedRow()
+    if (row === undefined || row.kind !== 'message') return
+    copyMessage(row.message)
+  }, [copyMessage, resolveSelectedRow])
 
   /** Flip a session's hit fold. Both the Alt+E chord and the card's own
    *  `(+N)` badge route here, so the keyboard and the mouse can never drift
@@ -366,8 +428,13 @@ export function FindScene(props: TuiSceneProps & {
     })
   }, [flat])
 
-  const beginResume = useCallback(() => {
-    if (resumeTarget === undefined) return
+  /** Open the resume confirm on one row. The target is written to the mirror
+   *  the pane's own Enter reads, so a second Enter inside the SAME stdin chunk
+   *  confirms this row even though the render closure still shows the old
+   *  one (R-102). */
+  const openConfirm = useCallback((row: FlatRow | undefined) => {
+    if (row === undefined) return
+    resumeTargetRef.current = rowSession(row)
     // Mirror write first: Enter's call sites sit inside the keyboard
     // dispatcher's batch, and a later key of the same stdin chunk reads
     // modeRef to pick its branch — render-time sync alone leaves that key
@@ -375,10 +442,16 @@ export function FindScene(props: TuiSceneProps & {
     // list-mode Esc and closed the whole scene; REVIEW R-055).
     modeRef.current = 'confirm'
     setMode('confirm')
-  }, [resumeTarget])
+  }, [])
+
+  const beginResume = useCallback(() => {
+    openConfirm(resolveSelectedRow())
+  }, [openConfirm, resolveSelectedRow])
 
   const confirmResume = useCallback(async () => {
-    const target = resumeTarget
+    // The mirror first: within one stdin chunk the render closure's
+    // `resumeTarget` still belongs to the pre-move selection.
+    const target = resumeTargetRef.current ?? resumeTarget
     if (target === undefined) return
     try {
       const result = await channel.resumeTo(target.id)
@@ -510,18 +583,17 @@ export function FindScene(props: TuiSceneProps & {
           action: () => {
             const at = flat.findIndex(candidate => rowSession(candidate).id === session.id)
             if (at === -1) return
-            setSelected(at)
-            modeRef.current = 'confirm'
-            setMode('confirm')
+            selectTo(at)
+            openConfirm(flat[at])
           },
         },
       )
-      setSelected(rowIndex)
+      selectTo(rowIndex)
       const opened = openMenu(event.col, event.row, items)
       menuRef.current = opened
       setMenu(opened)
     },
-    [flat, copyMessage, copySessionPath, listPointerLive],
+    [flat, copyMessage, copySessionPath, listPointerLive, openConfirm, selectTo],
   )
 
   /** Right-click in the reader: copy the message under the POINTER (the
@@ -567,21 +639,20 @@ export function FindScene(props: TuiSceneProps & {
     setUseRegex,
     setTitleOnly,
     setMode,
-    setSelected,
-    selected,
+    selectTo,
+    selectedIndexRef: selectedRef,
+    resolveSelectedRow,
     toggleFold,
     setPreviewWindowStart,
     setStatus,
     closeMenu,
     moveMenuHighlight,
     activateMenu,
-    flatLength: flat.length,
     rows,
     // Split focus handoff for ←/→, and the reader-side page jump (the
     // classic full-screen pane and the split pane have different viewports).
     splitActive,
     previewPageJump: readerViewport,
-    selectedRow,
     previewLines,
     // The window's own position: with no reader cursor left, this is what
     // ↑↓/PgUp/PgDn/n/N act on and Alt+C refers to (the end is what keeps n/N
@@ -707,10 +778,10 @@ export function FindScene(props: TuiSceneProps & {
   const selectRow = useCallback(
     (rowIndex: number) => {
       if (!listPointerLive()) return
-      setSelected(Math.min(Math.max(0, rowIndex), Math.max(0, flat.length - 1)))
+      selectTo(rowIndex)
       setStatus(undefined)
     },
-    [flat.length, listPointerLive],
+    [listPointerLive, selectTo],
   )
   /** A row click follows the browser's open path, including confirmation. */
   const clickRow = useCallback(
@@ -718,12 +789,11 @@ export function FindScene(props: TuiSceneProps & {
       if (!listPointerLive()) return
       const row = flat[rowIndex]
       if (row === undefined) return
-      setSelected(rowIndex)
+      selectTo(rowIndex)
       setStatus(undefined)
-      modeRef.current = 'confirm'
-      setMode('confirm')
+      openConfirm(row)
     },
-    [flat, listPointerLive],
+    [flat, listPointerLive, openConfirm, selectTo],
   )
   const stepRows = useCallback(
     (event: WheelEventLike) => {
@@ -737,9 +807,9 @@ export function FindScene(props: TuiSceneProps & {
       if (actionPendingRef.current || flat.length === 0) return
       const by = wheelRows(event.deltaY, event.deltaX)
       if (by === 0) return
-      setSelected(current => Math.min(Math.max(0, flat.length - 1), Math.max(0, current + by)))
+      selectTo(current => current + by)
     },
-    [flat.length],
+    [flat.length, selectTo],
   )
 
   // The content body shared by both roots: the reading notice while a sweep
@@ -763,9 +833,9 @@ export function FindScene(props: TuiSceneProps & {
           <Text dimColor italic>
             {t('no-results')}
           </Text>
-          {regexInvalid ? (
+          {regexRejected !== undefined ? (
             <Text dimColor italic>
-              {t('regex-invalid')}
+              {t(regexRejected === 'unsafe' ? 'regex-unsafe' : 'regex-invalid')}
             </Text>
           ) : (
             <Text dimColor italic>

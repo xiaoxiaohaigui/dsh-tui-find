@@ -68,10 +68,16 @@ export interface FindInputDeps {
   setUseRegex: (next: boolean | ((current: boolean) => boolean)) => void
   setTitleOnly: (next: boolean | ((current: boolean) => boolean)) => void
   setMode: (next: Mode | ((current: Mode) => Mode)) => void
-  setSelected: (next: number | ((current: number) => number)) => void
-  /** The selected row's index — what Alt+E folds through (the same helper
-   *  the card's `(+N)` badge calls). */
-  selected: number
+  /** The one selection writer: clamps, updates the scene's index mirror, then
+   *  sets state — so a movement key and the action key that follows it in the
+   *  SAME stdin chunk agree on which row is selected (REVIEW R-102). */
+  selectTo: (next: number | ((current: number) => number)) => void
+  /** The live selection index, mirrored (see {@link selectTo}). Alt+E folds
+   *  this row. */
+  selectedIndexRef: { current: number }
+  /** The selected row resolved through the scene's mirrors — the row a key
+   *  must act on even when this render's `selectedRow` is already stale. */
+  resolveSelectedRow: () => FlatRow | undefined
   /** Fold/unfold the hits of the session owning `rowIndex`. Shared by the
    *  Alt+E chord and the mouse badge so both keep one set of rules. */
   toggleFold: (rowIndex: number) => void
@@ -82,7 +88,6 @@ export interface FindInputDeps {
    *  against the window's bottom edge. */
   setPreviewWindowStart: (next: number | ((current: number) => number)) => void
   setStatus: (next: StatusNote | undefined | ((current: StatusNote | undefined) => StatusNote | undefined)) => void
-  flatLength: number
   rows: number
   /** True while the split layout is live (config layout=split AND the
    *  terminal is wide enough): ←/→ move the keyboard focus between the list
@@ -93,7 +98,6 @@ export interface FindInputDeps {
    *  by it, and it is the height every window clamp uses (the classic pane
    *  and the split pane differ). */
   previewPageJump: number
-  selectedRow: FlatRow | undefined
   previewLines: readonly PreviewLine[]
   /** The reader's top visible line — the window's own position, and the
    *  reference its keys act on (there is no cursor to act on instead). */
@@ -134,16 +138,15 @@ export function useFindInput(deps: FindInputDeps): void {
     setUseRegex,
     setTitleOnly,
     setMode,
-    setSelected,
-    selected,
+    selectTo,
+    selectedIndexRef,
+    resolveSelectedRow,
     toggleFold,
     setPreviewWindowStart,
     setStatus,
-    flatLength,
     rows,
     splitActive,
     previewPageJump,
-    selectedRow,
     previewLines,
     previewWindowStart,
     previewWindowEnd,
@@ -340,7 +343,7 @@ export function useFindInput(deps: FindInputDeps): void {
         // the preview branch), and Alt+P is deliberately inert (it used to
         // hand focus over, which the arrow keys now do).
         if (splitActive) return
-        const row = selectedRow
+        const row = resolveSelectedRow()
         if (row !== undefined) {
           // Anchor: a hit row parks the cursor on its own message's header
           // line; a card (or a title hit, which has no message) starts from
@@ -359,7 +362,9 @@ export function useFindInput(deps: FindInputDeps): void {
         // One fold implementation for the keyboard and the mouse: the scene's
         // toggleFold resolves the row's session and no-ops on recent cards
         // (no hit bundle to fold) — the same rules the card's badge applies.
-        toggleFold(selected)
+        // The MIRROR index, not this render's: a ↓ earlier in the same stdin
+        // chunk already moved the cursor (REVIEW R-102).
+        toggleFold(selectedIndexRef.current)
         return
       }
       if (altOnly && lower === 'h') {
@@ -373,26 +378,23 @@ export function useFindInput(deps: FindInputDeps): void {
         // reader has nothing to anchor to, so the key stays inert: a focus
         // handoff onto a dismissed pane would flip the hint line to the
         // reader vocabulary and redefine Esc with nothing to show (R-057).
-        if (selectedRow !== undefined) {
+        if (resolveSelectedRow() !== undefined) {
           modeRef.current = 'preview'
           setMode('preview')
         }
         return
       }
       if (key.upArrow) {
-        setSelected(current => Math.max(0, current - 1))
+        selectTo(current => current - 1)
         return
       }
       if (key.downArrow) {
-        setSelected(current => Math.min(Math.max(0, flatLength - 1), current + 1))
+        selectTo(current => current + 1)
         return
       }
       if (key.pageUp || key.pageDown) {
         const jump = Math.max(1, rows - CHROME_LINES)
-        setSelected(current => {
-          const next = key.pageUp ? current - jump : current + jump
-          return Math.min(Math.max(0, flatLength - 1), Math.max(0, next))
-        })
+        selectTo(current => (key.pageUp ? current - jump : current + jump))
         return
       }
       if (key.backspace || key.delete) {

@@ -2,13 +2,18 @@
  * Frame-chain parser unit tests — the one piece with real technical risk.
  * Covered: multi-frame chains, torn tail frames, magic false positives,
  * reserved-block rejection, RLE blocks, all frame-header field shapes, the
- * decode cap, and plain-JSONL fallback parity.
+ * decode ceilings (absolute and per-frame expansion), and plain-JSONL
+ * fallback parity.
  */
 import { describe, expect, it } from 'vitest'
+import { randomBytes } from 'node:crypto'
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import {
+  FRAME_DECODE_FLOOR_BYTES,
+  FRAME_EXPANSION_RATIO_LIMIT,
   MAX_DECODED_FRAME_BYTES,
   decodeFrame,
+  decodedFrameCeiling,
   frameEnd,
   sniffEncoding,
   walkFrames,
@@ -143,11 +148,43 @@ describe('decodeFrame', () => {
     expect(decodeFrame(frameBuf, { start: 0, end: frameBuf.length })).toEqual([{ ok: 1 }])
   })
 
-  it('enforces the 64 MB decoded-frame ceiling', () => {
-    expect(MAX_DECODED_FRAME_BYTES).toBe(64 * 1024 * 1024)
-    // A highly compressible frame far above the cap: decode refuses it.
-    const big = zstdCompressSync(Buffer.alloc(70 * 1024 * 1024, 0x61))
+  it('enforces the absolute decoded-frame ceiling', () => {
+    expect(MAX_DECODED_FRAME_BYTES).toBe(16 * 1024 * 1024)
+    // Incompressible payload past the cap: the expansion gate is not what
+    // rejects this one (the frame barely expands), the absolute cap is.
+    const big = zstdCompressSync(randomBytes(MAX_DECODED_FRAME_BYTES + 1024 * 1024))
     expect(decodeFrame(big, { start: 0, end: big.length })).toBeUndefined()
+  })
+
+  it('gates a frame by its own expansion, with the floor keeping small frames legal', () => {
+    // R-106: the absolute ceiling alone left amplification unbounded — a
+    // 2 067-byte frame of newlines decoded 64 MB of empty lines (measured
+    // 1.1 s / +514 MB RSS / 0 log lines). The frame's OWN ratio refuses it.
+    const bomb = zstdCompressSync(Buffer.alloc(4 * 1024 * 1024, 0x0a))
+    expect(decodedFrameCeiling(bomb.length)).toBeLessThan(4 * 1024 * 1024)
+    expect(decodeFrame(bomb, { start: 0, end: bomb.length })).toBeUndefined()
+
+    // The floor keeps a small frame unconstrained however hard it expands:
+    // this padded body is ~200x its compressed size and still decodes.
+    const padded = zstdCompressSync(Buffer.from(JSON.stringify({ text: 'a'.repeat(32 * 1024) }), 'utf8'))
+    expect(padded.length * FRAME_EXPANSION_RATIO_LIMIT).toBeLessThan(FRAME_DECODE_FLOOR_BYTES)
+    expect(decodeFrame(padded, { start: 0, end: padded.length })).toEqual([{ text: 'a'.repeat(32 * 1024) }])
+
+    // A ratio the live store reaches (40.3x observed) is never the reason a
+    // frame is dropped: the gate sits above it.
+    expect(decodedFrameCeiling(4096)).toBeGreaterThan(4096 * 40.3)
+  })
+
+  it('keeps the line semantics of split on a frame whose lines straddle the end', () => {
+    // indexOf traversal must be indistinguishable from the split it replaces:
+    // no trailing empty line, blank lines skipped, CR-free JSONL only.
+    const text = '{"a":1}\n\n{"b":2}\n'
+    const frameBuf = zstdCompressSync(Buffer.from(text, 'utf8'))
+    expect(decodeFrame(frameBuf, { start: 0, end: frameBuf.length })).toEqual([{ a: 1 }, { b: 2 }])
+    // An unterminated final line is parsed too (the frame is a complete write
+    // unit; only the plain-log path treats a torn tail as uncommitted).
+    const unterminated = zstdCompressSync(Buffer.from('{"a":1}\n{"b":2}', 'utf8'))
+    expect(decodeFrame(unterminated, { start: 0, end: unterminated.length })).toEqual([{ a: 1 }, { b: 2 }])
   })
 })
 

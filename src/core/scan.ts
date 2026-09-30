@@ -14,14 +14,20 @@
  *   scan; an unreadable log degrades to a headerless entry rather than
  *   aborting the sweep.
  * - BOUNDED: one log in memory at a time; every frame decode budget-checked
- *   (`MAX_DECODED_FRAME_BYTES`); the event loop is yielded between files
+ *   (an absolute size cap plus a per-frame expansion gate, see frames.ts);
+ *   the event loop is yielded between files
  *   (and inside very large ones) so the UI stays live during a cold first
  *   sweep; an AbortSignal stops the sweep between frames.
  *
- * Cache semantics mirror the host's session index: the token is
- * `bytes:mtimeMs`, which for an append-only log is an honest change token —
- * append growth changes both, and a same-size touch (rename) maps to a new
- * path-level identity the next sweep re-derives anyway.
+ * Cache semantics mirror the host's session index and harden its token: the
+ * change token is `bytes:mtimeMs:ctimeMs`. `bytes:mtimeMs` alone is not an
+ * honest token — a same-size in-place rewrite restores the mtime trivially
+ * (`cp -p`, `rsync -a`, `tar -x`, or a coarse-grained mtime filesystem), and
+ * the cache-hit path never reads the file, so it would serve the retired
+ * text forever. ctime cannot be set by the writer, so it moves on exactly
+ * those rewrites; the cost is zero reads (the sweep already stats every
+ * candidate). The resume path below never depended on the token: it proves
+ * the prefix it folds into with a digest of the actual bytes.
  *
  * v0.2 offset watermark: each cache entry records `decodedTo`, the byte
  * offset just past the last complete frame (or newline-terminated plain
@@ -100,16 +106,22 @@ export interface ScanProgress {
   readonly resumed: number
 }
 
-/** Physical facts of one log file, read once per sweep. */
+/** Physical facts of one log file, read once per sweep. `ctimeMs` is part of
+ *  the change token, not decoration: it is the only stamp a writer cannot
+ *  forge, so it is what catches an equal-length in-place rewrite whose mtime
+ *  was restored. */
 interface LogFacts {
   readonly path: string
   readonly bytes: number
   readonly mtimeMs: number
+  readonly ctimeMs: number
 }
 
 interface CacheEntry {
   readonly bytes: number
   readonly mtimeMs: number
+  /** Inode change time; see {@link LogFacts}. */
+  readonly ctimeMs: number
   /** Signature of the extraction options the content was built with — a
    *  switch flip (indexTools/indexThinking/char cap) must invalidate. */
   readonly optionsKey: string
@@ -169,9 +181,10 @@ function isSafeSessionId(sessionId: string): boolean {
  * generation it addresses plus its physical encoding. `session.jsonl` is
  * generation 0 (the original suffix-only name); every later generation
  * carries a lowercase numeric `.vN` component before the suffix — the
- * backend's own `sessionFormatLogFilename` contract (`session.v3.jsonl`,
- * `.v3.jsonl.zstd`). Noncanonical spellings (`.v0`, `session.v03.jsonl`,
- * uppercase, `.tmp` temporaries) are not logs and never enumerate.
+ * backend's own `sessionFormatLogFilename` contract (`session.v4.jsonl`,
+ * `.v4.jsonl.zstd`; v4 is the generation the 0.12.0 host line writes).
+ * Noncanonical spellings (`.v0`, `session.v03.jsonl`, uppercase, `.tmp`
+ * temporaries) are not logs and never enumerate.
  */
 const CANONICAL_LOG_NAME = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/
 
@@ -222,7 +235,7 @@ function statFile(path: string): LogFacts | undefined {
   try {
     const stats = statSync(path)
     if (!stats.isFile()) return undefined
-    return { path, bytes: stats.size, mtimeMs: stats.mtimeMs }
+    return { path, bytes: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs }
   } catch {
     return undefined
   }
@@ -489,7 +502,9 @@ export class SessionScanner {
   private cached(facts: LogFacts, optionsKey: string): ScannedSession | undefined {
     const entry = this.cache.get(facts.path)
     if (entry === undefined) return undefined
-    if (entry.bytes !== facts.bytes || entry.mtimeMs !== facts.mtimeMs) return undefined
+    if (entry.bytes !== facts.bytes || entry.mtimeMs !== facts.mtimeMs || entry.ctimeMs !== facts.ctimeMs) {
+      return undefined
+    }
     if (entry.optionsKey !== optionsKey) return undefined
     return entry.session
   }
@@ -669,6 +684,7 @@ export class SessionScanner {
           this.cache.set(facts.path, {
             bytes: decoded.bytes,
             mtimeMs: facts.mtimeMs,
+            ctimeMs: facts.ctimeMs,
             optionsKey,
             decodedTo: decoded.decodedTo,
             prefixDigest: decoded.prefixDigest,
@@ -696,8 +712,8 @@ export class SessionScanner {
     // the cache must not outlive the sessions it mirrors. Entries for logs
     // still enumerated are kept even when this sweep aborted before
     // reaching them or their read failed transiently: an entry is only ever
-    // served after a live stat re-verified its bytes:mtimeMs:optionsKey
-    // token, so an unreached entry is warm cache, not stale data, and an
+    // served after a live stat re-verified its bytes:mtimeMs:ctimeMs token,
+    // so an unreached entry is warm cache, not stale data, and an
     // aborted sweep must not discard the previous sweep's work.
     const enumeratedPaths = new Set<string>()
     for (const facts of enumerated.values()) enumeratedPaths.add(facts.path)

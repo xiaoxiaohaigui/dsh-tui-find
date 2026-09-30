@@ -49,6 +49,7 @@
 import { homedir } from 'node:os'
 import type { IndexedMessage } from './events.js'
 import { PINYIN_READINGS } from './pinyin-data.js'
+import { regexGuardVerdict } from './regex-guard.js'
 import type { ScannedSession } from './scan.js'
 
 /** A message (or the session title) that matched, with highlight ranges. */
@@ -140,17 +141,48 @@ export interface SearchOptions {
 }
 
 /** Synchronous regex matching policy: reject patterns whose worst-case
- *  backtracking is easy to identify before native RegExp can block the UI. */
+ *  backtracking is easy to identify before native RegExp can block the UI.
+ *
+ *  The textual list below is the original four-shape filter, kept as a cheap
+ *  first pass and as defence in depth; the structural screen
+ *  ({@link regexGuardVerdict}, REVIEW R-099) is what actually bounds the
+ *  backtracking families — it rejects the "spread repetition" patterns the
+ *  list never saw (`.*.*.*z`, `a*a*a*a*a*a*a*a*b`, `.*a.*b`), which freeze the
+ *  host TUI on a few hundred characters. Matching runs synchronously inside
+ *  the scene's render memo, so refusing to compile is the only lever there is
+ *  (a `RegExp` cannot be interrupted, timed out or cancelled). */
 export const MAX_REGEX_PATTERN_LENGTH = 512
 const UNSAFE_REGEX_PATTERNS = [
   /\\\d/u, // backreferences
+  /\\k</u, // named backreferences
   /\([^)]*[+*][^)]*\)[+*?]/u, // quantified groups containing quantifiers
   /\([^)]*\|[^)]*\)[+*?]/u, // quantified alternation groups
   /\)[{]/u, // any group quantified with a {n,m} brace (e.g. the (a+){2,} blowup)
 ]
 
 export function isRegexAllowed(query: string): boolean {
-  return query.length <= MAX_REGEX_PATTERN_LENGTH && !UNSAFE_REGEX_PATTERNS.some(pattern => pattern.test(query))
+  return (
+    query.length <= MAX_REGEX_PATTERN_LENGTH &&
+    !UNSAFE_REGEX_PATTERNS.some(pattern => pattern.test(query)) &&
+    regexGuardVerdict(query) === 'ok'
+  )
+}
+
+/** Why a regex query cannot be used: `unsafe` is a pattern the plugin refuses
+ *  to run before native RegExp can freeze the UI ({@link isRegexAllowed}),
+ *  `syntax` is a pattern the engine itself rejects. The scene names the two
+ *  differently: calling a valid-but-refused pattern "invalid" would be a lie. */
+export type RegexRejection = 'unsafe' | 'syntax'
+
+/** The rejection reason for one pattern, or undefined when it compiles. */
+export function regexRejection(query: string, caseSensitive: boolean): RegexRejection | undefined {
+  if (!isRegexAllowed(query)) return 'unsafe'
+  try {
+    new RegExp(query, caseSensitive ? 'g' : 'gi')
+    return undefined
+  } catch {
+    return 'syntax'
+  }
 }
 
 /**
@@ -532,12 +564,11 @@ export interface PinyinFolds {
    *  identity map through (see {@link FoldedText.cpStart}). */
   readonly cpStart: Uint32Array | undefined
   /**
-   * How many characters of the document the pinyin table covers. The initials
-   * chains spell exactly ONE letter per reading (and one per character for the
-   * first-only chain), so a needle longer than this count cannot occur in
-   * either of them — the guard that lets a long initials query skip both
-   * `indexOf` scans without looking at the text at all. Counted during the
-   * build, where the table lookup already happened.
+   * How many characters of the document the pinyin table covers — the count
+   * the build already had in hand. Informational (a shape a consumer may
+   * report); the cursor guard compares against each initials chain's REAL
+   * length instead, because a polyphone's readings contribute several letters
+   * to the all-readings chain (see `pushPinyinCursors`, REVIEW R-100).
    */
   readonly tableChars: number
 }
@@ -922,13 +953,20 @@ function pushPinyinCursors(out: RangeCursor[], folds: PinyinFolds, needle: strin
     out.push(new FoldCursor(folds.firstReading, needle, cpStart, folds.firstReading.segmentStarts))
   }
   // An initials chain spells one letter per reading (and one per character for
-  // the first-only chain), so a needle longer than the table's character count
-  // cannot occur in it: skip both `indexOf` scans outright. The reading chains
-  // are exempt — one character's reading can be several letters, so their
-  // folds are longer than the count.
-  if (needle.length > folds.tableChars) return
+  // the first-only chain), so a needle longer than a chain cannot occur in it:
+  // skip that chain's `indexOf` outright. The comparison is against the
+  // chain's REAL length, never the table-character count: a polyphone
+  // contributes several letters to the all-readings chain (`重` → `zc`), so a
+  // count of characters would reject needles that DO occur — `zc` / `zcq` were
+  // silently dropped for exactly that reason (REVIEW R-100). The reading
+  // chains are exempt either way: one character's reading can be several
+  // letters, so their folds are longer than the count.
+  if (needle.length > folds.allInitials.folded.length) return
   out.push(new FoldCursor(folds.allInitials, needle, cpStart, undefined))
-  if (folds.firstInitials !== folds.allInitials) {
+  if (
+    folds.firstInitials !== folds.allInitials &&
+    needle.length <= folds.firstInitials.folded.length
+  ) {
     out.push(new FoldCursor(folds.firstInitials, needle, cpStart, undefined))
   }
 }
@@ -1642,20 +1680,27 @@ export interface PrewarmOptions {
   readonly caseSensitive?: boolean
   /** Stop after this many documents (title + messages). */
   readonly maxMessages?: number
-  /** Stop after this much wall clock — checked at a yield boundary, so the
-   *  pass can overrun it by one chunk (see PREWARM_YIELD_EVERY). */
+  /** Stop after this many wall clock — checked at a yield boundary, so the
+   *  pass can overrun it by one chunk (see PREWARM_YIELD_CHARS). */
   readonly maxMs?: number
   /** Cancellation — checked at every yield. */
   readonly signal?: AbortSignal
   /**
-   * How many documents to fold between event-loop yields. The default keeps
-   * one synchronous chunk near `PREWARM_YIELD_EVERY` × the per-document cost:
-   * building the pinyin chains measured 85-100 ns per character (480k chars of
-   * 50/50 ASCII/CJK and of all-CJK text), so a chunk of 32 max-sized messages
-   * (4000 chars each) spends ~10-13 ms — short enough not to hold a frame,
-   * which is why the pass yields at all.
+   * How many documents to fold between event-loop yields — an upper bound
+   * that matters only for tiny documents; the real pacing is
+   * {@link yieldEveryChars}, because one legal max-sized document
+   * (`maxMessageChars`, up to 65536) already costs ~6 ms.
    */
   readonly yieldEvery?: number
+  /**
+   * How many CHARACTERS to fold between yields. The chunk's cost is linear in
+   * characters (85-100 ns each for the pinyin chains), so this is the knob
+   * that actually bounds how long one synchronous chunk can hold the frame:
+   * the default (~128k characters) is ~11-13 ms. Counting DOCUMENTS instead —
+   * the old behavior — let a legal `maxMessageChars: 65536` configuration fold
+   * one 340 ms chunk (REVIEW R-108).
+   */
+  readonly yieldEveryChars?: number
   /** The yield itself, defaulting to `setImmediate` (the scan path's own
    *  discipline). Injectable so a test can run the pass without timers. */
   readonly yield?: () => Promise<void>
@@ -1663,8 +1708,15 @@ export interface PrewarmOptions {
   readonly onProgress?: (progress: { resolved: number; total: number; warmed: number }) => void
 }
 
-/** Documents folded between yields when the caller does not say. */
+/** Documents folded between yields when the caller does not say — the
+ *  coarse floor of the pacing, see {@link PREWARM_YIELD_CHARS}. */
 export const PREWARM_YIELD_EVERY = 32
+
+/** Characters folded between yields when the caller does not say: 32 × the
+ *  default `maxMessageChars` (4000), i.e. the chunk the old document-count
+ *  rule produced for ordinary messages (~10-13 ms at 85-100 ns/character) —
+ *  now enforced no matter how large a single document is. */
+export const PREWARM_YIELD_CHARS = 128_000
 
 /** Default document cap — a budget, not a guarantee: the warm-up is an
  *  optimization, and a library larger than this simply warms up partway. */
@@ -1687,7 +1739,9 @@ const defaultYield = (): Promise<void> => new Promise(resolve => setImmediate(re
  * frame the user is typing into.
  *
  * The pass is a budget, never a dependency: it yields to the event loop every
- * `yieldEvery` documents so it can never block a render tick, stops on the
+ * `yieldEveryChars` characters (and never folds more than `yieldEvery`
+ * documents between yields) so it can never block a render tick for longer
+ * than one bounded chunk, stops on the
  * abort signal, on `maxMessages` or on `maxMs`, and the caches it fills are
  * the very ones the search reads (per-object WeakMaps), so searchSessions
  * needs no change at all — whatever was warmed is simply not rebuilt. A
@@ -1717,6 +1771,7 @@ export async function prewarmFolds(
   const maxMessages = options.maxMessages ?? Number.POSITIVE_INFINITY
   const maxMs = options.maxMs ?? Number.POSITIVE_INFINITY
   const yieldEvery = Math.max(1, options.yieldEvery ?? PREWARM_YIELD_EVERY)
+  const yieldEveryChars = Math.max(1, options.yieldEveryChars ?? PREWARM_YIELD_CHARS)
   const yieldTo = options.yield ?? defaultYield
   const signal = options.signal
 
@@ -1731,6 +1786,7 @@ export async function prewarmFolds(
   let warmed = 0
   let timedOut = false
   let sinceYield = 0
+  let sinceYieldChars = 0
 
   /** Fold one document on its own cache key; false once the budget is spent
    *  or the pass was cancelled, which unwinds both loops. */
@@ -1745,6 +1801,9 @@ export async function prewarmFolds(
     if (buildPinyin && hasTableChar(text)) pinyinFoldsOf(owner, text, caseSensitive, true)
     resolved += 1
     warmed += 1
+    // The chunk's cost follows the CHARACTERS folded, not the document count
+    // (see PrewarmOptions.yieldEveryChars), so this is what the pacing measures.
+    sinceYieldChars += text.length
     return true
   }
 
@@ -1756,8 +1815,9 @@ export async function prewarmFolds(
     for (const message of session.messages) {
       if (!warmOne(message, message.text)) break outer
       sinceYield += 1
-      if (sinceYield >= yieldEvery) {
+      if (sinceYield >= yieldEvery || sinceYieldChars >= yieldEveryChars) {
         sinceYield = 0
+        sinceYieldChars = 0
         options.onProgress?.({ resolved, total, warmed })
         await yieldTo()
         if (signal?.aborted) break outer

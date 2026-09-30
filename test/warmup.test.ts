@@ -14,7 +14,7 @@ import type { Context as Ctx } from '@deepseek-ai/cordis'
 import { resolveConfig, type Config } from '../src/config.js'
 import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/scan.js'
 import { setLangOverride } from '../src/i18n.js'
-import { REGISTER_RETRY_DELAY_MS, REGISTER_RETRY_MAX_ATTEMPTS } from '../src/seam.js'
+import { REGISTER_RETRY_DELAY_MS, SEAM_TOTAL_BUDGET_MS } from '../src/seam.js'
 import { foldIsCachedForTest, PREWARM_YIELD_EVERY } from '../src/core/search.js'
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
 import { stripAnsi } from './harness.js'
@@ -465,7 +465,9 @@ describe('setupWarmup seam', () => {
     const { ctx, warns } = stubCtx({ tuiStatus: status.runtime })
     const { scanner } = wireSetup(ctx)
 
-    await vi.advanceTimersByTimeAsync(REGISTER_RETRY_DELAY_MS * REGISTER_RETRY_MAX_ATTEMPTS)
+    // R-107: the retry budget is the seam's whole two-phase window (5 s fast
+    // plus a slow cadence), not the old 20 × 25 ms.
+    await vi.advanceTimersByTimeAsync(SEAM_TOTAL_BUDGET_MS)
     expect(warns).toEqual([expect.stringContaining('failed after')])
 
     // The refused view never blocks the sweep itself.

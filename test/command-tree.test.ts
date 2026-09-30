@@ -19,7 +19,7 @@ import TuiCommandTreeRuntime from '@deepseek-harness-tui/dsh-tui/command-trees'
 import plugin from '../dist/main.js'
 import { registerCommandTree } from '../src/command-tree.js'
 import { dict } from '../src/i18n.js'
-import { REGISTER_RETRY_DELAY_MS, REGISTER_RETRY_MAX_ATTEMPTS } from '../src/seam.js'
+import { REGISTER_RETRY_DELAY_MS, SEAM_TOTAL_BUDGET_MS } from '../src/seam.js'
 
 // The end-to-end test mounts the real plugin row; keep the watermark
 // journal off so no test ever writes against the real ~/.dsh-tui tree.
@@ -166,7 +166,9 @@ describe('registerCommandTree (stub runtime)', () => {
     const { ctx, warns } = stubCtx(runtime)
 
     registerCommandTree(ctx, { root: 'find', descriptions: dict['cmd-desc-find'] })
-    vi.advanceTimersByTime(REGISTER_RETRY_DELAY_MS * REGISTER_RETRY_MAX_ATTEMPTS)
+    // R-107: the give-up is the end of the seam's whole two-phase budget
+    // (5 s fast + a slow cadence), not of the old 20 × 25 ms window.
+    vi.advanceTimersByTime(SEAM_TOTAL_BUDGET_MS)
     expect(stub.registered).toHaveLength(0)
     expect(warns).toHaveLength(1)
     expect(warns[0]).toContain('failed after')

@@ -104,6 +104,25 @@ describe('searchSessions pinyin matching', () => {
     expect(flat(searchSessions(chongqing, 'zq', P))).toEqual([['重庆', '[[0,2]]']])
   })
 
+  it('matches polyphone initials longer than the character count (REVIEW R-100)', () => {
+    // The skip guard used to compare the needle against the TABLE-CHARACTER
+    // count, but the all-readings initials chain spells one letter per
+    // READING: 重 contributes two (`z` from zhong, `c` from chong), so `zc`
+    // (two letters, one character) and `zcq` (three letters, two characters)
+    // were dropped before any `indexOf` ran — a silent miss.
+    expect(flat(searchSessions([make('重')], 'z', P))).toEqual([['重', '[[0,1]]']])
+    expect(flat(searchSessions([make('重')], 'zc', P))).toEqual([['重', '[[0,1]]']])
+    expect(flat(searchSessions([make('重')], 'zhong', P))).toEqual([['重', '[[0,1]]']])
+    expect(flat(searchSessions([make('重庆')], 'zq', P))).toEqual([['重庆', '[[0,2]]']])
+    expect(flat(searchSessions([make('重庆')], 'zcq', P))).toEqual([['重庆', '[[0,2]]']])
+    // The guard still bounds the scan: a needle longer than the chain stays
+    // empty and never yields a wrong hit.
+    expect(flat(searchSessions([make('重庆')], 'zcqz', P))).toEqual([])
+    // The substring baseline is untouched: without pinyin the letters have
+    // nothing to match, and the toggle-off path is unchanged.
+    expect(flat(searchSessions([make('重')], 'zc', { scope: 'all' }))).toEqual([])
+  })
+
   it('matches initials longer than the text, and stops paying for them (phase 3a)', () => {
     // The initials chains spell one letter per table character, so a needle
     // longer than that count cannot occur there — the search skips both

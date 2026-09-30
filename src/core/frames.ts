@@ -13,8 +13,9 @@
  * Why not Node's own zstd APIs: `zstdDecompressSync` and
  * `createZstdDecompress` stop at the end of the FIRST frame. They decode a
  * frame; they do not traverse a chain. Each frame is therefore handed to
- * `zstdDecompressSync` individually (maxOutputLength-capped) and the
- * per-frame outputs are concatenated by the caller.
+ * `zstdDecompressSync` individually (through {@link decodedFrameCeiling},
+ * which bounds both the allocation and the expansion) and the per-frame
+ * outputs are concatenated by the caller.
  *
  * Plain `session.jsonl` logs (a `compression:"none"` backend) are read by
  * the same pipeline with the frame layer skipped.
@@ -32,7 +33,50 @@ export const ZSTD_SKIPPABLE_MAGIC_MIN = 0x184d2a50
 export const ZSTD_SKIPPABLE_MAGIC_MAX = 0x184d2a5f
 
 /** A frame must not expand past this ceiling when decoded. */
-export const MAX_DECODED_FRAME_BYTES = 64 * 1024 * 1024
+export const MAX_DECODED_FRAME_BYTES = 16 * 1024 * 1024
+
+/**
+ * Ceiling on one frame's decode expansion, decoded ÷ compressed.
+ *
+ * The absolute ceiling above bounds how MUCH a frame yields, not how cheaply
+ * it yields it: a frame is tiny on disk and arbitrarily large once decoded,
+ * so a 2 KB frame of newlines used to decode 64 MB of empty lines inside the
+ * old ceiling — 1.1 s and +514 MB RSS for zero log lines, from a file that is
+ * not even hostile (see the floor below and `decodedFrameCeiling`).
+ *
+ * Sized from the live store (541 logs / 95 298 frames, 2026-09-30): the
+ * largest observed expansion is 40.3×, p99 is 4.9×.
+ */
+export const FRAME_EXPANSION_RATIO_LIMIT = 64
+
+/**
+ * Floor under the ratio gate: a frame this small is cheap to decode whatever
+ * its ratio, so small frames stay unconstrained by
+ * {@link FRAME_EXPANSION_RATIO_LIMIT} — which also keeps the gate away from
+ * legitimately repetitive content (a padded message body compresses to a few
+ * hundred bytes and expands by hundreds).
+ */
+export const FRAME_DECODE_FLOOR_BYTES = 1024 * 1024
+
+/**
+ * The `maxOutputLength` one frame of `compressedBytes` is decoded under: the
+ * ratio gate bounds amplification, the floor keeps small frames legal, and
+ * {@link MAX_DECODED_FRAME_BYTES} bounds the single allocation. A frame above
+ * its ceiling throws inside `zstdDecompressSync` and is dropped like any
+ * other undecodable frame — the scan loses that frame, never the sweep.
+ *
+ * Evidence for the numbers: the live store's largest decoded frame is
+ * 1.90 MiB from 0.35 MiB compressed (the absolute cap sits 8× above the
+ * largest real output; the ratio gate only starts to bind past ~16 KiB
+ * compressed, which p999 of real frames never reach).
+ */
+export function decodedFrameCeiling(compressedBytes: number): number {
+  const compressed = Number.isFinite(compressedBytes) ? Math.max(0, Math.floor(compressedBytes)) : 0
+  return Math.min(
+    MAX_DECODED_FRAME_BYTES,
+    Math.max(FRAME_DECODE_FLOOR_BYTES, compressed * FRAME_EXPANSION_RATIO_LIMIT),
+  )
+}
 
 /** Byte range of one structurally complete frame; `end` is exclusive. */
 export interface FrameRange {
@@ -172,22 +216,32 @@ export function decodeFrame(buffer: Buffer, frame: FrameRange): LogLine[] | unde
   let text: string
   try {
     text = zstdDecompressSync(buffer.subarray(frame.start, frame.end), {
-      maxOutputLength: MAX_DECODED_FRAME_BYTES,
+      maxOutputLength: decodedFrameCeiling(frame.end - frame.start),
     }).toString('utf8')
   } catch {
     return undefined
   }
   const lines: LogLine[] = []
-  for (const line of text.split('\n')) {
-    if (line.length === 0) continue
-    try {
-      const parsed: unknown = JSON.parse(line)
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        lines.push(parsed as LogLine)
+  // Line traversal by `indexOf`, never `split('\n')`: the split materializes
+  // one array slot per newline, so a frame whose decoded text is a run of
+  // newlines costs ~8 bytes of array per input byte on top of the text
+  // itself. The scan below allocates only the lines it actually pushes.
+  let start = 0
+  for (;;) {
+    const newline = text.indexOf('\n', start)
+    const end = newline === -1 ? text.length : newline
+    if (end > start) {
+      try {
+        const parsed: unknown = JSON.parse(text.slice(start, end))
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          lines.push(parsed as LogLine)
+        }
+      } catch {
+        return undefined
       }
-    } catch {
-      return undefined
     }
+    if (newline === -1) break
+    start = newline + 1
   }
   return lines
 }

@@ -90,6 +90,12 @@ export const dict = {
   'title-only-on': { zh: '标题限定：开（仅搜索会话标题）', en: 'Title-only search: on (session titles only)' },
   'title-only-off': { zh: '标题限定：关（标题与内容都搜索）', en: 'Title-only search: off (titles and content)' },
   'regex-invalid': { zh: ' 无效的正则表达式', en: ' Invalid regular expression' },
+  // R-099: a VALID pattern the plugin refuses to run because its worst-case
+  // backtracking would freeze the TUI — naming it "invalid" would be a lie.
+  'regex-unsafe': {
+    zh: ' 该正则的回溯成本过高，已拒绝执行（减少 * / + 等重复量词叠加）',
+    en: ' Pattern refused: backtracking could freeze the UI (avoid stacked * / + quantifiers)',
+  },
   'scanning': { zh: '扫描中 {{resolved}}/{{total}}…', en: 'Scanning {{resolved}}/{{total}}…' },
   'scanning-initial': { zh: '扫描中…', en: 'Scanning…' },
   'reading-sessions': { zh: '正在读取会话…', en: 'Reading sessions…' },
@@ -200,6 +206,13 @@ export const dict = {
   'toast-shortcut-keep': {
     zh: '快捷键 {{combo}} 被宿主拒绝，保持原绑定',
     en: 'Shortcut {{combo}} rejected by the host; keeping the previous binding',
+  },
+  // The seam helpers' give-up (seam.ts, R-107): the registration is terminal
+  // for the activation, and the logger line is invisible inside a TUI — the
+  // user only sees "it started fine, but /find never opens".
+  'toast-seam-unavailable': {
+    zh: 'dsh-tui-find: 一项 TUI 集成注册失败，本次会话内不可用（重载插件可重试）',
+    en: 'dsh-tui-find: a TUI integration failed to register — unavailable this session (reload the plugin to retry)',
   },
 
   // ── context menu (right-click, 0.10+ hosts only) ─────────────────────

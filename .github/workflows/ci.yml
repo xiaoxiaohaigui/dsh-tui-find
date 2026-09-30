@@ -1,5 +1,5 @@
 # CI gate: re-run every verification entry this repo has, on a clean checkout.
-# (The dual-host matrix is the one exception — see the `hosts` job: it runs on
+# (The host matrix is the one exception — see the `hosts` job: it runs on
 # pull requests and manual dispatch only, not on every push to main.)
 #
 # Dependencies install via `npm ci`, never `npm i`: the lockfile is frozen to
@@ -67,11 +67,12 @@ jobs:
       - name: Test
         run: npm test
 
-  # The dual-host compatibility matrix (0.9.3 + 0.10.x) is this repo's release
-  # gate; see docs/decisions/2026-09-12-dual-version-compat-strategy.md. It
-  # copies the installed tree, swaps in each published host tarball and runs
-  # build + test against it. Compatibility-affecting changes must be green on
-  # both legs before they ship.
+  # The three-leg host compatibility matrix (0.9.3 build baseline + 0.10.1
+  # seams generation + 0.12.0 live line) is this repo's release gate; see
+  # docs/decisions/2026-09-12-dual-version-compat-strategy.md. It copies the
+  # installed tree, swaps in each published host tarball and runs build + test
+  # against it. Compatibility-affecting changes must be green on every leg
+  # before they ship.
   # Pull requests and manual dispatch only: a push to main is nearly always the
   # merge of a PR that already ran this matrix, so repeating it there just pays
   # the cost twice. The flip side is real — a change pushed straight to main
@@ -88,7 +89,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --include=dev
-      - name: Dual-host matrix (0.9.3 + 0.10.1)
+      - name: Host matrix (0.9.3 + 0.10.1 + 0.12.0)
         run: npm run verify:hosts
 
   # The published tarball must never carry workspace docs, scripts or tests.

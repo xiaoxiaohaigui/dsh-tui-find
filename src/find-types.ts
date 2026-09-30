@@ -219,11 +219,32 @@ export function roleMarkColor(ui: Ui, role: 'user' | 'assistant' | 'tool'): Text
 }
 
 /**
+ * The largest time value a `Date` can represent (±8.64e15 ms, the ES spec's
+ * range). A finite timestamp can still sit outside it, and then
+ * `new Date(at).toISOString()` THROWS a RangeError while `getMonth()` silently
+ * returns NaN — so finiteness alone is not a usable test (REVIEW R-101).
+ */
+const MAX_TIME_VALUE = 8.64e15
+
+/** Whether `at` is an epoch-ms value `Date` can actually represent. */
+export function isRepresentableTime(at: number | undefined): at is number {
+  return at !== undefined && Number.isFinite(at) && Math.abs(at) <= MAX_TIME_VALUE
+}
+
+/** The copy body's timestamp suffix (` [ISO]`), or '' when the value cannot be
+ *  represented — a pathological `time` field then costs the timestamp, never
+ *  the whole key handler (REVIEW R-101). */
+export function isoWhen(at: number | undefined): string {
+  return isRepresentableTime(at) ? ` ${new Date(at).toISOString()}` : ''
+}
+
+/**
  * Elapsed time as a person would say it, mirroring the host browser's
  * `formatWhen` thresholds and wording (relative up to a week, then a date).
+ * An unrepresentable value renders as '' rather than `NaN/NaN`.
  */
 export function formatWhen(at: number | undefined): string {
-  if (at === undefined || !Number.isFinite(at)) return ''
+  if (!isRepresentableTime(at)) return ''
   const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
   if (seconds < 45) return t('when-now')
   const minutes = Math.round(seconds / 60)
