@@ -32,11 +32,29 @@
  * the branch below logs its failure instead of swallowing it.
  * Background: docs/decisions/2026-09-24-settings-generation-adaptation.md.
  *
+ * ## The card is two-level
+ *
+ * The section page shows the fields that carry no `group` plus one navigation
+ * row per declared group, in declaration order; a group row opens its fields
+ * on a subpage (breadcrumb `设置 › 卡片 › 组名`, Esc back). Grouping is display
+ * metadata and nothing else — the ≤0.1.6 namespace schema, the ≥0.1.7 live
+ * projection and every write path are untouched by it — but it IS part of the
+ * host's register contract: a field naming an undeclared group makes
+ * `register()` throw (`dsh-adapter/settings-sections`), which burns
+ * seam.ts's retry budget and costs the whole card for the session. Hence the
+ * {@link CardField} union — a typo fails the build — plus test/settings.test.ts
+ * pinning both directions (every referenced group declared, every declared
+ * group populated, the root page still holding the everyday knobs).
+ *
  * @module dsh-tui-find/settings
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { TuiSettingsSection } from '@deepseek-harness-tui/dsh-tui/settings-sections'
+import type {
+  TuiSettingsField,
+  TuiSettingsGroup,
+  TuiSettingsSection,
+} from '@deepseek-harness-tui/dsh-tui/settings-sections'
 import type { ResolvedConfig } from './config.js'
 import { DEFAULT_SHORTCUT, hasLiveConfigFields, resolveConfig } from './config.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
@@ -112,12 +130,52 @@ export interface SettingsWiring {
  *  switch) without re-registering anything. */
 const zh = (text: string): { zh: string } => ({ zh: text })
 
-/** The card, mirroring the row config keys one-to-one. */
+/**
+ * The card's subpages, in display order. The root page keeps what a user
+ * retunes while reading a result (scope, time window, layout, the global
+ * entry), and each group here is a cohesive domain: how a query matches, what
+ * enters the index, and the one knob that overrides the session root.
+ *
+ * `as const` is load-bearing: it makes the ids a literal union, so a field
+ * referring to a group that is not declared here fails `tsc` instead of
+ * throwing inside the host's `register()` (see the module doc).
+ */
+const CARD_GROUPS = [
+  {
+    id: 'matching',
+    title: 'Matching',
+    descriptions: zh('匹配方式'),
+  },
+  {
+    id: 'indexing',
+    title: 'Indexing',
+    descriptions: zh('索引'),
+  },
+  {
+    id: 'advanced',
+    title: 'Advanced',
+    descriptions: zh('高级'),
+  },
+] as const satisfies readonly TuiSettingsGroup[]
+
+/** A declared group id — the only values `CardField.group` accepts. */
+type CardGroupId = (typeof CARD_GROUPS)[number]['id']
+
+/**
+ * A card field whose `group`, when set, must name a declared group: the host
+ * validates that at register time by throwing, so the miss is moved here to
+ * the compiler (`fields` below is checked with `satisfies`).
+ */
+type CardField = Omit<TuiSettingsField, 'group'> & { group?: CardGroupId }
+
+/** The card, mirroring the row config keys one-to-one and split into the root
+ *  page's everyday knobs plus {@link CARD_GROUPS}' subpages. */
 function section(ns: string): TuiSettingsSection {
   return {
     ns,
     title: 'dsh-tui-find (session search)',
     descriptions: zh('dsh-tui-find（会话搜索）'),
+    groups: CARD_GROUPS,
     fields: [
       {
         path: ['defaultScope'],
@@ -160,6 +218,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['caseSensitive'],
+        group: 'matching',
         label: 'Case-sensitive',
         descriptions: zh('大小写敏感'),
         hint: 'Case-sensitive substring matching (default: insensitive)',
@@ -168,6 +227,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['regex'],
+        group: 'matching',
         label: 'Regex matching',
         descriptions: zh('正则匹配'),
         hint: 'Treat the query as a JavaScript regular expression (Alt+R toggles it live; default off)',
@@ -176,6 +236,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['pinyin'],
+        group: 'matching',
         label: 'Pinyin matching',
         descriptions: zh('拼音搜索'),
         hint: 'Letter-only terms also match Chinese via pinyin (full readings + initials; default on)',
@@ -184,6 +245,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['titleOnly'],
+        group: 'matching',
         label: 'Title-only search',
         descriptions: zh('仅搜索标题'),
         hint: 'Match session titles only — messages are not searched (Alt+N toggles it live; default off)',
@@ -192,6 +254,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['showSubagentSessions'],
+        group: 'indexing',
         label: 'Show sub-agent sessions',
         descriptions: zh('显示子 agent 会话'),
         hint: 'Include delegated sub-agent runs in the list and search results (the /resume browser folds them away; default off)',
@@ -202,6 +265,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['indexTools'],
+        group: 'indexing',
         label: 'Index tool calls',
         descriptions: zh('索引工具调用'),
         hint: 'Index tool-call summaries ([name] arguments) for search (default off)',
@@ -210,6 +274,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['indexThinking'],
+        group: 'indexing',
         label: 'Index thinking',
         descriptions: zh('索引 thinking 文本'),
         hint: 'Index assistant thinking text (noisy and private; default off)',
@@ -218,6 +283,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['sessionRoot'],
+        group: 'advanced',
         label: 'Session root override',
         descriptions: zh('会话目录覆盖'),
         hint: 'Manual session directory override (env/defaults apply when blank)',
@@ -227,6 +293,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['maxMessageChars'],
+        group: 'indexing',
         label: 'Per-message index budget',
         descriptions: zh('单条消息索引字符上限'),
         hint: 'Per-message character budget for the index (200–65536, default 4000)',
@@ -236,6 +303,7 @@ function section(ns: string): TuiSettingsSection {
       },
       {
         path: ['warmup'],
+        group: 'indexing',
         label: 'Background warm-up index',
         descriptions: zh('后台预热索引'),
         hint: 'Index sessions in the background after startup so /find opens instantly (default on)',
@@ -251,7 +319,7 @@ function section(ns: string): TuiSettingsSection {
         kind: 'text',
         placeholder: DEFAULT_SHORTCUT,
       },
-    ],
+    ] satisfies readonly CardField[],
   }
 }
 

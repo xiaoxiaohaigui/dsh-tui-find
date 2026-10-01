@@ -150,6 +150,14 @@ describe('mount integration (headless harness)', () => {
           observed.push(`afterClose=${scenes!.active?.id ?? 'none'}`)
           const sections = ctx.get('tuiSettingsSections', false) as TuiSettingsSectionsHost
           observed.push(`sections=${sections.list().map(s => s.ns).join(',')}`)
+          // Read the subpages back out of the LIVE registry: the host's own
+          // register() validates group ids and rejects a field naming an
+          // undeclared one, so a card that lands here intact has had its
+          // two-level split accepted by the host itself — not just by the
+          // fake registry test/settings.test.ts drives (a rejection would cost
+          // the whole card; see settings.ts's module doc).
+          const card = sections.list().find(s => s.ns === 'dsh-tui-find')
+          observed.push(`groups=${card?.groups?.map(group => group.id).join(',') ?? 'none'}`)
         } catch (error) {
           observed.push(`error=${(error as Error).message}`)
         }
@@ -161,6 +169,7 @@ describe('mount integration (headless harness)', () => {
     expect(observed).toContain(`active=${SCENE_ID}`)
     expect(observed).toContain('afterClose=none')
     expect(observed.some(o => o.startsWith('sections=') && o.includes('dsh-tui-find'))).toBe(true)
+    expect(observed).toContain('groups=matching,indexing,advanced')
   })
 
   it('stays healthy when the mediated command registration degrades', async () => {

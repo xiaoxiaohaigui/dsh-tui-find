@@ -17,7 +17,18 @@ import {
   type SettingsWiring,
 } from '../src/settings.js'
 
-type Card = { ns: string; fields: Array<{ path: string[]; kind: string; options?: Array<{ value: string }> }> }
+type Card = {
+  ns: string
+  /** The declared subpages, in display order (the host validates these). */
+  groups?: Array<{ id: string; descriptions?: { zh?: string } }>
+  fields: Array<{
+    path: string[]
+    kind: string
+    /** The subpage this field lives on; undefined = the section's own page. */
+    group?: string
+    options?: Array<{ value: string }>
+  }>
+}
 
 type FakeOptions = {
   settings?: Record<string, unknown> | undefined
@@ -220,6 +231,35 @@ describe('settings namespace', () => {
     registerSettingsSection(ctx, wiringOver({ current: {} }))
     const paths = (seen.cards[0]?.fields ?? []).map(field => field.path.join('.'))
     expect([...paths].sort()).toEqual([...LIVE_CONFIG_KEYS].sort())
+  })
+
+  it('keeps the card two-level: everyday knobs on the page, the rest behind declared subpages', () => {
+    // The host renders a section's own page as its ungrouped fields followed
+    // by one navigation row per declared group, and a field naming a group
+    // that was never declared makes its `register()` THROW — which costs the
+    // whole card for the session, not just that field, because the registration
+    // then sits in seam.ts's retry budget until it runs out. The split is
+    // therefore pinned as a contract: a new config knob has to be placed on a
+    // page deliberately, and this is where that decision shows up in review.
+    const { ctx, seen } = fakeContext({ settings: undefined })
+    registerSettingsSection(ctx, wiringOver({ current: {} }))
+    const card = seen.cards[0]
+
+    expect(card?.groups?.map(group => group.id)).toEqual(['matching', 'indexing', 'advanced'])
+    // Every subpage title carries a zh translation, like the section's own.
+    expect(card?.groups?.every(group => (group.descriptions?.zh ?? '').length > 0)).toBe(true)
+
+    const pages: Record<string, string[]> = { '(root)': [] }
+    for (const group of card?.groups ?? []) pages[group.id] = []
+    // An undeclared group id would land here as an extra key — the failure the
+    // host turns into a thrown registration.
+    for (const field of card?.fields ?? []) (pages[field.group ?? '(root)'] ??= []).push(field.path.join('.'))
+    expect(pages).toEqual({
+      '(root)': ['defaultScope', 'defaultTime', 'layout', 'shortcut'],
+      matching: ['caseSensitive', 'regex', 'pinyin', 'titleOnly'],
+      indexing: ['showSubagentSessions', 'indexTools', 'indexThinking', 'maxMessageChars', 'warmup'],
+      advanced: ['sessionRoot'],
+    })
   })
 
   it('carries a layout select field mirroring the row config knob', () => {
