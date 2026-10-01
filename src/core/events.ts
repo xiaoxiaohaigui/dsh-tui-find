@@ -16,8 +16,8 @@
  * one enormous tool result cannot dominate the index. Envelopes with
  * `ignorable: true` are skipped (the read path's own skip signal), and the
  * header row (`type:'session'`, or a type-less first line in the legacy
- * shape) carries `cwd`/`createdAt` for the same-repo filter, which the log is
- * the authority for.
+ * shape) carries `cwd`/`createdAt` for the same-repo filter and `origin` for
+ * the sub-agent classification, which the log is the authority for.
  *
  * @module dsh-tui-find/core/events
  */
@@ -37,7 +37,17 @@ export interface IndexedMessage {
 export interface SessionContent {
   readonly title: string | undefined
   /** Header facts when the log's first (header) row carried them. */
-  readonly header: { readonly cwd: string | undefined; readonly createdAt: number | undefined }
+  readonly header: {
+    readonly cwd: string | undefined
+    readonly createdAt: number | undefined
+    /**
+     * The header's `origin`, when it records one — `'subagent'` marks a
+     * delegated child run. This is the host's own discriminator, and
+     * `origin` ALONE is it: a `/rewind` fork records `parentSession` exactly
+     * like a delegated run does (see scan.ts `isSubagentSession`).
+     */
+    readonly origin?: string | undefined
+  }
   readonly messages: readonly IndexedMessage[]
 }
 
@@ -186,12 +196,13 @@ function toolSummary(line: LogLine, limit: number): string | undefined {
  */
 export interface ExtractState {
   title: string | undefined
-  header: { cwd: string | undefined; createdAt: number | undefined }
+  /** The mutable build-time twin of {@link SessionContent.header}. */
+  header: { cwd: string | undefined; createdAt: number | undefined; origin?: string | undefined }
   messages: IndexedMessage[]
 }
 
 export function newExtractState(): ExtractState {
-  return { title: undefined, header: { cwd: undefined, createdAt: undefined }, messages: [] }
+  return { title: undefined, header: { cwd: undefined, createdAt: undefined, origin: undefined }, messages: [] }
 }
 
 /**
@@ -207,9 +218,9 @@ export function extractLine(state: ExtractState, line: LogLine, options: Extract
   const type = line['type']
 
   // The header row. The real harness writes it as `{type:'session', …}` with
-  // `cwd`/`createdAt` at the TOP LEVEL (no `seq`, no `data`); a type-less
-  // first row is accepted as the legacy shape. Either way the row carries no
-  // conversation text, and its `id` is not searchable.
+  // `cwd`/`createdAt`/`origin` at the TOP LEVEL (no `seq`, no `data`); a
+  // type-less first row is accepted as the legacy shape. Either way the row
+  // carries no conversation text, and its `id` is not searchable.
   if (type === 'session' || type === undefined) {
     const cwd = text(line['cwd'])
     if (cwd !== undefined && state.header.cwd === undefined) state.header.cwd = cwd
@@ -217,6 +228,11 @@ export function extractLine(state: ExtractState, line: LogLine, options: Extract
     if (createdAt !== undefined && state.header.createdAt === undefined) {
       state.header.createdAt = createdAt
     }
+    // The session's kind marker. Only `'subagent'` is ever written today (the
+    // backend's own header validator refuses any other value), and it is the
+    // whole classification: lineage alone would also match a `/rewind` fork.
+    const origin = text(line['origin'])
+    if (origin !== undefined && state.header.origin === undefined) state.header.origin = origin
     return
   }
 

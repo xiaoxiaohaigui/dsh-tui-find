@@ -131,9 +131,15 @@ export async function mount(
     /** Scene layout override — the split-layout tests pin both forms and
      *  the width fallback (default resolved layout is 'split'). */
     layout?: 'split' | 'classic'
+    /** Sub-agent posture override (default: the resolved default, off) — the
+     *  sweep-options test reads what the scene asked the scanner for. */
+    showSubagentSessions?: boolean
     /** Scanner override — the progressive-streaming tests gate the sweep. */
     scanner?: {
-      scan(options: { onSession?: (session: ScannedSession) => void }): Promise<readonly ScannedSession[]>
+      scan(options: {
+        onSession?: (session: ScannedSession) => void
+        includeSubagents?: boolean
+      }): Promise<readonly ScannedSession[]>
     }
     /** Scene-level notifier spy — the toast-channel tests assert dispatch. */
     notify?: (text: string, tone: 'info' | 'error') => void
@@ -202,6 +208,9 @@ export async function mount(
     config: resolveConfig({
       defaultScope: 'all',
       ...(options.layout === undefined ? {} : { layout: options.layout }),
+      ...(options.showSubagentSessions === undefined
+        ? {}
+        : { showSubagentSessions: options.showSubagentSessions }),
     }),
     scanner,
     initialQuery: () => options.query ?? 'needle',

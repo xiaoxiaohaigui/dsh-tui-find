@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, ut
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
-import { SessionScanner, compareSessionRecency, enumerateLogs } from '../src/core/scan.js'
+import { SessionScanner, compareSessionRecency, enumerateLogs, isSubagentSession } from '../src/core/scan.js'
 import {
   compileRegex,
   isRegexAllowed,
@@ -21,7 +21,7 @@ import {
   searchSessions,
   sessionCwdMatches,
 } from '../src/core/search.js'
-import type { ScannedSession } from '../src/core/scan.js'
+import type { ScanProgress, ScannedSession } from '../src/core/scan.js'
 
 const FIXTURE_ROOT = join(import.meta.dirname, 'fixtures', 'generated')
 
@@ -1311,5 +1311,167 @@ describe('onSession incremental delivery', () => {
     const tieSecond = session('y', 150, 50)
     const pool = [tieSecond, older, newer, tieFirst]
     expect([...pool].sort(compareSessionRecency).map(entry => entry.id)).toEqual(['a', 'x', 'y', 'b'])
+  })
+})
+
+describe('sub-agent session filtering', () => {
+  // A plain-log root holding all three shapes a real store contains — measured
+  // 2026-09-30 on a 547-log ~/.dsh/sessions: 18 headers carry
+  // `origin:'subagent'`, 37 more carry `parentSession` ALONE (a /rewind fork or
+  // a seeded branch), which is exactly why the filter cannot key on lineage.
+  const ROOT_ID = '40000000-0000-4000-8000-00000000000a'
+  const SUB_ID = '40000000-0000-4000-8000-00000000000b'
+  const FORK_ID = '40000000-0000-4000-8000-00000000000c'
+
+  const headerRow = (id: string, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      type: 'session',
+      version: 0,
+      id,
+      createdAt: 1_750_000_000_000,
+      cwd: 'D:/work/repo-auth',
+      delegationDepth: 0,
+      agentPreset: 'standard',
+      ...extra,
+    })
+
+  const promptRow = (text: string): string =>
+    JSON.stringify({
+      type: 'user/message',
+      seq: 1,
+      time: 1_750_000_001_000,
+      data: { content: [{ type: 'text', text }], source: { kind: 'user' } },
+    })
+
+  function makeRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-subagent-'))
+    const write = (id: string, lines: readonly string[]): void => {
+      const dir = join(root, 'ws', id)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'session.jsonl'), `${lines.join('\n')}\n`, 'utf8')
+    }
+    write(ROOT_ID, [headerRow(ROOT_ID), promptRow('root conversation')])
+    write(SUB_ID, [
+      headerRow(SUB_ID, { origin: 'subagent', parentSession: ROOT_ID, delegationDepth: 1 }),
+      promptRow('delegated run'),
+    ])
+    // A /rewind fork: lineage WITHOUT origin. It is the user's own
+    // conversation and must survive every sweep, switch position included.
+    write(FORK_ID, [headerRow(FORK_ID, { parentSession: ROOT_ID }), promptRow('rewound branch')])
+    return root
+  }
+
+  const ids = (sessions: readonly ScannedSession[]): string[] => sessions.map(s => s.id).sort()
+
+  it('isSubagentSession keys on origin, never on lineage', () => {
+    const session = (origin?: string): ScannedSession => ({
+      id: 'x',
+      path: 'x',
+      bytes: 1,
+      modifiedAt: 1,
+      title: undefined,
+      header: { cwd: undefined, createdAt: undefined, ...(origin === undefined ? {} : { origin }) },
+      messages: [],
+    })
+    expect(isSubagentSession(session('subagent'))).toBe(true)
+    // The trap the host's classify() documents: a /rewind fork records a
+    // parent session and carries no origin — it is not a sub-agent run.
+    expect(isSubagentSession(session())).toBe(false)
+    expect(isSubagentSession(session('interactive'))).toBe(false)
+  })
+
+  it('withholds delegated sub-agent runs by default and keeps forks', async () => {
+    const root = makeRoot()
+    try {
+      const scanner = new SessionScanner()
+      const delivered: ScannedSession[] = []
+      const ticks: ScanProgress[] = []
+      const sessions = await scanner.scan({
+        sessionRoot: root,
+        onSession: session => delivered.push(session),
+        onProgress: progress => ticks.push(progress),
+      })
+
+      expect(ids(sessions)).toEqual([FORK_ID, ROOT_ID].sort())
+      // The progressive path (find-sweep.ts) must not receive it either — the
+      // list would otherwise flash every withheld run in before the final
+      // array replaced it.
+      expect(ids(delivered)).toEqual([FORK_ID, ROOT_ID].sort())
+      // Forks stay whole: cwd, messages, and no origin invented for them.
+      const fork = sessions.find(session => session.id === FORK_ID)!
+      expect(fork.header.origin).toBeUndefined()
+      expect(fork.header.cwd).toBe('D:/work/repo-auth')
+      expect(fork.messages.map(message => message.text)).toEqual(['rewound branch'])
+
+      // Progress counts logs RESOLVED, not logs delivered: the withheld run
+      // costs a full decode, so a count that stopped at 2/3 would strand the
+      // warm-up's progress row short of its total for the whole sweep.
+      const last = ticks.at(-1)!
+      expect(last.total).toBe(3)
+      expect(last.resolved).toBe(3)
+      expect(last.decodedBytes).toBeGreaterThan(0)
+      // It also NAMES the withheld run (R-115): the scene's header counts
+      // withheld logs as resolved, so a consumer that shows the totals must be
+      // able to say how many rows the list is short by.
+      expect(last.hiddenSubagents).toBe(1)
+      expect(ticks.every(tick => tick.hiddenSubagents <= tick.resolved)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('delivers every session when the config asks for sub-agent runs', async () => {
+    const root = makeRoot()
+    try {
+      const ticks: ScanProgress[] = []
+      const sessions = await new SessionScanner().scan({
+        sessionRoot: root,
+        includeSubagents: true,
+        onProgress: progress => ticks.push(progress),
+      })
+      expect(ids(sessions)).toEqual([FORK_ID, ROOT_ID, SUB_ID].sort())
+      // The classification travels with the session, so a consumer can label
+      // what it is showing.
+      expect(sessions.find(session => session.id === SUB_ID)!.header.origin).toBe('subagent')
+      // Nothing is withheld when the switch is on, so the scene's header note
+      // stays off (R-115).
+      expect(ticks.at(-1)!.hiddenSubagents).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('withholds without unindexing: flipping the switch re-delivers from cache', async () => {
+    const root = makeRoot()
+    try {
+      const scanner = new SessionScanner()
+      await scanner.scan({ sessionRoot: root })
+      // Withheld from delivery, decoded all the same — the cache holds all
+      // three logs, which is what makes the switch free to flip.
+      expect(scanner.size).toBe(3)
+
+      let decoded = -1
+      const shown = await scanner.scan({
+        sessionRoot: root,
+        includeSubagents: true,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+        },
+      })
+      expect(ids(shown)).toEqual([FORK_ID, ROOT_ID, SUB_ID].sort())
+      expect(decoded).toBe(0)
+
+      // And back: the default sweep withholds it again, still with no read.
+      const hidden = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+        },
+      })
+      expect(ids(hidden)).toEqual([FORK_ID, ROOT_ID].sort())
+      expect(decoded).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

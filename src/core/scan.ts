@@ -18,6 +18,10 @@
  *   the event loop is yielded between files
  *   (and inside very large ones) so the UI stays live during a cold first
  *   sweep; an AbortSignal stops the sweep between frames.
+ * - CLASSIFIED: the header row's `origin` is kept on every resolved session,
+ *   so a sweep can withhold delegated sub-agent runs (the default) without a
+ *   second pass — {@link isSubagentSession} is that classification, and
+ *   {@link ScanOptions.includeSubagents} the switch.
  *
  * Cache semantics mirror the host's session index and harden its token: the
  * change token is `bytes:mtimeMs:ctimeMs`. `bytes:mtimeMs` alone is not an
@@ -77,6 +81,24 @@ export interface ScannedSession extends SessionContent {
 export interface ScanOptions extends Partial<ExtractOptions> {
   /** Manual session-root override (settings field), prepended to the chain. */
   readonly sessionRoot?: string | undefined
+  /**
+   * Deliver delegated sub-agent runs (`origin: 'subagent'`) instead of
+   * withholding them. Default OFF — the plugin's config default, and the
+   * posture the host's own `/resume` browser takes, where its filter folds
+   * them away by default. The host's own comment for that default argues
+   * scale ("five of them for every conversation"); that figure is the HOST's
+   * premise, not this plugin's measurement, and it is not what the default
+   * rests on here — the KIND is (a run is the model's own work, not a
+   * conversation the user resumes). This store's own numbers live on
+   * {@link isSubagentSession}. A `/rewind` fork is NOT a sub-agent run and
+   * is never withheld.
+   *
+   * Withholding is a delivery decision, not a decode one: a filtered log is
+   * still decoded and cached, so flipping the switch costs no re-read — and
+   * a cold sweep's progress, which counts logs resolved rather than logs
+   * delivered, still reaches its total.
+   */
+  readonly includeSubagents?: boolean | undefined
   /** Cancellation for the sweep. */
   readonly signal?: AbortSignal | undefined
   /** Progress callback, invoked between files. */
@@ -94,8 +116,17 @@ export interface ScanOptions extends Partial<ExtractOptions> {
 }
 
 export interface ScanProgress {
-  /** Sessions resolved so far (cache hits included once verified). */
+  /** Sessions resolved so far (cache hits included once verified) — logs the
+   *  sweep decoded, DELIVERED OR NOT: a sub-agent run withheld by
+   *  {@link ScanOptions.includeSubagents} is resolved all the same, and
+   *  leaving it out would strand the progress row short of its total. */
   readonly resolved: number
+  /** Of {@link resolved}, the delegated sub-agent runs the default-off filter
+   *  withheld: decoded and cached, deliberately not delivered. Consumers that
+   *  show a count must show this one too — a list shorter than the total
+   *  otherwise reads as lost sessions rather than as the configured default
+   *  (REVIEW R-115). Always 0 while `includeSubagents` is on. */
+  readonly hiddenSubagents: number
   /** Sessions known to exist when enumeration finished; undefined before. */
   readonly total: number | undefined
   /** Log bytes decoded so far in this sweep (cache hits count nothing;
@@ -104,6 +135,21 @@ export interface ScanProgress {
   /** Sessions whose decode resumed from a watermark this sweep — the
    *  assertion surface for "only the new frames were decoded". */
   readonly resumed: number
+}
+
+/**
+ * Whether one resolved session is a delegated sub-agent run.
+ *
+ * `origin` is the authority, never lineage: the host's own `classify()`
+ * (`dsh-adapter/sessions/header.js`) reads `origin` FIRST for exactly this
+ * reason — a `/rewind` fork records `parentSession` just like a delegated run
+ * does, so a filter keyed on the lineage link would hide the user's own
+ * rewound branches alongside the sub-agents. Measured on a real
+ * `~/.dsh/sessions` (2026-09-30): 547 logs, 18 with `origin:'subagent'` and
+ * 37 more carrying `parentSession` alone — the distinction is not academic.
+ */
+export function isSubagentSession(session: SessionContent): boolean {
+  return session.header.origin === 'subagent'
 }
 
 /** Physical facts of one log file, read once per sweep. `ctimeMs` is part of
@@ -645,12 +691,15 @@ export class SessionScanner {
    * aborted sweep keeps everything it already resolved and leaves the warm
    * entries it never reached for the next sweep to re-verify. Sessions
    * whose log vanished between enumeration and read are simply absent from
-   * the result.
+   * the result, and so are delegated sub-agent runs unless
+   * {@link ScanOptions.includeSubagents} asks for them (withheld, not
+   * unindexed: they stay in the cache, and `progress.resolved` counts them).
    *
    * @returns Sessions ordered most-recently-modified first.
    */
   async scan(options: ScanOptions = {}): Promise<ScannedSession[]> {
     const signal = options.signal
+    const includeSubagents = options.includeSubagents === true
     const extract: ExtractOptions = {
       indexTools: options.indexTools ?? DEFAULT_EXTRACT_OPTIONS.indexTools,
       indexThinking: options.indexThinking ?? DEFAULT_EXTRACT_OPTIONS.indexThinking,
@@ -658,11 +707,18 @@ export class SessionScanner {
     }
     const enumerated = enumerateLogs(options.sessionRoot)
     // Mutable accumulation; only frozen snapshots cross the callback.
-    const progress: { resolved: number; total: number | undefined; decodedBytes: number; resumed: number } = {
+    const progress: {
+      resolved: number
+      total: number | undefined
+      decodedBytes: number
+      resumed: number
+      hiddenSubagents: number
+    } = {
       resolved: 0,
       total: undefined,
       decodedBytes: 0,
       resumed: 0,
+      hiddenSubagents: 0,
     }
 
     const results: ScannedSession[] = []
@@ -696,15 +752,30 @@ export class SessionScanner {
         }
       }
       index += 1
+      // The loop gets its turn every 8 resolved files WHATEVER they resolved
+      // to: a withheld sub-agent run and an undecodable log cost work too,
+      // and a run of them must not starve the abort check (or the UI) until
+      // the next deliverable session shows up.
+      if (index % 8 === 0) await yieldToLoop()
       if (session === undefined) {
         options.onProgress?.({ ...progress, resolved: progress.resolved })
+        continue
+      }
+      if (!includeSubagents && isSubagentSession(session)) {
+        // Resolved, deliberately not delivered — see ScanOptions. The decode
+        // stays in the cache, so flipping the switch re-delivers this very
+        // object on the next sweep without touching the log. Counted
+        // separately from `resolved` so a consumer can say how many rows the
+        // list is short by (REVIEW R-115).
+        progress.resolved += 1
+        progress.hiddenSubagents += 1
+        options.onProgress?.({ ...progress })
         continue
       }
       results.push(session)
       progress.resolved += 1
       options.onSession?.(session)
       options.onProgress?.({ ...progress })
-      if (index % 8 === 0) await yieldToLoop()
     }
     options.onProgress?.({ ...progress, total: progress.total ?? results.length })
 

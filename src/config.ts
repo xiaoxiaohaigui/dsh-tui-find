@@ -120,6 +120,13 @@ export type Config = {
   /** Restrict matching to session titles (messages are not searched).
    *  Alt+N toggles it live in the scene. Default OFF. */
   titleOnly?: boolean
+  /** Include delegated sub-agent sessions (`origin: 'subagent'` headers) in
+   *  the list and the search index. Default OFF, the posture the host's own
+   *  `/resume` browser takes (its filter folds delegated runs away by
+   *  default): a run is the model's own work, not a conversation the user
+   *  resumes. A `/rewind` fork also records a parent session and is NEVER
+   *  hidden — `origin` alone decides (`core/scan.ts` `isSubagentSession`). */
+  showSubagentSessions?: boolean
   /** Index tool-call summaries (`[name] arguments`). Default OFF. */
   indexTools?: boolean
   /** Index assistant thinking text. Default OFF (noisy + private). */
@@ -159,6 +166,7 @@ export const LIVE_CONFIG_KEYS = [
   'regex',
   'pinyin',
   'titleOnly',
+  'showSubagentSessions',
   'indexTools',
   'indexThinking',
   'sessionRoot',
@@ -267,6 +275,7 @@ const configFields = {
   regex: z.boolean().default(false),
   pinyin: z.boolean().default(true),
   titleOnly: z.boolean().default(false),
+  showSubagentSessions: z.boolean().default(false),
   indexTools: z.boolean().default(false),
   indexThinking: z.boolean().default(false),
   sessionRoot: z.string().required(false),
@@ -312,6 +321,7 @@ export interface ResolvedConfig {
   readonly regex: boolean
   readonly pinyin: boolean
   readonly titleOnly: boolean
+  readonly showSubagentSessions: boolean
   readonly indexTools: boolean
   readonly indexThinking: boolean
   readonly sessionRoot: string | undefined
@@ -338,6 +348,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
     regex: value.regex === true,
     pinyin: value.pinyin !== false,
     titleOnly: value.titleOnly === true,
+    showSubagentSessions: value.showSubagentSessions === true,
     indexTools: value.indexTools === true,
     indexThinking: value.indexThinking === true,
     sessionRoot:

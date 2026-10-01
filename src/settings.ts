@@ -191,6 +191,16 @@ function section(ns: string): TuiSettingsSection {
         kind: 'boolean',
       },
       {
+        path: ['showSubagentSessions'],
+        label: 'Show sub-agent sessions',
+        descriptions: zh('显示子 agent 会话'),
+        hint: 'Include delegated sub-agent runs in the list and search results (the /resume browser folds them away; default off)',
+        hintDescriptions: zh(
+          '把子 agent 委派会话纳入列表与搜索结果（/resume 浏览器默认折叠它们；默认关闭）',
+        ),
+        kind: 'boolean',
+      },
+      {
         path: ['indexTools'],
         label: 'Index tool calls',
         descriptions: zh('索引工具调用'),
@@ -355,6 +365,7 @@ function registerNamespaceScope(
       regex: z.boolean().default(resolved.regex),
       pinyin: z.boolean().default(resolved.pinyin),
       titleOnly: z.boolean().default(resolved.titleOnly),
+      showSubagentSessions: z.boolean().default(resolved.showSubagentSessions),
       indexTools: z.boolean().default(resolved.indexTools),
       indexThinking: z.boolean().default(resolved.indexThinking),
       sessionRoot: z.string().required(false).default(resolved.sessionRoot ?? ''),
@@ -452,6 +463,7 @@ type ConfigValue = {
   regex?: boolean
   pinyin?: boolean
   titleOnly?: boolean
+  showSubagentSessions?: boolean
   indexTools?: boolean
   indexThinking?: boolean
   sessionRoot?: string

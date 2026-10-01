@@ -8,6 +8,9 @@
  * must fall back to the documented defaults, not crash or leak through.
  */
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Config, LIVE_CONFIG_KEYS, hasLiveConfigFields, liveField, readConfigValues, resolveConfig } from '../src/config.js'
 
 describe('resolveConfig — defaultTime', () => {
@@ -62,6 +65,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       regex: false,
       pinyin: true,
       titleOnly: false,
+      showSubagentSessions: false,
       indexTools: false,
       indexThinking: false,
       sessionRoot: undefined,
@@ -84,6 +88,18 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
     expect(resolveConfig({ titleOnly: true }).titleOnly).toBe(true)
     expect(resolveConfig({ titleOnly: false }).titleOnly).toBe(false)
     expect(resolveConfig({ titleOnly: 'yes' as never }).titleOnly).toBe(false)
+  })
+
+  it('showSubagentSessions defaults off and only an explicit true enables it', () => {
+    // The default is the whole point of the knob: a delegated run is the
+    // model's own work rather than a conversation the user resumes, and the
+    // host's own /resume browser folds them away too. Only a deliberate
+    // opt-in shows them.
+    expect(resolveConfig({}).showSubagentSessions).toBe(false)
+    expect(resolveConfig({ showSubagentSessions: true }).showSubagentSessions).toBe(true)
+    expect(resolveConfig({ showSubagentSessions: false }).showSubagentSessions).toBe(false)
+    expect(resolveConfig({ showSubagentSessions: 'yes' as never }).showSubagentSessions).toBe(false)
+    expect(LIVE_CONFIG_KEYS).toContain('showSubagentSessions')
   })
 
   it('the schemastery schema default resolves to the same shape', () => {
@@ -168,5 +184,51 @@ describe('live config fields (dsh-settings ≥0.1.7)', () => {
 
   it('keeps lang off the live list (row-config knob, no card field)', () => {
     expect(LIVE_CONFIG_KEYS).not.toContain('lang')
+  })
+})
+
+describe('documented row-config keys (R-116)', () => {
+  // The file a `dsh plugin add` install leaves the user editing is the patch
+  // this package ships, so its comment list is a config surface rather than
+  // decoration — and it had already drifted four keys behind `Config` before
+  // `showSubagentSessions` made it five. The three lists are parsed out of
+  // the repo and held equal, so a new knob must be documented in the patch
+  // and in both READMEs in the same commit.
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url))
+
+  /** `Config`'s own keys, read off the type body in src/config.ts. */
+  const configKeys = (): string[] => {
+    const source = readFileSync(join(repoRoot, 'src', 'config.ts'), 'utf8')
+    const body = source.slice(source.indexOf('export type Config = {'))
+    return [...body.slice(0, body.indexOf('\n}')).matchAll(/^ {2}(\w+)\?:/gm)].map(match => match[1]!)
+  }
+
+  /** The `# key: ...` lines of the patch's own "Optional row config" block. */
+  const patchKeys = (): string[] => {
+    const source = readFileSync(join(repoRoot, 'cordis.patch.yml'), 'utf8')
+    const block = source.slice(source.indexOf('Optional row config'))
+    return [...block.matchAll(/^ *# *(\w+):/gm)].map(match => match[1]!)
+  }
+
+  /** A README's yaml row-config example; `id`/`name` are the row's identity,
+   *  not config keys, so they never count. */
+  const readmeKeys = (file: string, heading: string): string[] => {
+    const source = readFileSync(join(repoRoot, file), 'utf8')
+    // The READMEs are CRLF in this repo, src/ is LF — accept both.
+    const block = /```yaml\r?\n([\s\S]*?)```/.exec(source.slice(source.indexOf(heading)))?.[1]
+    expect(block, `${file}: no yaml row-config block after "${heading}"`).toBeDefined()
+    return [...block!.matchAll(/^ {6}(\w+):/gm)]
+      .map(match => match[1]!)
+      .filter(key => key !== 'id' && key !== 'name')
+  }
+
+  it('covers every Config key in the shipped patch and in both READMEs', () => {
+    const keys = configKeys().sort()
+    // Guard the parse itself: an empty or truncated read would make every
+    // comparison below pass by vacuity.
+    expect(keys.length).toBeGreaterThanOrEqual(15)
+    expect(patchKeys().sort()).toEqual(keys)
+    expect(readmeKeys('README.md', '## 配置').sort()).toEqual(keys)
+    expect(readmeKeys('README.en.md', '## Configuration').sort()).toEqual(keys)
   })
 })

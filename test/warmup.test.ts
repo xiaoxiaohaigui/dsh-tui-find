@@ -163,7 +163,7 @@ function wireSetup(ctx: Ctx, services: { scanner?: StubScanner } = {}): { scanne
   return { scanner }
 }
 
-const PROGRESS_3_57 = { resolved: 3, total: 57, decodedBytes: 100, resumed: 0 }
+const PROGRESS_3_57 = { resolved: 3, total: 57, decodedBytes: 100, resumed: 0, hiddenSubagents: 0 }
 
 /** Drain the promise chain a settled sweep rides (scan → then → settle). */
 async function flush(): Promise<void> {
@@ -184,6 +184,7 @@ describe('WarmupDriver', () => {
       indexThinking: true,
       maxMessageChars: 6000,
       sessionRoot: 'X:/sessions-override',
+      showSubagentSessions: true,
     })
     driver.arm()
     expect(scanner.calls).toHaveLength(0)
@@ -198,11 +199,22 @@ describe('WarmupDriver', () => {
     expect(options.indexThinking).toBe(true)
     expect(options.maxMessageChars).toBe(6000)
     expect(options.sessionRoot).toBe('X:/sessions-override')
+    // The warm-up fills the cache the scene's sweep reads, so it must take the
+    // same sub-agent posture the config asks for (its fold prewarm would
+    // otherwise build documents the scene will never search).
+    expect(options.includeSubagents).toBe(true)
     expect(options.signal).toBeInstanceOf(AbortSignal)
     expect(typeof options.onProgress).toBe('function')
 
     await vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS * 2)
     expect(scanner.calls).toHaveLength(1)
+  })
+
+  it('keeps sub-agent runs out of the warm index by default', async () => {
+    const { driver, scanner } = makeDriver()
+    driver.arm()
+    await vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS)
+    expect(scanner.calls[0]!.options.includeSubagents).toBe(false)
   })
 
   it('never sweeps when the warmup config row is off (re-read at start time)', async () => {

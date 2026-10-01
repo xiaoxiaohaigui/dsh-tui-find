@@ -112,6 +112,23 @@ describe('extractLine sanitization', () => {
     expect(state.title).toBe('fix [31mauth[0m')
   })
 
+  it('reads the header origin (the sub-agent marker) once, first row wins', () => {
+    const state = newExtractState()
+    extractLine(state, { type: 'session', cwd: 'D:/work', origin: 'subagent' }, DEFAULT_EXTRACT_OPTIONS)
+    // First wins, exactly like cwd/createdAt: a later type-less row (the
+    // legacy header spelling) must not reclassify a settled session.
+    extractLine(state, { cwd: 'D:/other', origin: 'interactive' }, DEFAULT_EXTRACT_OPTIONS)
+    expect(state.header.origin).toBe('subagent')
+    expect(state.header.cwd).toBe('D:/work')
+  })
+
+  it('drops a non-string or empty origin instead of storing it', () => {
+    const state = newExtractState()
+    extractLine(state, { type: 'session', origin: 7 }, DEFAULT_EXTRACT_OPTIONS)
+    extractLine(state, { type: 'session', origin: '' }, DEFAULT_EXTRACT_OPTIONS)
+    expect(state.header.origin).toBeUndefined()
+  })
+
   it('leaves clean text untouched', () => {
     const state = newExtractState()
     extractLine(

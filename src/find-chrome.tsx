@@ -11,7 +11,7 @@
 import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { t } from './i18n.js'
-import type { ScannedSession } from './core/scan.js'
+import type { ScanProgress, ScannedSession } from './core/scan.js'
 import type { SearchScope } from './core/search.js'
 import { displayWidth, tailWidth, truncateWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
@@ -74,6 +74,49 @@ export function composeListHint(columns: number, splitActive = false): string {
     line = candidate
   }
   return truncateWidth(`${line}${separator}${last}`, budget)
+}
+
+/**
+ * The header row's right side: the sweep's progress while it runs, then the
+ * hit counts in results mode and the session total in recent mode — plus the
+ * withheld-sub-agent count whenever the default-off filter dropped something
+ * (REVIEW R-115). That count needs its own place on the row because the
+ * sweep's `resolved`/`total` counts withheld logs as resolved: without it the
+ * list comes up short of the number the header just showed, and the user
+ * cannot tell the configured default from lost sessions. The host browser
+ * names its own folded runs the same way.
+ *
+ * While a sweep runs, the live `progress.hiddenSubagents` is the count; once
+ * it lands (`progress` clears) `settledHiddenSubagents` takes over — the
+ * sweep hook hands that one over precisely because a warm sweep can run to
+ * completion inside a single render, so `progress` alone cannot carry the
+ * number to the settled header.
+ */
+export function composeHeaderRight(input: {
+  /** Live sweep progress; undefined once the sweep has landed. */
+  progress: ScanProgress | undefined
+  /** Recent mode counts sessions; results mode counts hits. */
+  recentMode: boolean
+  /** Sessions on screen in recent mode. */
+  sessionCount: number
+  /** Sessions holding hits (results mode). */
+  hitSessions: number
+  /** Hits across those sessions (results mode). */
+  hitTotal: number
+  /** The count a LANDED sweep left behind (see the note above). */
+  settledHiddenSubagents: number
+}): string {
+  const { progress } = input
+  const state =
+    progress !== undefined
+      ? progress.total === undefined
+        ? t('scanning-initial')
+        : t('scanning', { resolved: progress.resolved, total: progress.total })
+      : input.recentMode
+        ? t('session-count', { n: input.sessionCount })
+        : t('hit-count', { sessions: input.hitSessions, hits: input.hitTotal })
+  const hidden = progress !== undefined ? progress.hiddenSubagents : input.settledHiddenSubagents
+  return hidden > 0 ? `${state} · ${t('subagent-hidden', { n: hidden })}` : state
 }
 
 /** One composable hint segment: `text` carries the HintLine `**key**`

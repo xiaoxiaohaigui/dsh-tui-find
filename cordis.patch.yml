@@ -8,15 +8,22 @@
 - insert:
     - id: dsh-tui-find
       name: 'dsh-tui-find'
-      # Optional row config (all keys optional; see README):
-      # defaultScope: 'repo' | 'all'   — initial search scope (default repo)
-      # defaultTime: 'all' | '7d' | '30d' — initial time window (default all)
-      # caseSensitive: boolean         — v0.1 default is case-insensitive
-      # indexTools: boolean            — index tool-call summaries (default false)
-      # indexThinking: boolean         — index thinking text (default false)
-      # sessionRoot: string            — manual session-root override
+      # Optional row config — every key is optional. This list is the complete
+      # one (defaults in parentheses); the README carries the same table with
+      # the in-scene behaviour spelled out.
+      # defaultScope: 'repo' | 'all'   — initial search scope (repo)
+      # defaultTime: 'all' | '7d' | '30d' — initial time window (all)
+      # layout: 'split' | 'classic'    — scene layout (split; >= 100 columns)
+      # caseSensitive: boolean         — case-sensitive matching (false)
+      # regex: boolean                 — start in regex mode (false)
+      # pinyin: boolean                — pinyin matching (true)
+      # titleOnly: boolean             — match session titles only (false)
+      # showSubagentSessions: boolean  — also list sub-agent runs (false)
+      # indexTools: boolean            — index tool-call summaries (false)
+      # indexThinking: boolean         — index thinking text (false)
+      # sessionRoot: string            — manual session-root override (auto)
       # maxMessageChars: number        — per-message index character budget
-      # warmup: boolean                — background warm-up index (default true)
+      # warmup: boolean                — background warm-up index (true)
       # lang: 'auto' | 'zh' | 'en'     — UI language (auto follows the host)
       # shortcut: string               — global entry combo, ctrl/alt required
       #                                  ('off' disables; default 'alt+f')

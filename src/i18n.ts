@@ -100,6 +100,12 @@ export const dict = {
   'scanning-initial': { zh: '扫描中…', en: 'Scanning…' },
   'reading-sessions': { zh: '正在读取会话…', en: 'Reading sessions…' },
   'session-count': { zh: '{{n}} 个会话', en: '{{n}} sessions' },
+  // The header's own count of what the default-off sub-agent filter withheld
+  // (R-115), joined onto the row with ' · ' and rendered only when non-zero.
+  // The sweep's progress counts withheld logs as resolved, so without this
+  // the list just comes up short of the total with no explanation; the host
+  // browser names its own folded runs the same way ("{{n}} 个子运行已折叠").
+  'subagent-hidden': { zh: '已隐藏 {{n}} 条子 agent 会话', en: '{{n}} sub-agent sessions hidden' },
   'no-results': { zh: ' 没有匹配的会话', en: ' No matching sessions' },
   'no-results-scope-hint': {
     zh: ' 当前范围是「{{scope}}」——按 Tab 切换范围试试',

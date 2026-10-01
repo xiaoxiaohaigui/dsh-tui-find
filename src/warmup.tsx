@@ -249,6 +249,10 @@ export class WarmupDriver {
         indexTools: config.indexTools,
         indexThinking: config.indexThinking,
         maxMessageChars: config.maxMessageChars,
+        // Same sub-agent posture as the scene's sweep (find-sweep.ts): the
+        // warm-up fills the cache the scene reads, and its fold prewarm must
+        // not build documents the scene will never search.
+        includeSubagents: config.showSubagentSessions,
         ...(config.sessionRoot === undefined ? {} : { sessionRoot: config.sessionRoot }),
         signal: controller.signal,
         onProgress: progress => {

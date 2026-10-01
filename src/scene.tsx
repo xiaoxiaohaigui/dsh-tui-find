@@ -68,7 +68,7 @@ import {
   type ContextMenuState,
   type MenuItem,
 } from './find-menu.js'
-import { ConfirmPane, HintLine, SearchCard, composeListHint, composeReaderHint } from './find-chrome.js'
+import { ConfirmPane, HintLine, SearchCard, composeHeaderRight, composeListHint, composeReaderHint } from './find-chrome.js'
 import { ListView } from './find-list.js'
 import { PreviewPane, ReaderPane, usePreviewModel } from './find-preview.js'
 import { useFindInput } from './find-input.js'
@@ -110,6 +110,9 @@ export function FindScene(props: TuiSceneProps & {
   const [titleOnly, setTitleOnly] = useState(config.titleOnly)
   const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
   const [progress, setProgress] = useState<ScanProgress | undefined>(undefined)
+  // The last sweep's withheld-sub-agent count, kept after `progress` is
+  // cleared — the header goes on explaining the shorter list (R-115).
+  const [hiddenSubagents, setHiddenSubagents] = useState(0)
   const [mode, setMode] = useState<Mode>('list')
   const [selected, setSelected] = useState(0)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
@@ -153,7 +156,7 @@ export function FindScene(props: TuiSceneProps & {
    *  pre-move render closure (R-102). */
   const resumeTargetRef = useRef<ScannedSession | undefined>(undefined)
 
-  useSessionSweep(React, { scanner, config, setSessions, setProgress, setStatus })
+  useSessionSweep(React, { scanner, config, setSessions, setProgress, setStatus, setHiddenSubagents })
 
   const recentMode = query.trim().length === 0
   // The time window's cutoff, quantized to the minute: renders within the
@@ -691,15 +694,17 @@ export function FindScene(props: TuiSceneProps & {
   ].join(' · ')
 
   // Header right side: scan progress while sweeping, then hit counts in
-  // results mode and the session total in recent mode.
-  const headerRight =
-    progress !== undefined
-      ? progress.total === undefined
-        ? t('scanning-initial')
-        : t('scanning', { resolved: progress.resolved, total: progress.total })
-      : recentMode
-        ? t('session-count', { n: flat.length })
-        : t('hit-count', { sessions: hits.length, hits: totalHits })
+  // results mode and the session total in recent mode — plus the withheld
+  // sub-agent count, live while the sweep runs and settled once it lands
+  // (R-115; the composition and its rationale live in find-chrome).
+  const headerRight = composeHeaderRight({
+    progress,
+    recentMode,
+    sessionCount: flat.length,
+    hitSessions: hits.length,
+    hitTotal: totalHits,
+    settledHiddenSubagents: hiddenSubagents,
+  })
   const header = spreadRow(` ${t('scene-title')}`, headerRight, Math.max(0, columns - 1))
 
   const listHint = composeListHint(columns, splitActive)

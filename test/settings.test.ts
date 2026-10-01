@@ -248,4 +248,23 @@ describe('settings namespace', () => {
     expect(schema?.({})['layout']).toBe('split')
     expect(schema?.({ layout: 'classic' })['layout']).toBe('classic')
   })
+
+  it('carries the sub-agent switch in the ≤0.1.6 namespace schema', () => {
+    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
+    const { ctx } = fakeContext({
+      settings: {
+        register: (_namespace: unknown, registered: unknown) => {
+          schema = registered as NonNullable<typeof schema>
+          return { get: () => ({}), watch: () => () => {} }
+        },
+      },
+    })
+
+    registerSettingsSection(ctx, wiringOver({ current: {} }))
+    // A key the namespace schema drops would render on the card yet never
+    // persist, so the switch is pinned end to end here: off by default (the
+    // plugin's own default), on when the stored value says so.
+    expect(schema?.({})['showSubagentSessions']).toBe(false)
+    expect(schema?.({ showSubagentSessions: true })['showSubagentSessions']).toBe(true)
+  })
 })

@@ -739,7 +739,7 @@ describe('search filter and scan streaming wiring', () => {
       scan: async (scanOptions: { onProgress?: (progress: unknown) => void }) => {
         // The real scanner reports progress before the first session lands;
         // mirror that so the scene's sweep-in-flight state is reached.
-        scanOptions.onProgress?.({ resolved: 0, total: 1, decodedBytes: 0, resumed: 0 })
+        scanOptions.onProgress?.({ resolved: 0, total: 1, decodedBytes: 0, resumed: 0, hiddenSubagents: 0 })
         await onlyGate.promise
         return []
       },

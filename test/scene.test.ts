@@ -1,8 +1,11 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionMarker, wheelRows } from '../src/find-types.js'
+import { composeHeaderRight } from '../src/find-chrome.js'
 import { setLangOverride } from '../src/i18n.js'
-import type { ScannedSession } from '../src/core/scan.js'
-import { mount, sessionWithMessages, waitFor } from './harness.js'
+import { useSessionSweep } from '../src/find-sweep.js'
+import type { ScanProgress, ScannedSession } from '../src/core/scan.js'
+import type { StatusNote } from '../src/find-types.js'
+import { mount, sessionWithMessages, waitFor, type HarnessSceneProps } from './harness.js'
 
 setLangOverride('en')
 // One language for the whole file (every frame assertion below is en), and
@@ -42,6 +45,65 @@ describe('selectionMarker', () => {
     expect(selectionMarker(false)).toBe('  ')
     expect(selectionMarker(true, 'message')).toBe('❯   ')
     expect(selectionMarker(false, 'message')).toBe('    ')
+  })
+})
+
+describe('composeHeaderRight (REVIEW R-115)', () => {
+  const settled = { recentMode: true, sessionCount: 1, hitSessions: 0, hitTotal: 0 }
+
+  it('appends the withheld-sub-agent count to the live sweep row', () => {
+    // The sweep counts withheld logs as resolved, so the row that says how far
+    // the sweep got must also say how many rows it will not deliver.
+    expect(
+      composeHeaderRight({
+        ...settled,
+        progress: { resolved: 3, total: 3, decodedBytes: 0, resumed: 0, hiddenSubagents: 2 },
+        settledHiddenSubagents: 0,
+      }),
+    ).toBe('Scanning 3/3… · 2 sub-agent sessions hidden')
+  })
+
+  it('keeps the count after the sweep lands, when progress is gone', () => {
+    // The settled header reads the scene's own state: `progress` is cleared
+    // the moment the sweep lands, and the note must not vanish with it.
+    expect(composeHeaderRight({ ...settled, progress: undefined, settledHiddenSubagents: 2 })).toBe(
+      '1 sessions · 2 sub-agent sessions hidden',
+    )
+    // A landed sweep's count wins nowhere the live one exists, and vice versa.
+    expect(
+      composeHeaderRight({
+        ...settled,
+        progress: { resolved: 3, total: 3, decodedBytes: 0, resumed: 0, hiddenSubagents: 0 },
+        settledHiddenSubagents: 2,
+      }),
+    ).toBe('Scanning 3/3…')
+  })
+
+  it('stays silent when nothing was withheld or the switch is on', () => {
+    expect(composeHeaderRight({ ...settled, progress: undefined, settledHiddenSubagents: 0 })).toBe('1 sessions')
+    expect(
+      composeHeaderRight({
+        recentMode: false,
+        sessionCount: 0,
+        hitSessions: 4,
+        hitTotal: 9,
+        progress: undefined,
+        settledHiddenSubagents: 0,
+      }),
+    ).toBe('4 sessions · 9 hits')
+  })
+
+  it('carries the counts and the note together in results mode', () => {
+    expect(
+      composeHeaderRight({
+        recentMode: false,
+        sessionCount: 0,
+        hitSessions: 4,
+        hitTotal: 9,
+        progress: undefined,
+        settledHiddenSubagents: 1,
+      }),
+    ).toBe('4 sessions · 9 hits · 1 sub-agent sessions hidden')
   })
 })
 
@@ -434,6 +496,111 @@ describe('cursor identity (REVIEW R-102/R-103)', () => {
       expect(frame).toMatch(/❯\s*needle\s*Alpha/)
       expect(frame).not.toMatch(/❯\s*needle\s*Beta/)
       finish?.([beta, alpha])
+    } finally {
+      harness.dispose()
+    }
+  })
+})
+
+/** Every state the sweep probe rendered with, in render order. */
+const probeStates: Array<{ progress: string; hidden: number; sessions: number }> = []
+
+/**
+ * A scene-shaped probe around `useSessionSweep` alone: it renders one static
+ * text row and records the hook's own outputs. The sweep contracts that the
+ * header depends on are observable here and nowhere else — see the R-115
+ * wiring test for why the header row itself cannot be read back.
+ */
+function SweepProbe(props: HarnessSceneProps): unknown {
+  const R = props.React
+  const { useState } = R
+  const [sessions, setSessions] = useState<readonly ScannedSession[]>([])
+  const [progress, setProgress] = useState<ScanProgress | undefined>(undefined)
+  const [status, setStatus] = useState<StatusNote | undefined>(undefined)
+  const [hidden, setHidden] = useState(0)
+  useSessionSweep(R, {
+    scanner: props.scanner,
+    config: props.config,
+    setSessions,
+    setProgress,
+    setStatus,
+    setHiddenSubagents: setHidden,
+  })
+  probeStates.push({
+    progress:
+      progress === undefined ? 'none' : `${progress.resolved}/${progress.total}/${progress.hiddenSubagents}`,
+    hidden,
+    sessions: sessions.length,
+  })
+  return R.createElement(props.ui.Text, null, `sweep probe: ${sessions.length}`)
+}
+
+describe('sweep options (sub-agent posture)', () => {
+  it('asks the scanner for sub-agent runs only when the config says so', async () => {
+    // The filter itself lives in the scanner (its own suite pins the
+    // behavior); this pins the wiring — the scene must forward the resolved
+    // config, whose default keeps delegated runs out of the list and the
+    // search index.
+    const seen: Array<boolean | undefined> = []
+    const scanner = {
+      scan(options: { includeSubagents?: boolean }): Promise<readonly ScannedSession[]> {
+        seen.push(options.includeSubagents)
+        return Promise.resolve([])
+      },
+    }
+
+    const off = await mount(sessionWithMessages(['needle body']), { query: 'needle', scanner })
+    try {
+      expect(seen).toEqual([false])
+    } finally {
+      off.dispose()
+    }
+
+    seen.length = 0
+    const on = await mount(sessionWithMessages(['needle body']), {
+      query: 'needle',
+      scanner,
+      showSubagentSessions: true,
+    })
+    try {
+      expect(seen).toEqual([true])
+    } finally {
+      on.dispose()
+    }
+  })
+
+  it('hands the settled withheld count to the scene after the sweep clears progress', async () => {
+    // R-115's wiring half. The scene's header cannot be asserted on directly:
+    // the host renderer repaints only the rows its damage pass marks, and the
+    // header row is never among them after the first paint (probed here
+    // 2026-09-30 — a header change from "0 sessions" to "Scanning 3/3…" never
+    // reaches the stream). So the contract is pinned one level down, on the
+    // sweep hook the header reads: while the sweep runs the count rides the
+    // live `progress` tick, and once the sweep lands — progress cleared, which
+    // a warm sweep can do inside a single render — the count must still be
+    // handed over, or the settled header silently drops the note.
+    probeStates.length = 0
+    const alpha = sessionWithMessages(['needle body'])
+    let finish: ((sessions: readonly ScannedSession[]) => void) | undefined
+    const harness = await mount(alpha, {
+      query: '',
+      component: SweepProbe as never,
+      scanner: {
+        scan(options: { onProgress?: (progress: ScanProgress) => void }) {
+          options.onProgress?.({ resolved: 3, total: 3, decodedBytes: 0, resumed: 0, hiddenSubagents: 2 })
+          return new Promise<readonly ScannedSession[]>(resolve => {
+            finish = resolve
+          })
+        },
+      },
+    })
+    try {
+      await waitFor(150)
+      // Mid-sweep: the scene still holds 0 of its own, the tick carries the 2.
+      expect(probeStates.some(state => state.progress === '3/3/2' && state.hidden === 0)).toBe(true)
+      finish?.([alpha])
+      await waitFor(200)
+      expect(probeStates.at(-1)).toEqual({ progress: 'none', hidden: 2, sessions: 1 })
     } finally {
       harness.dispose()
     }

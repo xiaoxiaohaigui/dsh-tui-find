@@ -26,10 +26,16 @@ export function useSessionSweep(
     setSessions: (next: readonly ScannedSession[]) => void
     setProgress: (next: ScanProgress | undefined) => void
     setStatus: (next: StatusNote | undefined) => void
+    /** Final withheld-sub-agent count. It has to be delivered HERE rather
+     *  than read off `progress`: a warm sweep can run to completion inside
+     *  one render, so a scene watching `progress` may never observe the last
+     *  tick, and the header must keep saying why the list is shorter than
+     *  the sweep's own total (REVIEW R-115). */
+    setHiddenSubagents: (next: number) => void
   },
 ): void {
   const { useEffect } = React
-  const { scanner, config, setSessions, setProgress, setStatus } = options
+  const { scanner, config, setSessions, setProgress, setStatus, setHiddenSubagents } = options
 
   useEffect(() => {
     const signal = new AbortController()
@@ -40,13 +46,22 @@ export function useSessionSweep(
     const partial: ScannedSession[] = []
     let nextFlushAt = 0
     let flushGap = PARTIAL_FLUSH_MS
+    // The scanner's running withheld-sub-agent count; the last tick (sent
+    // after the loop, totals settled) is the sweep's answer.
+    let hidden = 0
     const scanOptions = {
       indexTools: config.indexTools,
       indexThinking: config.indexThinking,
       maxMessageChars: config.maxMessageChars,
+      // Delegated sub-agent runs stay out of the list and the search index
+      // unless the config asks for them (default off; see config.ts).
+      includeSubagents: config.showSubagentSessions,
       ...(config.sessionRoot === undefined ? {} : { sessionRoot: config.sessionRoot }),
       signal: signal.signal,
-      onProgress: setProgress,
+      onProgress: (next: ScanProgress) => {
+        hidden = next.hiddenSubagents
+        setProgress(next)
+      },
       onSession: (session: ScannedSession) => {
         partial.push(session)
         // Arrivals are enumeration order (readdir), sorted here into the
@@ -74,6 +89,7 @@ export function useSessionSweep(
       .then(result => {
         if (!signal.signal.aborted) {
           setSessions(result)
+          setHiddenSubagents(hidden)
           setProgress(undefined)
         }
       })
