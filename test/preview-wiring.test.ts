@@ -141,6 +141,51 @@ describe('preview scene wiring', () => {
     }
   })
 
+  it('steps back off a landing that sits below its own hit header', async () => {
+    // The everyday shape: the keyword sits far down a long message, so the
+    // reader opens ON the keyword (hitLanding) and that message's own header
+    // is left above the window top. N used to read that header as "the last
+    // hit above the window", re-land on the very line already on screen, and
+    // look like a dead key — the reported Shift+n no-op. Every step is read
+    // back from a full repaint: the window moving is the whole point here, and
+    // a diff frame can only show the status row.
+    const filler = Array.from({ length: 40 }, (_, index) => `filler line ${index}`)
+    const deep = [...filler, 'needle deep'].join('\n')
+    const harness = await mount(sessionWithMessages(['needle one', deep, 'needle three']), { rows: 12 })
+    try {
+      // The card, then one row per hit: the second hit row is the deep one.
+      harness.send('\u001b[B')
+      harness.send('\u001b[B')
+      await waitFor()
+      harness.send('\u001bp')
+      await waitFor()
+      const landed = await paintedFrame(harness, [/needle deep/], 3_000)
+      expect(landed).toMatch(/needle deep/)
+      expect(landed).not.toMatch(/needle one/)
+
+      harness.send('N')
+      await waitFor()
+      // A deadline miss returns the last frame instead, so a regression reads
+      // as this assertion's diff rather than a test timeout.
+      const stepped = await paintedFrame(harness, [/needle one/], 3_000)
+      // Back on the hit BEFORE the parked one — not on the parked hit's own
+      // header, which is the line the window already showed.
+      expect(stepped).toMatch(/needle one/)
+      expect(stepped).not.toMatch(/needle deep/)
+
+      // The forward direction is unchanged: from the first hit, n takes the
+      // first hit below the window (the deep hit's header is on screen, so it
+      // is skipped, as its own rule says).
+      harness.send('n')
+      await waitFor()
+      const forwarded = await paintedFrame(harness, [/needle three/], 3_000)
+      expect(forwarded).toMatch(/needle three/)
+      expect(forwarded).not.toMatch(/needle one/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('pages by the viewport with PgUp/PgDn, and Alt+C falls back to the top message without hits', async () => {
     const harness = await mount(
       sessionWithMessages(['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff', 'ggggggg', 'hhhhhhhh']),

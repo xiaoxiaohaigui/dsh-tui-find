@@ -284,22 +284,35 @@ describe('split rendering and anchoring', () => {
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      const frame = harness.latest()
-      // The keyword's own body line is on screen...
-      expect(frame).toMatch(/deepneedle/)
+      const landed = paneText(harness.latest())
+      // The keyword's own body line is on screen — read from the PANE, not
+      // from the whole frame: the list column carries the hit's text too
+      // ('#2 AI: deepneedle …'), so a frame-wide match says nothing about what
+      // the pane shows. (The header-absent assertion below is the one that
+      // pins the landing; this one pins that the keyword itself is in view.)
+      expect(landed).toMatch(/deepneedle/)
       // ...while the message head scrolled away: the header-anchored landing
       // would show this row instead of the keyword (that is the bug).
-      expect(frame).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      expect(landed).not.toMatch(/✦\s*AI\s*#2\s*◆/)
       // `n` walks to the same message's hit with the same landing — still on
-      // the keyword, never back on the header that hides it.
-      harness.send('\u001bp')
+      // the keyword, never back on the header that hides it. The pane has to
+      // OWN the keyboard for that: in split a bare letter is a query keystroke
+      // while the list holds the focus, so `→` hands it over first. Without
+      // that step this case typed 'deepneedlen' into the query instead, and
+      // its two frame-wide assertions passed vacuously — the substring came
+      // from the search card's own row, and the header was absent because the
+      // query matched nothing at all.
+      harness.send('\u001b[C')
       await waitFor()
       harness.send('n')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/deepneedle/)
-      expect(harness.latest()).not.toMatch(/✦\s*AI\s*#2\s*◆/)
+      const stepped = harness.latest()
+      // The key was swallowed by the reader: nothing reached the query.
+      expect(stepped).not.toMatch(/deepneedlen/)
+      expect(paneText(stepped)).toMatch(/deepneedle/)
+      expect(paneText(stepped)).not.toMatch(/✦\s*AI\s*#2\s*◆/)
     } finally {
       harness.dispose()
     }
@@ -443,6 +456,41 @@ describe('split focus handoff', () => {
       harness.resize(120, 20)
       await waitFor()
       expect(harness.latest()).toMatch(/Read-only\s*preview/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('steps N back off a keyword landing whose own header left the window', async () => {
+    // The split pane wraps at 41 columns and shows 9 rows, so a keyword buried
+    // in a long message opens the window far below that message's own header —
+    // the everyday shape behind the reported Shift+n no-op. Reading the window
+    // top alone named the parked hit itself, landed back on the line already
+    // on screen, and left N looking dead. The pane's window is the evidence.
+    const pad = `${'pad '.repeat(120)}`
+    const session = sessionWithMessages(['needle one', `${pad}needle marker tail`, 'needle three'])
+    const harness = await mount(session, { ...wide, query: 'needle' })
+    try {
+      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      // ↓↓ onto the long message's hit row re-anchors the reader onto the
+      // keyword, with that message's header scrolled off the 9-row window.
+      harness.send('\u001b[B\u001b[B')
+      await waitFor()
+      harness.send('\u001b[C') // → the reader owns n/N
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const landed = paneText(harness.latest())
+      expect(landed).toMatch(/needle\s*marker/)
+      expect(landed).not.toMatch(/needle\s*one/)
+
+      harness.send('N')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      const stepped = paneText(harness.latest())
+      expect(stepped).toMatch(/needle\s*one/)
+      expect(stepped).not.toMatch(/needle\s*marker/)
     } finally {
       harness.dispose()
     }

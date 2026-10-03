@@ -261,6 +261,15 @@ export function scrollWindow(
  * window is what the user sees, a hit that is already on screen is never the
  * answer (except by wrapping), so a repeat press always moves.
  *
+ * "Above the window's top" is NOT the same as "off screen" in the backward
+ * direction: a hit-aware landing opens the window BELOW its own hit's header
+ * (see hitLanding), so the hit the reader is parked on also has its header
+ * up there. `currentMessage` — the message index owning the window's top
+ * line (messageAtLine) — is what tells the two apart: the backward step
+ * searches above the parked hit's own header, because naming that hit would
+ * only land the window on the very line it already shows and `N` would read
+ * as a dead key.
+ *
  * `hitStartLines` is indexed BY MESSAGE index: entry m holds the header line
  * of message m when m is a hit, or the -1 sentinel when it is not (the scene
  * derives the table from the built lines' hit headers).
@@ -270,7 +279,14 @@ export function jumpHitLine(
   windowStart: number,
   windowEnd: number,
   direction: 1 | -1,
+  /** The message owning the window's top line, or undefined when the reader
+   *  holds no lines at all (and therefore no hits to walk). */
+  currentMessage: number | undefined,
 ): number | undefined {
+  // The parked hit's own header — the backward bound. Every other parked
+  // message (a non-hit one, or none) keeps the window top it always used.
+  const parkedHit = currentMessage === undefined ? -1 : (hitStartLines[currentMessage] ?? -1)
+  const backwardFrom = parkedHit >= 0 ? parkedHit : windowStart
   let first: number | undefined
   let last: number | undefined
   let below: number | undefined
@@ -280,7 +296,7 @@ export function jumpHitLine(
     if (first === undefined || line < first) first = line
     if (last === undefined || line > last) last = line
     if (line >= windowEnd && (below === undefined || line < below)) below = line
-    if (line < windowStart && (above === undefined || line > above)) above = line
+    if (line < backwardFrom && (above === undefined || line > above)) above = line
   }
   if (first === undefined || last === undefined) return undefined
   return direction > 0 ? (below ?? first) : (above ?? last)

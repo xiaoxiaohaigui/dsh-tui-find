@@ -273,8 +273,19 @@ export function useFindInput(deps: FindInputDeps): void {
           // recent-session card has an empty hit table and no-ops silently.
           // The landing is hit-aware like the anchor path: a target whose
           // keyword sits below its own viewport opens on the keyword, not on
-          // a header that hides it.
-          const target = jumpHitLine(previewHitStarts, previewWindowStart, previewWindowEnd, key.shift ? -1 : 1)
+          // a header that hides it. The backward step needs the message the
+          // window is parked IN on top of the window itself: a landing opens
+          // below its own hit's header, so that header counts as "above the
+          // window" while the hit fills the screen — measuring from the
+          // window top alone would name it and re-land on the line already
+          // shown, i.e. Shift+n would do nothing.
+          const target = jumpHitLine(
+            previewHitStarts,
+            previewWindowStart,
+            previewWindowEnd,
+            key.shift ? -1 : 1,
+            messageAtLine(previewLines, previewWindowStart),
+          )
           if (target !== undefined) {
             const targetMessage = messageAtLine(previewLines, target) ?? 0
             setPreviewWindowStart(hitLanding(previewLines, targetMessage, previewPageJump))

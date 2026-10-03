@@ -269,39 +269,59 @@ describe('hitLanding', () => {
 })
 
 describe('jumpHitLine', () => {
-  // Messages 0..5; hits at 1 (header line 3) and 4 (header line 9).
+  // Messages 0..5; hits at 1 (header line 3) and 4 (header line 9). The
+  // message owning a line is the fifth argument every call spells out —
+  // m0: 0..2, m1: 3..4, m2: 5..6, m3: 7..8, m4: 9..11, m5: 12..13.
   const table = [-1, 3, -1, -1, 9, -1]
 
   it('takes the first hit below the window on n, skipping the visible ones', () => {
     // At the top with a 4-row window (lines 0..3): line 3 is on screen, so
     // the next press lands on the far hit rather than re-showing it.
-    expect(jumpHitLine(table, 0, 4, 1)).toBe(9)
+    expect(jumpHitLine(table, 0, 4, 1, 0)).toBe(9)
     // A one-row window that stops just above line 3 targets it.
-    expect(jumpHitLine(table, 0, 3, 1)).toBe(3)
+    expect(jumpHitLine(table, 0, 3, 1, 0)).toBe(3)
     // From below the last hit, n wraps to the first.
-    expect(jumpHitLine(table, 9, 12, 1)).toBe(3)
+    expect(jumpHitLine(table, 9, 12, 1, 4)).toBe(3)
   })
 
   it('takes the last hit above the window on N, likewise wrapping', () => {
-    expect(jumpHitLine(table, 9, 12, -1)).toBe(3)
-    expect(jumpHitLine(table, 4, 9, -1)).toBe(3)
+    expect(jumpHitLine(table, 9, 12, -1, 4)).toBe(3)
+    expect(jumpHitLine(table, 4, 9, -1, 1)).toBe(9)
     // From the top, N wraps to the last hit.
-    expect(jumpHitLine(table, 0, 3, -1)).toBe(9)
+    expect(jumpHitLine(table, 0, 3, -1, 0)).toBe(9)
   })
 
   it('never re-targets a hit that is already on screen', () => {
     // The window (lines 3..11) holds both hits: each direction wraps, so a
     // press always moves even in a conversation that fits entirely.
-    expect(jumpHitLine(table, 3, 12, 1)).toBe(3)
-    expect(jumpHitLine(table, 3, 12, -1)).toBe(9)
+    expect(jumpHitLine(table, 3, 12, 1, 1)).toBe(3)
+    expect(jumpHitLine(table, 3, 12, -1, 1)).toBe(9)
+  })
+
+  it('steps back past the hit the window is parked on, not onto it', () => {
+    // m4's hit is deep inside its own message: the landing opens the window
+    // on its body (line 10), so its header (line 9) sits above the window top
+    // while the hit itself fills the screen. N must reach the hit BEFORE it —
+    // reading the window top alone would name m4's own header, land back on
+    // line 10 and leave the key looking dead (the reported Shift+n no-op).
+    expect(jumpHitLine(table, 10, 15, -1, 4)).toBe(3)
+    // One line higher the parked hit's header IS the window top, which was
+    // never the target either: same answer, from the header itself.
+    expect(jumpHitLine(table, 9, 15, -1, 4)).toBe(3)
+    // A window parked on a NON-hit message keeps the plain window-top rule:
+    // m2 (lines 5..6) sits below the hit at line 3 and above the one at 9.
+    expect(jumpHitLine(table, 5, 9, -1, 2)).toBe(3)
+    // Pressed on the first hit's landing there is nothing before it, so N
+    // wraps to the far end of the list like any other end-of-list press.
+    expect(jumpHitLine(table, 4, 9, -1, 1)).toBe(9)
   })
 
   it('answers empty tables and empty windows', () => {
-    expect(jumpHitLine([], 0, 5, 1)).toBeUndefined()
-    expect(jumpHitLine([-1, -1], 0, 5, -1)).toBeUndefined()
+    expect(jumpHitLine([], 0, 5, 1, undefined)).toBeUndefined()
+    expect(jumpHitLine([-1, -1], 0, 5, -1, 0)).toBeUndefined()
     // A degenerate window still resolves: both hits sit below line 0.
-    expect(jumpHitLine(table, 0, 0, 1)).toBe(3)
-    expect(jumpHitLine(table, 0, 0, -1)).toBe(9)
+    expect(jumpHitLine(table, 0, 0, 1, 0)).toBe(3)
+    expect(jumpHitLine(table, 0, 0, -1, 0)).toBe(9)
   })
 
   it('serves a table derived from built lines the way the scene does', () => {
@@ -314,9 +334,9 @@ describe('jumpHitLine', () => {
     // msg1's header sits at line 2 (after msg0's header+body), msg4's at 8.
     expect(table).toEqual([-1, 2, -1, -1, 8])
     // The end is EXCLUSIVE: a window [0, 3) shows line 2, so n skips it.
-    expect(jumpHitLine(table, 0, 3, 1)).toBe(8)
-    expect(jumpHitLine(table, 0, 2, 1)).toBe(2)
-    expect(jumpHitLine(table, 8, 10, -1)).toBe(2)
+    expect(jumpHitLine(table, 0, 3, 1, 0)).toBe(8)
+    expect(jumpHitLine(table, 0, 2, 1, 0)).toBe(2)
+    expect(jumpHitLine(table, 8, 10, -1, 4)).toBe(2)
   })
 })
 
