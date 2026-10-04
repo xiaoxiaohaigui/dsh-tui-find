@@ -8,6 +8,7 @@ import {
   jumpHitLine,
   messageAtLine,
   messageHeaderLine,
+  messageHitLine,
   scrollWindow,
 } from '../src/preview.js'
 
@@ -268,6 +269,55 @@ describe('hitLanding', () => {
   })
 })
 
+describe('messageHitLine', () => {
+  /** One message with a keyword hit, laid out at `cols`, plus the built
+   *  lines — the hit's ranges come from the message's own text so the line
+   *  really carries them (the wrap primitive rebases them per line). */
+  const buildWithHit = (
+    text: string,
+    needle: string,
+    cols = 20,
+    withHits = true,
+  ): ReturnType<typeof buildPreviewLines> => {
+    const at = text.indexOf(needle)
+    const ranges =
+      withHits && at >= 0 ? new Map([[1, [[at, at + needle.length]] as readonly [number, number][]]]) : undefined
+    return buildPreviewLines(
+      [message('intro'), message(text, 'assistant'), message('tail')],
+      new Set([1]),
+      cols,
+      ranges,
+    )
+  }
+
+  it('answers the line the keyword is painted on, not the message head', () => {
+    const lines = buildWithHit(`pad ${'pad '.repeat(30)}needle tail`, 'needle')
+    const hitLine = messageHitLine(lines, 1)
+    expect(hitLine).toBe(lines.findIndex(line => line.kind === 'body' && line.ranges.length > 0))
+    expect(hitLine).toBeGreaterThan(messageHeaderLine(lines, 1))
+    // The messages around it answer for their own lines only: msg0 carries no
+    // hit at all, and the scan stops before msg2's body.
+    expect(messageHitLine(lines, 0)).toBeUndefined()
+    expect(messageHitLine(lines, 2)).toBeUndefined()
+  })
+
+  it('answers nothing when the hit is not in the message body', () => {
+    // A title hit: the message is marked as a hit, its text carries no range.
+    const lines = buildWithHit('plain text', 'needle', 20, false)
+    expect(messageHitLine(lines, 1)).toBeUndefined()
+    // Out-of-range anchors clamp like messageHeaderLine and still answer the
+    // last message's own line (hitLanding relies on the same clamp).
+    const tail = buildPreviewLines(
+      [message('intro'), message('needle tail', 'assistant')],
+      new Set([1]),
+      20,
+      new Map([[1, [[0, 6]] as readonly [number, number][]]]),
+    )
+    expect(messageHitLine(tail, 99)).toBe(tail.findIndex(line => line.kind === 'body' && line.ranges.length > 0))
+    expect(messageHitLine([], 0)).toBeUndefined()
+  })
+})
+
 describe('jumpHitLine', () => {
   // Messages 0..5; hits at 1 (header line 3) and 4 (header line 9). The
   // message owning a line is the fifth argument every call spells out —
@@ -314,6 +364,29 @@ describe('jumpHitLine', () => {
     // Pressed on the first hit's landing there is nothing before it, so N
     // wraps to the far end of the list like any other end-of-list press.
     expect(jumpHitLine(table, 4, 9, -1, 1)).toBe(9)
+  })
+
+  it('steps onto the parked hit once its keyword scrolled off the top', () => {
+    // The reader kept scrolling down after the landing until the window's top
+    // line (11) passed m4's keyword (line 10): the hit is now outside the
+    // window like any other, and N is the only step pointing at it — n skips
+    // it by its own rule (its header sits above the window's end). The keyword
+    // line is the bound there, so N lands on the parked hit's own header and
+    // the caller's landing brings the keyword back into view (REVIEW R-118).
+    expect(jumpHitLine(table, 11, 16, -1, 4, 10)).toBe(9)
+    // The keyword still ON screen (line 10 is the window top) keeps the header
+    // bound: N steps past the parked hit exactly as before.
+    expect(jumpHitLine(table, 10, 15, -1, 4, 10)).toBe(3)
+    expect(jumpHitLine(table, 9, 15, -1, 4, 10)).toBe(3)
+    // A message whose hit is not in its indexed body has no keyword line to
+    // offer, so the header rule stands however far the reader scrolled.
+    expect(jumpHitLine(table, 11, 16, -1, 4)).toBe(3)
+    expect(jumpHitLine(table, 11, 16, -1, 4, -1)).toBe(3)
+    // The parked message is a non-hit one: its own (irrelevant) keyword line
+    // cannot move the plain window-top rule.
+    expect(jumpHitLine(table, 5, 9, -1, 2, 4)).toBe(3)
+    // Forward is untouched by the new input: n still reads the window's end.
+    expect(jumpHitLine(table, 3, 9, 1, 1, 4)).toBe(9)
   })
 
   it('answers empty tables and empty windows', () => {

@@ -186,6 +186,62 @@ describe('preview scene wiring', () => {
     }
   })
 
+  it('steps N onto a hit whose keyword the reader scrolled past', async () => {
+    // REVIEW R-118: the reader keeps scrolling DOWN after the landing until
+    // the window's top line passes the keyword. The hit is then outside the
+    // window like any other, and N is the only step pointing at it — n skips
+    // it by its own rule, because its header sits above the window's end.
+    // Bounding the backward step at the parked message's header walked past
+    // it altogether and left the nearest hit above the window unreachable
+    // from both keys (the probe behind this case landed on 'needle one').
+    const before = Array.from({ length: 20 }, (_, index) => `before line ${index}`)
+    const after = Array.from({ length: 20 }, (_, index) => `after line ${index}`)
+    const deep = [...before, 'needle deep', ...after].join('\n')
+    const harness = await mount(sessionWithMessages(['needle one', deep, 'needle three']), { rows: 12 })
+    try {
+      harness.send('\u001b[B')
+      harness.send('\u001b[B')
+      await waitFor()
+      harness.send('\u001bp')
+      await waitFor()
+      // The host's whitespace-cursor optimisation merges the spaces of a
+      // scrolled body line, so every pattern in this case tolerates them (the
+      // same `\s*` the split wiring cases use).
+      const landed = await paintedFrame(harness, [/needle\s*deep/], 3_000)
+      expect(landed).toMatch(/needle\s*deep/)
+
+      // ↓ walks the window's top line past the keyword while the window stays
+      // parked inside that same message (the fifth press is the one that
+      // pushes 'needle deep' off the top; the probe recorded 5).
+      for (let press = 0; press < 5; press++) {
+        harness.send('\u001b[B')
+        await waitFor(60)
+      }
+      const scrolled = await paintedFrame(harness, [/after\s*line/], 3_000)
+      expect(scrolled).toMatch(/after\s*line/)
+      expect(scrolled).not.toMatch(/needle\s*deep/)
+
+      harness.send('N')
+      await waitFor()
+      // Back ON the parked hit with its keyword in view — not past it.
+      const stepped = await paintedFrame(harness, [/needle\s*deep/], 3_000)
+      expect(stepped).toMatch(/needle\s*deep/)
+      expect(stepped).not.toMatch(/needle\s*one/)
+      expect(stepped).toMatch(/✔\s*Hit\s*2\/3/)
+
+      // The keyword is on screen again, so the next press steps past the
+      // parked hit as always — the extra press this state costs, pinned here
+      // so the bound cannot silently stay on the keyword line.
+      harness.send('N')
+      await waitFor()
+      const previous = await paintedFrame(harness, [/needle\s*one/], 3_000)
+      expect(previous).toMatch(/needle\s*one/)
+      expect(previous).not.toMatch(/needle\s*deep/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('pages by the viewport with PgUp/PgDn, and Alt+C falls back to the top message without hits', async () => {
     const harness = await mount(
       sessionWithMessages(['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff', 'ggggggg', 'hhhhhhhh']),

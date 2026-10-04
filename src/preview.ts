@@ -196,6 +196,31 @@ export function messageHeaderLine(
 }
 
 /**
+ * The first body line of `messageIndex` that carries a hit range — the line
+ * the keyword is actually painted on, i.e. where that hit lives on screen.
+ * Undefined when the message's hits are not in its indexed body (a title hit,
+ * an anchor of -1, a hit range that fell outside this wrap): the message is a
+ * hit, but no line of it shows why.
+ *
+ * The scan stops at the next message's header, so a body line of the message
+ * BELOW can never answer for the message above (an out-of-range anchor clamps
+ * onto the last header, exactly as {@link messageHeaderLine} does).
+ */
+export function messageHitLine(
+  lines: readonly PreviewLine[],
+  messageIndex: number,
+): number | undefined {
+  const headerLine = Math.max(0, messageHeaderLine(lines, messageIndex))
+  for (let at = headerLine; at < lines.length; at++) {
+    const line = lines[at]
+    if (line === undefined) break
+    if (line.kind === 'header' && line.messageIndex > messageIndex) break
+    if (line.kind === 'body' && line.ranges.length > 0) return at
+  }
+  return undefined
+}
+
+/**
  * The line a fresh anchor opens the reader ON — the top line of its window.
  * When the anchored message's hit fits in the viewport below its own header,
  * the reader keeps the header-anchored shape (window starting at the header)
@@ -215,16 +240,7 @@ export function hitLanding(
 ): number {
   const headerLine = messageHeaderLine(lines, messageIndex)
   const viewport = Math.max(1, Math.floor(viewportHeight))
-  let hitLine: number | undefined
-  for (let at = Math.max(0, headerLine); at < lines.length; at++) {
-    const line = lines[at]
-    if (line === undefined) break
-    if (line.kind === 'header' && line.messageIndex > messageIndex) break
-    if (line.kind === 'body' && line.ranges.length > 0) {
-      hitLine = at
-      break
-    }
-  }
+  const hitLine = messageHitLine(lines, messageIndex)
   // Reachable from the header: the anchored frame already shows the keyword
   // (and the message's own head), so nothing about it should move.
   if (hitLine === undefined || hitLine - headerLine + 1 <= viewport) return headerLine
@@ -253,6 +269,38 @@ export function scrollWindow(
 }
 
 /**
+ * Where the backward step searches up from: the parked hit's own header, the
+ * window top when the parked message is not a hit at all, or — in one state —
+ * the parked hit's own keyword line.
+ *
+ * Bounding at the header is what keeps a repeat `N` moving: after a
+ * hit-aware landing the parked hit itself fills the screen while its header
+ * sits above the window top, so naming that header would land on the line
+ * already shown. That reasoning fails once the reader scrolls DOWN past the
+ * keyword while still parked inside the same message: the hit is then above
+ * the window like any other (the header is further up still), and `N` — which
+ * is the only step pointing at it, since `n` skips it by its own rule (its
+ * header sits above the window's end) — would walk straight past it, leaving
+ * the nearest hit above the window unreachable without manual scrolling. Its
+ * keyword line is the bound in that state: the range up to it holds no other
+ * message (only the parked message's own header), so the parked hit becomes
+ * the first candidate and the caller's landing scrolls the keyword back into
+ * view — after which the keyword is on screen again and the header rule
+ * resumes, so the key still never dead-ends.
+ */
+function backwardBound(
+  parkedHit: number,
+  parkedHitBodyLine: number | undefined,
+  windowStart: number,
+): number {
+  if (parkedHit < 0) return windowStart
+  if (parkedHitBodyLine !== undefined && parkedHitBodyLine >= 0 && parkedHitBodyLine < windowStart) {
+    return parkedHitBodyLine
+  }
+  return parkedHit
+}
+
+/**
  * The hit `n`/`N` moves to, as the hit message's header line. The reader has
  * no cursor, so its position is the visible window: `n` (direction 1) takes
  * the first hit at or below the window's end and `N` (direction -1) the last
@@ -270,6 +318,11 @@ export function scrollWindow(
  * only land the window on the very line it already shows and `N` would read
  * as a dead key.
  *
+ * A parked message whose keyword the reader has since scrolled PAST is the
+ * one exception (see backwardBound): bounding at its header would hide the
+ * nearest hit above the window from both steps, so the hit's own body line
+ * takes over as the bound and `N` steps onto it.
+ *
  * `hitStartLines` is indexed BY MESSAGE index: entry m holds the header line
  * of message m when m is a hit, or the -1 sentinel when it is not (the scene
  * derives the table from the built lines' hit headers).
@@ -282,11 +335,15 @@ export function jumpHitLine(
   /** The message owning the window's top line, or undefined when the reader
    *  holds no lines at all (and therefore no hits to walk). */
   currentMessage: number | undefined,
+  /** The parked message's own first hit body line ({@link messageHitLine}) —
+   *  undefined when it has none (its hit is not in its indexed body, a title
+   *  hit, no lines at all). Only the backward direction reads it. */
+  parkedHitBodyLine?: number,
 ): number | undefined {
   // The parked hit's own header — the backward bound. Every other parked
   // message (a non-hit one, or none) keeps the window top it always used.
   const parkedHit = currentMessage === undefined ? -1 : (hitStartLines[currentMessage] ?? -1)
-  const backwardFrom = parkedHit >= 0 ? parkedHit : windowStart
+  const backwardFrom = backwardBound(parkedHit, parkedHitBodyLine, windowStart)
   let first: number | undefined
   let last: number | undefined
   let below: number | undefined

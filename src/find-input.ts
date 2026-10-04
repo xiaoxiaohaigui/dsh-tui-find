@@ -20,6 +20,7 @@ import {
   hitOrdinal,
   jumpHitLine,
   messageAtLine,
+  messageHitLine,
   scrollWindow,
   type PreviewLine,
 } from './preview.js'
@@ -278,13 +279,19 @@ export function useFindInput(deps: FindInputDeps): void {
           // below its own hit's header, so that header counts as "above the
           // window" while the hit fills the screen — measuring from the
           // window top alone would name it and re-land on the line already
-          // shown, i.e. Shift+n would do nothing.
+          // shown, i.e. Shift+n would do nothing. Its own keyword line comes
+          // along because scrolling down past the keyword moves the parked
+          // hit genuinely outside the window: the bound then falls to that
+          // line, so `N` steps onto the hit instead of walking past it
+          // (REVIEW R-118).
+          const parkedMessage = messageAtLine(previewLines, previewWindowStart)
           const target = jumpHitLine(
             previewHitStarts,
             previewWindowStart,
             previewWindowEnd,
             key.shift ? -1 : 1,
-            messageAtLine(previewLines, previewWindowStart),
+            parkedMessage,
+            parkedMessage === undefined ? undefined : messageHitLine(previewLines, parkedMessage),
           )
           if (target !== undefined) {
             const targetMessage = messageAtLine(previewLines, target) ?? 0
