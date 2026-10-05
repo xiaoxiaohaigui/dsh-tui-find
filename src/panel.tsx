@@ -340,10 +340,19 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
       <Box flexDirection="column" paddingLeft={1} paddingRight={1} width={width} flexShrink={0}>
         <Box flexShrink={0} {...(declareCursor !== undefined ? { ref: declareCursor } : {})}>
           {snapshot.query.length === 0 ? (
+            // Empty row: the caret cell while this panel owns the keyboard, the
+            // hint text while it does not — never both. A terminal paints the
+            // IME preedit at the parked cursor, and the app receives no input
+            // events while a composition is active, so it can never move a
+            // hint out of the way in time (the host's own PromptInput rule:
+            // keep the row blank and the preedit has nothing to shove aside).
             <Text wrap="truncate-end">
               {'⌕ '}
-              {caret}
-              <Text dimColor>{truncateWidth(t('panel-placeholder'), Math.max(1, contentWidth - 3))}</Text>
+              {focused ? (
+                caret
+              ) : (
+                <Text dimColor>{truncateWidth(t('panel-placeholder'), Math.max(1, contentWidth - 3))}</Text>
+              )}
             </Text>
           ) : (
             <Text wrap="truncate-end">

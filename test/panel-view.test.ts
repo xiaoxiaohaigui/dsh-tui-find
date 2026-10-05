@@ -248,11 +248,12 @@ describe('find panel component', () => {
   it('draws the query line, the counts and the result rows', async () => {
     const view = await mountPanel()
     try {
-      // An empty query is the recent list: the placeholder sits on the query
-      // line and the card carries the session. Ink re-renders differentially,
-      // so content is asserted against the cumulative stream — and the fixture
-      // warms the store first, so the frame carrying all three of these is
-      // painted whole rather than diffed against a cold one.
+      // An empty query is the recent list: the "type to search" hint sits on
+      // the bottom hint row (the query row itself stays blank while the panel
+      // is focused — R-154) and the card carries the session. Ink re-renders
+      // differentially, so content is asserted against the cumulative stream —
+      // and the fixture warms the store first, so the frame carrying all three
+      // of these is painted whole rather than diffed against a cold one.
       expect(view.output()).toMatch(/Type\s*to\s*search/)
       expect(view.output()).toMatch(/Title\s*a/)
       expect(view.output()).toMatch(/1\s*sessions/)
@@ -508,6 +509,34 @@ describe('find panel component', () => {
       expect(calls[0]?.node).toBeTruthy()
     } finally {
       view.unmount()
+    }
+  })
+
+  it('keeps the query row bare while the panel can take a composition', async () => {
+    // R-154: a terminal paints the IME preedit at the parked cursor, and the app
+    // receives no input events while a composition is active — so any text to
+    // the caret's right gets shoved aside in front of the user. The panel keeps
+    // the row blank whenever it owns the keyboard, and shows the hint only
+    // while it does not; the bottom hint row carries the affordance either way.
+    const row = (output: string): string =>
+      stripAnsi(output)
+        .split('\n')
+        .find(line => line.includes('⌕')) ?? ''
+
+    const focusedView = await mountPanel()
+    try {
+      expect(row(focusedView.output())).toContain('⌕')
+      expect(row(focusedView.output())).not.toMatch(/Type\s*to\s*search/)
+      expect(focusedView.output()).toMatch(/Type\s*to\s*search/)
+    } finally {
+      focusedView.unmount()
+    }
+
+    const idleView = await mountPanel({ focused: false })
+    try {
+      expect(row(idleView.output())).toMatch(/Type\s*to\s*search/)
+    } finally {
+      idleView.unmount()
     }
   })
 })
