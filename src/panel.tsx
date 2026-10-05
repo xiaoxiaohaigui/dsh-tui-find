@@ -38,7 +38,8 @@ import { ListView } from './find-list.js'
 import { wheelRows, type RowUi } from './find-types.js'
 import type { FindPanelDriver } from './panel-model.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
-import { tailWidth, truncateWidth } from './width.js'
+import { useHostDeclaredCursor } from './vendor/host-cursor.js'
+import { displayWidth, tailWidth, truncateWidth } from './width.js'
 
 /** Panel id SUFFIX only: the host assigns the final id when it accepts the
  *  registration (the descriptor's id is never the wiring key), and the panel
@@ -179,11 +180,15 @@ function resolvePanelId(panels: PanelServiceSurface): string | undefined {
 /**
  * The panel component for one registration attempt.
  *
- * IME note (`declarePanelCursor`): the full-screen search card declares the
- * terminal's cursor so a composing IME draws its preedit inline; the panel kit
- * cannot (its Box type strips `ref`), so an IME preedit may render wherever
- * the host left the cursor. Pinyin search — on by default — is the documented
- * way around it: `denglu` finds 登录 without an IME.
+ * IME note: the query row declares the terminal's cursor while the panel holds
+ * focus, so a composing IME draws its preedit — and the candidate window — at
+ * the query caret instead of wherever the host last parked the cursor (the
+ * chat input's own declaration, at the bottom of the screen). The bridge is the
+ * one the scene's search card already uses; it needs a `ref` on a host Box,
+ * which a panel CAN have — the adapter narrows the `ui` TYPE, but the runtime
+ * Box forwards `ref` (R-153). Declaring is best-effort: a host whose hook file
+ * moved degrades to no declaration, exactly the pre-fix behaviour, and pinyin
+ * search stays the way around an IME entirely (`denglu` finds 登录).
  */
 export function buildFindPanelComponent(driver: FindPanelDriver): React.ComponentType<FindPanelProps> {
   const FindPanel = (props: FindPanelProps): React.ReactElement => {
@@ -321,10 +326,19 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
     const hitWidth = Math.max(1, contentWidth - 4)
     const caret = focused ? <Text inverse>{' '}</Text> : null
     const queryTail = tailWidth(snapshot.query, Math.max(0, contentWidth - 3))
+    // Caret column relative to the query row's own box: `⌕ ` (2 cells) plus the
+    // visible tail, which is where the row renders the caret. `active` follows
+    // focus, and the host hook clears only when the parked node is ours, so
+    // losing focus hands the cursor back without clobbering another declarer.
+    const caretColumn = 2 + (snapshot.query.length === 0 ? 0 : displayWidth(queryTail))
+    const declareCursor =
+      useHostDeclaredCursor !== undefined
+        ? useHostDeclaredCursor({ line: 0, column: caretColumn, active: focused })
+        : undefined
 
     return (
       <Box flexDirection="column" paddingLeft={1} paddingRight={1} width={width} flexShrink={0}>
-        <Box flexShrink={0}>
+        <Box flexShrink={0} {...(declareCursor !== undefined ? { ref: declareCursor } : {})}>
           {snapshot.query.length === 0 ? (
             <Text wrap="truncate-end">
               {'⌕ '}

@@ -9,6 +9,8 @@
  * swallows every unconsumed plain key in a focused sidebar.
  */
 import { Writable, PassThrough } from 'node:stream'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import React from 'react'
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
@@ -35,6 +37,28 @@ function StubDivider(): React.ReactElement {
     null,
     React.createElement(hostUi.Text, { dimColor: true }, '─'.repeat(20)),
   )
+}
+
+/** One cursor declaration as the host records it: the caret's offset inside the
+ *  declaring Box, plus the Box's node (the hook uses node identity to decide
+ *  whether a clear may touch the current declaration). */
+type CursorDeclaration = (
+  declaration: { relativeX: number; relativeY: number; node: unknown } | null,
+  node?: unknown,
+) => void
+
+/** The host's cursor-declaration context, reached exactly the way
+ *  `src/vendor/host-cursor.ts` reaches the hook (the package's `exports` map
+ *  carries neither subpath). Provided with a spy it makes the panel's
+ *  declaration observable — the fixture renders through the host's own
+ *  renderer, so the hook under test is the real one. */
+function loadCursorContext(): React.Context<CursorDeclaration> {
+  const entryUrl = import.meta.resolve('@deepseek-harness-tui/dsh-tui')
+  const root = fileURLToPath(entryUrl).replace(/[\\/]lib[\\/]types[\\/].*$/, '')
+  const mod = createRequire(import.meta.url)(
+    `${root}/lib/types/ink/components/CursorDeclarationContext.js`,
+  ) as { default: React.Context<CursorDeclaration> }
+  return mod.default
 }
 
 function stubSession(id: string, matches = 1): ScannedSession {
@@ -87,6 +111,9 @@ async function mountPanel(
      *  the "0 sessions" → "1 sessions" edit as a one-cell patch, so a
      *  multi-word line is only guaranteed to appear intact in a full frame. */
     prewarm?: boolean
+    /** Wrap the mounted element — the cursor tests provide the host's own
+     *  cursor-declaration context so the panel's declaration is observable. */
+    wrap?: (element: React.ReactElement) => React.ReactElement
   } = {},
 ): Promise<ViewFixture> {
   const sessions = options.sessions ?? [stubSession('a')]
@@ -162,19 +189,23 @@ async function mountPanel(
   stdout.rows = height
   stdout.getColorDepth = () => 8
 
-  const instance = await hostUi.render(
-    React.createElement(Component, {
-      React,
-      ui,
-      host,
-      width,
-      height,
-      focused: options.focused ?? true,
-      visible: true,
-      mode: 'split',
-    }),
-    { stdout, stdin, stderr: process.stderr, patchConsole: false, exitOnCtrlC: false },
-  )
+  const element = React.createElement(Component, {
+    React,
+    ui,
+    host,
+    width,
+    height,
+    focused: options.focused ?? true,
+    visible: true,
+    mode: 'split',
+  })
+  const instance = await hostUi.render(options.wrap === undefined ? element : options.wrap(element), {
+    stdout,
+    stdin,
+    stderr: process.stderr,
+    patchConsole: false,
+    exitOnCtrlC: false,
+  })
   await new Promise(resolve => setTimeout(resolve, 60))
 
   return {
@@ -412,6 +443,71 @@ describe('find panel component', () => {
       stdout.isTTY = false
       instance.unmount()
       for (const resolve of pending) resolve([])
+    }
+  })
+
+  it('parks the terminal cursor at the query caret while the panel is focused', async () => {
+    // R-153: handing the host a declaration for the query row is what puts a
+    // composing IME's preedit — and its candidate window — at the caret rather
+    // than wherever the host last parked the cursor.
+    const calls: Array<{ declaration: unknown; node?: unknown }> = []
+    const context = loadCursorContext()
+    const view = await mountPanel({
+      wrap: element =>
+        React.createElement(
+          context.Provider,
+          {
+            value: (declaration, node) => {
+              calls.push({ declaration, node })
+            },
+          },
+          element,
+        ),
+    })
+    const declared = (): { relativeX: number; relativeY: number; node: unknown } | undefined =>
+      calls.filter(call => call.declaration !== null).at(-1)?.declaration as
+        | { relativeX: number; relativeY: number; node: unknown }
+        | undefined
+    try {
+      // The query row renders `⌕ ` (two cells) and then the caret, on its own
+      // first line: column 2, line 0, relative to that row's box.
+      expect(declared()).toMatchObject({ relativeX: 2, relativeY: 0 })
+      expect(declared()?.node).toBeTruthy()
+
+      // Typing moves the caret with the visible tail: six characters, column 8.
+      view.send('n')
+      view.send('eedle')
+      await waitUntil(() => declared()?.relativeX === 8)
+      expect(declared()?.relativeX).toBe(8)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('hands the cursor back while the panel is not focused', async () => {
+    const calls: Array<{ declaration: unknown; node?: unknown }> = []
+    const context = loadCursorContext()
+    const view = await mountPanel({
+      focused: false,
+      wrap: element =>
+        React.createElement(
+          context.Provider,
+          {
+            value: (declaration, node) => {
+              calls.push({ declaration, node })
+            },
+          },
+          element,
+        ),
+    })
+    try {
+      // `active: false` never declares: the hook clears (conditionally, on node
+      // identity), so an unfocused panel cannot take the chat's cursor.
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.every(call => call.declaration === null)).toBe(true)
+      expect(calls[0]?.node).toBeTruthy()
+    } finally {
+      view.unmount()
     }
   })
 })
