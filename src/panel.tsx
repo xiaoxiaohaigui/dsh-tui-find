@@ -494,16 +494,20 @@ export function registerFindPanel(ctx: Context, options: { readonly driver: Find
         if (created === undefined) throw new Error('tuiPanels.register refused the find panel')
         return created
       }
-      try {
-        const created = register()
-        dispose = created
+      // Everything that has to happen once a registration is ACCEPTED, shared
+      // by the direct attempt and the retry path (R-147). The badge wiring in
+      // particular cannot live on the direct path alone: a panel that only
+      // landed after the boot-window retry would leave `announceSettled` with
+      // nothing to address, so the background badge would silently not exist
+      // for the whole activation.
+      const afterRegister = (created: () => void): void => {
         // The registration may have been released while it was being made
         // (a same-tick settings edit): honour that instead of leaking it.
         if (disposed) {
           created()
-          dispose = undefined
           return
         }
+        dispose = created
         ctx.effect(() => created)
         // The driver badges its own panel when a sweep settles with nobody
         // looking; that needs the id the host actually assigned.
@@ -517,6 +521,9 @@ export function registerFindPanel(ctx: Context, options: { readonly driver: Find
             }
           })
         }
+      }
+      try {
+        afterRegister(register())
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
         // A shadow-mode run denies this capability outright
@@ -532,15 +539,9 @@ export function registerFindPanel(ctx: Context, options: { readonly driver: Find
           ctx,
           'find panel',
           register,
-          created => {
-            // Same release race as the direct path above.
-            if (disposed) {
-              created()
-              return
-            }
-            dispose = created
-            ctx.effect(() => created)
-          },
+          // The retry path gets the SAME post-acceptance wiring as the direct
+          // one — including the release race it already handled (R-147).
+          afterRegister,
           error,
         )
       }

@@ -129,9 +129,11 @@ async function mountPanel(
   // rewrites just the differing cells — the "0 sessions" → "1 sessions" edit
   // lands in the cumulative stream as a lone "1" with a cursor move where the
   // rest of the line used to be (measured: the cold-first variant of this test
-  // fails with exactly the CI signature). `attach()` is idempotent, so the
-  // mount effect's own call starts no sweep — that cold-path attach is what the
-  // progress test at the bottom pins, since this fixture no longer exercises it.
+  // fails with exactly the CI signature). The mount effect still runs its own
+  // `attach()`: `attach` only skips while a sweep is IN FLIGHT and a settled
+  // one releases the controller, so that call starts a second, cache-warm pass
+  // over the index this prewarm built (R-135) — what the bottom progress test
+  // pins is the COLD first paint, which `prewarm: false` (R-137) also mounts.
   if (options.prewarm !== false) {
     driver.attach()
     driver.setRepoCwd(STUB_CWD)
@@ -326,7 +328,8 @@ describe('find panel component', () => {
     }
   })
 
-  it('unsubscribes its key listener when the panel unmounts', async () => {    const view = await mountPanel()
+  it('unsubscribes its key listener when the panel unmounts', async () => {
+    const view = await mountPanel()
     expect(view.listeners.size).toBe(1)
     view.unmount()
     // The host's adapter keeps one listener set per panel instance: a leaked

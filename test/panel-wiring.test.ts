@@ -281,6 +281,49 @@ describe('registerFindPanel', () => {
     expect(panels.badge).toHaveBeenCalledWith('act1:search', { level: 'info', unread: 0 })
   })
 
+  it('wires the driver badge when the panel only lands on a retry (R-147)', () => {
+    vi.useFakeTimers()
+    const panels = stubPanels()
+    // The first attempt is refused inside the boot liveness window, so the
+    // panel exists only from the retry.
+    panels.register.mockImplementationOnce(() => undefined)
+    const { ctx } = stubCtx({ tuiPanels: panels.runtime })
+    const driver = { bindBadge: vi.fn() } as unknown as FindPanelDriver
+    registerFindPanel(ctx, { driver })
+
+    expect(driver.bindBadge).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(REGISTER_RETRY_DELAY_MS)
+    expect(panels.register).toHaveBeenCalledTimes(2)
+    // The badge is the only signal a sweep that settles while the panel is off
+    // screen has, so the retry path owes the same wiring as the direct one —
+    // without it that signal silently does not exist for the activation.
+    expect(driver.bindBadge).toHaveBeenCalledTimes(1)
+    const emit = vi.mocked(driver.bindBadge).mock.calls[0]![0]
+    emit({ level: 'error', unread: 0 })
+    expect(panels.badge).toHaveBeenCalledWith('act1:search', { level: 'error', unread: 0 })
+  })
+
+  it('releases a retry that lands after the switch went off (R-147)', () => {
+    vi.useFakeTimers()
+    const panels = stubPanels()
+    panels.register.mockImplementationOnce(() => undefined)
+    const { ctx } = stubCtx({ tuiPanels: panels.runtime })
+    const driver = { bindBadge: vi.fn() } as unknown as FindPanelDriver
+    const handle = new FindPanelRegistration(() => registerFindPanel(ctx, { driver }))
+
+    handle.sync(true)
+    expect(panels.register).toHaveBeenCalledTimes(1)
+    // Off while the retry is still armed: the shared post-acceptance path owns
+    // that race too, and must release the panel the user just turned off
+    // instead of leaking it (and must not re-bind the stood-down driver).
+    handle.sync(false)
+
+    vi.advanceTimersByTime(REGISTER_RETRY_DELAY_MS)
+    expect(panels.register).toHaveBeenCalledTimes(2)
+    expect(panels.descriptors).toEqual([])
+    expect(driver.bindBadge).not.toHaveBeenCalled()
+  })
+
   it('skips the badge wiring when the host cannot list its own panels', () => {
     const panels = stubPanels()
     // A drifted service without `list`: registration still works (the panel is

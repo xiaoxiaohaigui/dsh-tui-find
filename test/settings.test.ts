@@ -294,7 +294,8 @@ describe('settings namespace', () => {
     expect(schema?.({ layout: 'classic' })['layout']).toBe('classic')
   })
 
-  it('carries the sub-agent switch in the ≤0.1.6 namespace schema', () => {    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
+  it('carries the sub-agent switch in the ≤0.1.6 namespace schema', () => {
+    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
     const { ctx } = fakeContext({
       settings: {
         register: (_namespace: unknown, registered: unknown) => {
