@@ -61,6 +61,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       defaultScope: 'repo',
       defaultTime: 'all',
       layout: 'split',
+      panel: true,
       caseSensitive: false,
       regex: false,
       pinyin: true,
@@ -88,6 +89,16 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
     expect(resolveConfig({ titleOnly: true }).titleOnly).toBe(true)
     expect(resolveConfig({ titleOnly: false }).titleOnly).toBe(false)
     expect(resolveConfig({ titleOnly: 'yes' as never }).titleOnly).toBe(false)
+  })
+
+  it('panel defaults on and only an explicit false disables it', () => {
+    // The one durable opt-out for the sidebar panel (REVIEW R-128): "off"
+    // must mean never registered, so the resolution has to be `!== false`
+    // rather than a truthiness read of a possibly-junk value.
+    expect(resolveConfig({}).panel).toBe(true)
+    expect(resolveConfig({ panel: true }).panel).toBe(true)
+    expect(resolveConfig({ panel: false }).panel).toBe(false)
+    expect(resolveConfig({ panel: 'no' as never }).panel).toBe(true)
   })
 
   it('showSubagentSessions defaults off and only an explicit true enables it', () => {

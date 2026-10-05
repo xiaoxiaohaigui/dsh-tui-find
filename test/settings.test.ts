@@ -255,7 +255,7 @@ describe('settings namespace', () => {
     // host turns into a thrown registration.
     for (const field of card?.fields ?? []) (pages[field.group ?? '(root)'] ??= []).push(field.path.join('.'))
     expect(pages).toEqual({
-      '(root)': ['defaultScope', 'defaultTime', 'layout', 'shortcut'],
+      '(root)': ['defaultScope', 'defaultTime', 'layout', 'panel', 'shortcut'],
       matching: ['caseSensitive', 'regex', 'pinyin', 'titleOnly'],
       indexing: ['showSubagentSessions', 'indexTools', 'indexThinking', 'maxMessageChars', 'warmup'],
       advanced: ['sessionRoot'],

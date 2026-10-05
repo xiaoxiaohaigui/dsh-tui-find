@@ -14,6 +14,8 @@
       # defaultScope: 'repo' | 'all'   — initial search scope (repo)
       # defaultTime: 'all' | '7d' | '30d' — initial time window (all)
       # layout: 'split' | 'classic'    — scene layout (split; >= 100 columns)
+      # panel: boolean                 — sidebar search panel, needs dsh-TUI
+      #                                  0.13.0+ (true; false = never register)
       # caseSensitive: boolean         — case-sensitive matching (false)
       # regex: boolean                 — start in regex mode (false)
       # pinyin: boolean                — pinyin matching (true)

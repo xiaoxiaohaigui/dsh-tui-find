@@ -46,7 +46,7 @@ import { registerCommandTree } from './command-tree.js'
 import { SessionScanner } from './core/scan.js'
 import { dict, setLangOverride, t } from './i18n.js'
 import { makeNotifier } from './notify.js'
-import { registerFindPanel } from './panel.js'
+import { registerFindPanel, FindPanelRegistration } from './panel.js'
 import { FindPanelDriver } from './panel-model.js'
 import { FindScene, type SceneSeed } from './scene.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
@@ -193,6 +193,12 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   let panelDriver: FindPanelDriver | undefined
 
   /**
+   * The live `panel` row switch, once setupScenes built the registration
+   * (the settings callback below is registered outside that scope).
+   */
+  let applyPanelToggle: ((enabled: boolean) => void) | undefined
+
+  /**
    * Open the scene with a one-shot seed. Every entry point (the `/find`
    * command, the global shortcut and the sidebar panel) comes through here, so
    * the seed, the remount cycling and the "the scene supersedes the panel's
@@ -255,14 +261,22 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     // Visible to the shared scene opener above, so `/find` and the global
     // shortcut can make the panel's sweep stand down.
     panelDriver = driver
-    // Registered on 0.13.0+ only (the sidebar itself is that new): a no-op
-    // everywhere else, like every other optional seam in this plugin.
-    registerFindPanel(ctx, { driver })
+    // The sidebar panel, registered on 0.13.0+ only (the sidebar itself is
+    // that new) and only while the `panel` row says so: a no-op everywhere
+    // else, like every other optional seam in this plugin. The row is
+    // live-editable, and "off" must mean NEVER REGISTERED — the host re-appends
+    // a plugin id to its enable list on every registration, so a register-then-
+    // remove dance would come back on the next boot (REVIEW R-128).
+    const panelRegistration = new FindPanelRegistration(() => registerFindPanel(ctx, { driver }))
+    panelRegistration.sync(runtimeConfig.panel)
     ctx.effect(() => () => {
+      panelRegistration.dispose()
       driver.dispose()
       // A disposed driver must not be handed a later scene opening.
       if (panelDriver === driver) panelDriver = undefined
     })
+    // …and the settings card's live edits drive the same switch.
+    applyPanelToggle = enabled => panelRegistration.sync(enabled)
     const component = (props: TuiSceneProps) => (
       <FindScene
         {...props}
@@ -546,6 +560,9 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     onResolved: next => {
       runtimeConfig = next
       bindShortcut(next.shortcut, next.shortcut ?? 'off')
+      // The sidebar panel is the other live surface knob: turning it off must
+      // unregister (and, per the row's contract, never come back on its own).
+      applyPanelToggle?.(next.panel)
     },
   })
 }

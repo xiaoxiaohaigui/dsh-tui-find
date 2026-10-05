@@ -109,6 +109,11 @@ export type Config = {
    *  automatically); `classic` always renders the single-column list with
    *  the full-screen Alt+P preview. */
   layout?: 'split' | 'classic'
+  /** Register the sidebar search panel (dsh-TUI 0.13.0+). Default ON. OFF
+   *  means the panel is never registered at all — the host appends a plugin
+   *  panel's id to its own enable list on every registration, so this row is
+   *  the only durable opt-out (see docs/decisions/2026-10-04-…§5). */
+  panel?: boolean
   /** Case-sensitive matching. Default OFF (spec §6 freeze). */
   caseSensitive?: boolean
   /** Treat queries as JavaScript regular expressions by default. Default
@@ -162,6 +167,7 @@ export const LIVE_CONFIG_KEYS = [
   'defaultScope',
   'defaultTime',
   'layout',
+  'panel',
   'caseSensitive',
   'regex',
   'pinyin',
@@ -271,6 +277,10 @@ const configFields = {
   defaultScope: z.union(['repo', 'all']).default('repo'),
   defaultTime: z.union(['all', '7d', '30d']).default('all'),
   layout: z.union(['split', 'classic']).default('split'),
+  // The sidebar panel (dsh-TUI 0.13.0+). Off = the panel is never registered:
+  // the host's own enable list re-appends a plugin id on every registration,
+  // so this switch is the only DURABLE opt-out (see the decision file §5).
+  panel: z.boolean().default(true),
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
   pinyin: z.boolean().default(true),
@@ -317,6 +327,8 @@ export interface ResolvedConfig {
   readonly defaultScope: 'repo' | 'all'
   readonly defaultTime: 'all' | '7d' | '30d'
   readonly layout: 'split' | 'classic'
+  /** Register the sidebar panel (dsh-TUI 0.13.0+); false = never register. */
+  readonly panel: boolean
   readonly caseSensitive: boolean
   readonly regex: boolean
   readonly pinyin: boolean
@@ -344,6 +356,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
     // Defensive: any unknown value lands on the split default (the schema
     // validates real rows; this layer also feeds tests and drift).
     layout: value.layout === 'classic' ? 'classic' : 'split',
+    panel: value.panel !== false,
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,
     pinyin: value.pinyin !== false,

@@ -388,6 +388,43 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
   return FindPanel
 }
 
+/** The live registration: disposal works whether or not the late-mount poll
+ *  has landed yet. */
+export interface FindPanelHandle {
+  dispose(): void
+}
+
+/**
+ * Keep the host registration in step with the `panel` config row.
+ *
+ * The row is live-editable, and the host's own enable list re-appends a plugin
+ * id on every registration — so "off" has to mean *never registered*, not
+ * "registered and then removed" (that would come back on the next boot). This
+ * holder is the one place that decision is applied, from both the initial
+ * apply and the settings service's live-update callback.
+ */
+export class FindPanelRegistration {
+  private handle: FindPanelHandle | undefined
+
+  constructor(private readonly register: () => FindPanelHandle) {}
+
+  /** Register when enabled (idempotent), dispose when not. */
+  sync(enabled: boolean): void {
+    if (enabled) {
+      this.handle ??= this.register()
+      return
+    }
+    this.handle?.dispose()
+    this.handle = undefined
+  }
+
+  /** Plugin dispose: no registration outlives the activation. */
+  dispose(): void {
+    this.handle?.dispose()
+    this.handle = undefined
+  }
+}
+
 /**
  * Register the panel on a host that has the seam, and nothing anywhere else.
  *
@@ -403,7 +440,9 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
  * silenced (`quiet`): on every host before 0.13.0 the absence is the designed
  * state, and a toast about a feature the user never had would be noise.
  */
-export function registerFindPanel(ctx: Context, options: { readonly driver: FindPanelDriver }): void {
+export function registerFindPanel(ctx: Context, options: { readonly driver: FindPanelDriver }): FindPanelHandle {
+  let dispose: (() => void) | undefined
+  let disposed = false
   whenSeamMounted(
     ctx,
     'find panel',
@@ -412,11 +451,15 @@ export function registerFindPanel(ctx: Context, options: { readonly driver: Find
       return panels !== undefined && typeof panels.register === 'function' ? panels : undefined
     },
     panels => {
+      // A live `panel: false` (or a plugin dispose) can land between the poll
+      // starting and the service appearing: never register for a caller that
+      // has already let go.
+      if (disposed) return
       const register = (): (() => void) => {
         // Fresh component per attempt: the host keeps the instance it
         // accepted, so a retried registration must not share closure state
         // with a rejected attempt (the warm-up view's rule).
-        const dispose = panels.register!(
+        const created = panels.register!(
           {
             apiVersion: PANEL_API_VERSION,
             id: PANEL_ID,
@@ -431,12 +474,20 @@ export function registerFindPanel(ctx: Context, options: { readonly driver: Find
         // The host REFUSES without throwing (no live plugin activation,
         // duplicate id, exhausted panel budget) and warns internally; surface
         // that as the retry machinery's failure shape.
-        if (dispose === undefined) throw new Error('tuiPanels.register refused the find panel')
-        return dispose
+        if (created === undefined) throw new Error('tuiPanels.register refused the find panel')
+        return created
       }
       try {
-        const dispose = register()
-        ctx.effect(() => dispose)
+        const created = register()
+        dispose = created
+        // The registration may have been released while it was being made
+        // (a same-tick settings edit): honour that instead of leaking it.
+        if (disposed) {
+          created()
+          dispose = undefined
+          return
+        }
+        ctx.effect(() => created)
         // The driver badges its own panel when a sweep settles with nobody
         // looking; that needs the id the host actually assigned.
         const panelId = resolvePanelId(panels)
@@ -460,9 +511,31 @@ export function registerFindPanel(ctx: Context, options: { readonly driver: Find
           ctx.logger.info(`dsh-tui-find: find panel unavailable (${detail})`)
           return
         }
-        registerSeamWithRetry(ctx, 'find panel', register, dispose => ctx.effect(() => dispose), error)
+        registerSeamWithRetry(
+          ctx,
+          'find panel',
+          register,
+          created => {
+            // Same release race as the direct path above.
+            if (disposed) {
+              created()
+              return
+            }
+            dispose = created
+            ctx.effect(() => created)
+          },
+          error,
+        )
       }
     },
     { quiet: true },
   )
+  return {
+    dispose: () => {
+      disposed = true
+      const release = dispose
+      dispose = undefined
+      release?.()
+    },
+  }
 }

@@ -217,6 +217,16 @@ function section(ns: string): TuiSettingsSection {
         ],
       },
       {
+        path: ['panel'],
+        label: 'Sidebar panel',
+        descriptions: zh('侧栏面板'),
+        hint: 'Register the search panel in the TUI sidebar (needs dsh-TUI 0.13.0+). Off = never registered — the host re-appends a plugin panel on every registration, so this is the only durable opt-out. Applies immediately.',
+        hintDescriptions: zh(
+          '在 TUI 侧栏注册搜索面板（需 dsh-TUI 0.13.0+）。关闭 = 完全不注册——宿主会在每次注册时重新追加插件面板，所以这是唯一持久的关闭方式。立即生效。',
+        ),
+        kind: 'boolean',
+      },
+      {
         path: ['caseSensitive'],
         group: 'matching',
         label: 'Case-sensitive',

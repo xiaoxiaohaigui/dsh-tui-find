@@ -82,7 +82,7 @@ dsh-TUI 0.13.0 introduced the right column; the plugin registers a "Search" pane
 | `←` `→` | Host fallback keys: cycle panels (the only plain keys the panel leaves unconsumed — `z`, digits, `[`, `]`, `+`, `-` are all taken as query characters) |
 | hover / click | Moves the selection / selects; a second click on a selected row opens the scene |
 
-- Registering the panel makes the host add it to the sidebar (the `tuiPanels` contract: a registration appends the id to the live `sidePanel.panels` list). **0.13.0 has no durable switch**: `/settings › Sidebar › Enabled panels` is a comma-separated **text field** bound to the persisted layer (default `todo,jobs,agents`); editing it so the plugin id is gone hides the panel for that session, but every registration re-appends it — it comes back after a restart. The panel changes nothing about `/find` or `Alt+F`; a durable opt-out would need a plugin config key (there is none today).
+- Registering the panel makes the host add it to the sidebar (the `tuiPanels` contract: a registration appends the id to the live `sidePanel.panels` list). **`panel: false` is the durable opt-out**: with it the plugin never registers, so the panel cannot appear in the host's list either. Left on, 0.13.0 offers only `/settings › Sidebar › Enabled panels`, a comma-separated **text field** bound to the persisted layer (default `todo,jobs,agents`); editing the plugin id out hides the panel for that session, but every registration re-appends it — it comes back after a restart.
 - The panel's final id is host-assigned: this plugin rides the direct-activation path (no component identity), so it looks like `act1:search` and the number grows across restarts — only the `search` segment is ours. The tab title is frozen at registration: `/lang` updates the panel's contents, but the tab label follows only after a plugin reload.
 - The panel searches with the configured default scope / time window / regex / title-only. It never receives `Ctrl`/`Alt` chords (the host keeps those for its global actions), so switch those from the config or the Alt chords inside the full-screen scene; pinyin search (on by default) works in the panel as usual.
 - The panel and the full-screen scene share one scanner, one in-memory index and one "a single sweep at a time" discipline: a panel search makes the background warm-up yield, and opening the scene aborts the panel's sweep (coming back to the panel rebuilds instantly from the warmed cache).
@@ -109,6 +109,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       defaultScope: 'all'        # initial scope: repo (default) | all
       defaultTime: 'all'         # initial time window: all (default) | 7d | 30d
       layout: 'split'            # scene layout: split (default, list + reader, needs >= 100 columns) | classic (single column + full-screen preview)
+      panel: true                # sidebar search panel (needs dsh-TUI 0.13.0+; default on; false = never register — the only durable opt-out)
       caseSensitive: false       # case-sensitive matching (default off)
       regex: false               # start with regex matching on (default off; Alt+R toggles it live)
       pinyin: true               # pinyin matching (default on; letter-only terms also match Chinese via readings + initials)
@@ -123,7 +124,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       shortcut: 'alt+f'          # global entry combo (ctrl or alt required; 'off' disables the entry)
 ```
 
-Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. The card is two-level: its page keeps the everyday knobs (default scope, time window, layout, global shortcut) and three subpages — Matching, Indexing and Advanced — hold the rest (Enter opens one, Esc goes back). Booleans/selects save on the spot, text drafts confirm with Enter, overriding the plugin-row defaults; the card copy follows the TUI language. Where a save lands depends on the host's settings generation: the `settings.yaml` user layer on `@deepseek-ai/dsh-settings` ≤0.1.6, the active profile's patch (`cordis.patch.yml`) on ≥0.1.7 — one card drives both, with identical behavior.
+Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. The card is two-level: its page keeps the everyday knobs (default scope, time window, layout, sidebar panel, global shortcut) and three subpages — Matching, Indexing and Advanced — hold the rest (Enter opens one, Esc goes back). Booleans/selects save on the spot, text drafts confirm with Enter, overriding the plugin-row defaults; the card copy follows the TUI language. Where a save lands depends on the host's settings generation: the `settings.yaml` user layer on `@deepseek-ai/dsh-settings` ≤0.1.6, the active profile's patch (`cordis.patch.yml`) on ≥0.1.7 — one card drives both, with identical behavior.
 
 `lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → OS locale → zh; a `/lang` switch applies immediately.
 

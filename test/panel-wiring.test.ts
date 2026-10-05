@@ -15,6 +15,7 @@ import {
   PANEL_MIN_COLUMNS,
   PANEL_ORDER,
   PANEL_TITLE_KEY,
+  FindPanelRegistration,
   registerFindPanel,
   type FindPanelProps,
 } from '../src/panel.js'
@@ -280,5 +281,57 @@ describe('registerFindPanel', () => {
     expect(panels.register).toHaveBeenCalledTimes(1)
     expect(driver.bindBadge).not.toHaveBeenCalled()
     expect(warns).toEqual([])
+  })
+})
+
+describe('FindPanelRegistration', () => {
+  /** A handle over a stub register call, as registerFindPanel returns. */
+  function registration(panels: ReturnType<typeof stubPanels>, ctx: Ctx) {
+    return new FindPanelRegistration(() => registerFindPanel(ctx, { driver: DRIVER }))
+  }
+
+  it('registers once while enabled and disposes when switched off', () => {
+    const panels = stubPanels()
+    const { ctx } = stubCtx({ tuiPanels: panels.runtime })
+    const handle = registration(panels, ctx)
+
+    handle.sync(true)
+    expect(panels.descriptors).toHaveLength(1)
+    // Idempotent: the settings callback fires on every applied change, not
+    // only on the toggle.
+    handle.sync(true)
+    expect(panels.register).toHaveBeenCalledTimes(1)
+
+    handle.sync(false)
+    expect(panels.descriptors).toEqual([])
+    // Off is not a temporary state: a later toggle back on registers again
+    // (a NEW registration — the host assigns a fresh id), while staying off
+    // never re-registers.
+    handle.sync(false)
+    expect(panels.register).toHaveBeenCalledTimes(1)
+    handle.sync(true)
+    expect(panels.register).toHaveBeenCalledTimes(2)
+    handle.dispose()
+    expect(panels.descriptors).toEqual([])
+  })
+
+  it('releases a registration that lands after the switch went off', () => {
+    vi.useFakeTimers()
+    const panels = stubPanels()
+    const { ctx, provide } = stubCtx({})
+    const handle = registration(panels, ctx)
+
+    // Enabled while the service is still missing: the late-mount poll is armed.
+    handle.sync(true)
+    expect(panels.register).not.toHaveBeenCalled()
+    // …and the user turns it off before the service appears.
+    handle.sync(false)
+
+    // The service mounts later. The armed poll must NOT register a panel the
+    // user already turned off — the host would re-append its id to the enable
+    // list and the panel would come back on the next boot.
+    provide('tuiPanels', panels.runtime)
+    vi.advanceTimersByTime(SEAM_MOUNT_DELAY_MS * 2)
+    expect(panels.register).not.toHaveBeenCalled()
   })
 })

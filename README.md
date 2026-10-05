@@ -82,7 +82,7 @@ dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
 | `←` `→` | 宿主回退键：切换面板（这是面板唯一不消费的普通键；`z`/数字/`[`/`]`/`+`/`-` 等都被面板当查询字符吃掉） |
 | 悬停 / 单击 | 移动选择 / 选中；选中行再次单击即打开场景 |
 
-- 面板注册后由宿主自动加入侧栏（`tuiPanels` 的语义：注册即把 id 追加进 `sidePanel.panels` 的运行时列表）。**0.13.0 没有持久的开关**：`/settings › 侧栏 › 启用的面板` 是逗号分隔的**文本字段**、绑的是持久层（默认 `todo,jobs,agents`），把它改成不含插件 id 可以让面板当场收起，但插件每次注册都会重新追加，重启后仍会出现。面板不改变 `/find`、`Alt+F` 的既有行为；需要持久关闭开关的话得给插件加一个配置项（当前没有）。
+- 面板注册后由宿主自动加入侧栏（`tuiPanels` 的语义：注册即把 id 追加进 `sidePanel.panels` 的运行时列表）。**想持久关掉就用 `panel: false`**：关掉时插件完全不注册（宿主列表里也不会出现）。不关的话，0.13.0 的 `/settings › 侧栏 › 启用的面板` 是逗号分隔的**文本字段**、绑的是持久层（默认 `todo,jobs,agents`）——把它改成不含插件 id 可以让面板当场收起，但插件每次注册都会重新追加，重启后仍会出现。
 - 面板的最终 id 由宿主分配：本插件走直接激活路径（无组件身份），形如 `act1:search`、重启后序号递增——插件自己只控制 `search` 这一段。标签标题在注册时定稿，`/lang` 切换只更新面板内容，标签要等插件重载才跟着变。
 - 面板沿用配置里的默认范围 / 时间窗口 / 正则 / 标题限定。侧栏面板收不到 `Ctrl`/`Alt` 组合键（宿主把它们留给全局动作），所以这些口径请在配置或全屏场景的 Alt 键里切换；拼音搜索（默认开）在面板里照常生效。
 - 面板与全屏场景共用同一个扫描器、同一份内存索引，以及"同一时刻只跑一趟 sweep"的纪律：面板搜索时后台预热让位，反过来打开全屏场景会中止面板的扫描（回到面板时按已预热的缓存瞬间重建）。
@@ -109,6 +109,7 @@ dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
       defaultScope: 'all'        # 初始范围：repo(默认) | all
       defaultTime: 'all'         # 初始时间窗口：all(默认) | 7d | 30d
       layout: 'split'            # 界面布局：split(默认，左列表+右阅读窗，需≥100列) | classic(单栏+全屏预览)
+      panel: true                # 侧栏搜索面板（需 dsh-TUI 0.13.0+；默认开；false = 完全不注册，唯一持久的关闭方式）
       caseSensitive: false       # 大小写敏感匹配（默认关）
       regex: false               # 默认启用正则匹配（默认关；场景内 Alt+R 即时切换）
       pinyin: true               # 拼音搜索（默认开；纯字母词同时按全拼/首字母匹配汉字）
@@ -123,7 +124,7 @@ dsh plugin --profile dsh-tui add -w dsh-tui-find@latest
       shortcut: 'alt+f'          # 全局入口组合键（必须含 ctrl 或 alt；'off' 关闭全局入口）
 ```
 
-除 `lang` 外的选项都可以在 TUI 内直接改：`/settings` → **dsh-tui-find（会话搜索）** 卡片。卡片分两级：首页留日常旋钮（默认范围、默认时间、界面布局、全局快捷键），其余按「匹配方式」「索引」「高级」三张子页收拢，Enter 进入、Esc 返回。布尔/选择项一改即存，文本项回车确认，覆盖插件行默认值；卡片文案跟随 TUI 语言。落点随宿主的设置服务世代而变：`@deepseek-ai/dsh-settings` ≤0.1.6 写进 `settings.yaml` 的用户层，≥0.1.7 写进当前 profile 的补丁（`cordis.patch.yml`）——两种世代都由插件内同一张卡片驱动，行为一致。
+除 `lang` 外的选项都可以在 TUI 内直接改：`/settings` → **dsh-tui-find（会话搜索）** 卡片。卡片分两级：首页留日常旋钮（默认范围、默认时间、界面布局、侧栏面板、全局快捷键），其余按「匹配方式」「索引」「高级」三张子页收拢，Enter 进入、Esc 返回。布尔/选择项一改即存，文本项回车确认，覆盖插件行默认值；卡片文案跟随 TUI 语言。落点随宿主的设置服务世代而变：`@deepseek-ai/dsh-settings` ≤0.1.6 写进 `settings.yaml` 的用户层，≥0.1.7 写进当前 profile 的补丁（`cordis.patch.yml`）——两种世代都由插件内同一张卡片驱动，行为一致。
 
 `lang: auto` 跟随 dsh-TUI 语言链：`DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → 系统 locale → 中文，`/lang` 切换即时生效。
 

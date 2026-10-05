@@ -323,6 +323,14 @@ describe('global shortcut entry', () => {
 })
 
 describe('sidebar panel wiring', () => {
+  it('never registers the panel when the panel row is off', async () => {
+    // R-128: the host re-appends a plugin panel to its enable list on every
+    // registration, so "off" has to mean never registered — not registered
+    // and then removed.
+    const { seams } = await applyPlugin({ panels: true, config: { panel: false } })
+    expect(seams.panels).toEqual([])
+  })
+
   /** A session root holding ONE large plain session log, so the panel's own
    *  sweep is still decoding when the command lands (an empty root settles
    *  before the test can act — the sweep has to be in flight for the
