@@ -21,6 +21,11 @@ import { stripAnsi, waitForMatch, waitUntil } from './harness.js'
 
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
+/** The one cwd the fixture's host snapshot and its stub sessions share — the
+ *  row model filters by it in the default (repo) scope, so the two must agree
+ *  for the recent list to carry a card at all. */
+const STUB_CWD = 'P:\\stub'
+
 /** The panel's Divider: the host adapter hands the design-system one, which
  *  the 0.9.3 kit this repo builds against does not ship — a one-row rule is
  *  all the panel asks of it. */
@@ -39,7 +44,7 @@ function stubSession(id: string, matches = 1): ScannedSession {
     bytes: 10,
     modifiedAt: 1_700_000_000_000,
     title: `Title ${id}`,
-    header: { cwd: 'P:\\stub', createdAt: undefined },
+    header: { cwd: STUB_CWD, createdAt: undefined },
     messages: Array.from({ length: 4 }, (_unused, index) => ({
       role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
       seq: index + 1,
@@ -71,7 +76,18 @@ interface ViewFixture {
 }
 
 async function mountPanel(
-  options: { config?: Config; sessions?: readonly ScannedSession[]; width?: number; height?: number; focused?: boolean } = {},
+  options: {
+    config?: Config
+    sessions?: readonly ScannedSession[]
+    width?: number
+    height?: number
+    focused?: boolean
+    /** Warm the store before the component paints (default). The layout
+     *  assertions need a frame painted from scratch: a DIFFED repaint writes
+     *  the "0 sessions" → "1 sessions" edit as a one-cell patch, so a
+     *  multi-word line is only guaranteed to appear intact in a full frame. */
+    prewarm?: boolean
+  } = {},
 ): Promise<ViewFixture> {
   const sessions = options.sessions ?? [stubSession('a')]
   const opened: Array<{ query: string; rowId?: string }> = []
@@ -86,7 +102,7 @@ async function mountPanel(
   })
   const listeners = new Set<(event: PanelKeyEvent) => void>()
   const host: PanelHostApi = {
-    snapshot: () => ({ sessionId: 'session', cwd: 'P:\\stub' }),
+    snapshot: () => ({ sessionId: 'session', cwd: STUB_CWD }),
     onKey: listener => {
       listeners.add(listener)
       return () => {
@@ -103,6 +119,24 @@ async function mountPanel(
     useTerminalSize: () => ({ columns: width, rows: height }),
   } as unknown as FindPanelProps['ui']
   const Component = buildFindPanelComponent(driver)
+
+  // Warm the store BEFORE the component's first paint, in the order the mount
+  // effects run: hand over the host's cwd (in the default repo scope the row
+  // model builds no card without it) and let the index settle, so the first
+  // paint is the settled one. This is what makes the layout assertions below
+  // hold on any runner: a frame painted from scratch is the only place a
+  // multi-word line is guaranteed to appear whole, because a DIFFED repaint
+  // rewrites just the differing cells — the "0 sessions" → "1 sessions" edit
+  // lands in the cumulative stream as a lone "1" with a cursor move where the
+  // rest of the line used to be (measured: the cold-first variant of this test
+  // fails with exactly the CI signature). `attach()` is idempotent, so the
+  // mount effect's own call starts no sweep — that cold-path attach is what the
+  // progress test at the bottom pins, since this fixture no longer exercises it.
+  if (options.prewarm !== false) {
+    driver.attach()
+    driver.setRepoCwd(STUB_CWD)
+    await waitUntil(() => driver.getSnapshot().rows.length > 0)
+  }
 
   const stdin = new PassThrough() as PassThrough & {
     isTTY: boolean
@@ -140,12 +174,6 @@ async function mountPanel(
     { stdout, stdin, stderr: process.stderr, patchConsole: false, exitOnCtrlC: false },
   )
   await new Promise(resolve => setTimeout(resolve, 60))
-  // The mount settle is not a guarantee that the sweep has LANDED: the driver
-  // scans asynchronously, and on a loaded runner the first paint is legitimately
-  // the cold one ("0 sessions", no cards). Wait for the delivery itself rather
-  // than for a wall-clock delay, so the layout assertions below run against a
-  // settled panel on every machine; a genuine stall still trips their `expect`.
-  await waitUntil(() => driver.getSnapshot().rows.length > 0)
 
   return {
     driver,
@@ -189,8 +217,9 @@ describe('find panel component', () => {
     try {
       // An empty query is the recent list: the placeholder sits on the query
       // line and the card carries the session. Ink re-renders differentially,
-      // so content is asserted against the cumulative stream (the first frame
-      // is whole; later ones are deltas).
+      // so content is asserted against the cumulative stream — and the fixture
+      // warms the store first, so the frame carrying all three of these is
+      // painted whole rather than diffed against a cold one.
       expect(view.output()).toMatch(/Type\s*to\s*search/)
       expect(view.output()).toMatch(/Title\s*a/)
       expect(view.output()).toMatch(/1\s*sessions/)
@@ -333,7 +362,7 @@ describe('find panel component', () => {
         React,
         ui,
         host: {
-          snapshot: () => ({ sessionId: 'session', cwd: 'P:\\stub' }),
+          snapshot: () => ({ sessionId: 'session', cwd: STUB_CWD }),
           onKey: (listener: (event: PanelKeyEvent) => void) => {
             listeners.add(listener)
             return () => {
