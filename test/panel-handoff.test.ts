@@ -7,7 +7,7 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { FindScene, type SceneSeed } from '../src/scene.js'
-import { mount, sessionWithMessages, waitFor, type HarnessSceneProps } from './harness.js'
+import { mount, sessionWithMessages, waitFor, waitForMatch, type HarnessSceneProps } from './harness.js'
 
 /** The plugin's registered wrapper, reduced to the seed under test. */
 function seeded(seed: SceneSeed): React.ComponentType<HarnessSceneProps> {
@@ -30,7 +30,9 @@ describe('scene seeded by the sidebar panel', () => {
       columns: 90,
     })
     try {
-      await waitFor()
+      // Polled, not slept on: a full repaint is what makes the selection
+      // readable, and the harness's own deadline keeps a slow runner honest.
+      await waitForMatch(() => harness.latest(), /❯\s*#2\s*AI:\s*beta\s*needle/)
       const frame = harness.latest()
       // The second message's hit row (sourceIndex 1) carries the selection.
       expect(frame).toMatch(/❯\s*#2\s*AI:\s*beta\s*needle/)
@@ -47,7 +49,7 @@ describe('scene seeded by the sidebar panel', () => {
       columns: 90,
     })
     try {
-      await waitFor()
+      await waitForMatch(() => harness.latest(), /❯\s*Handoff/)
       expect(harness.latest()).toMatch(/❯\s*Handoff/)
     } finally {
       harness.dispose()
@@ -60,12 +62,13 @@ describe('scene seeded by the sidebar panel', () => {
       columns: 90,
     })
     try {
-      await waitFor()
       // The query line may have been painted in an earlier frame (ink
       // re-renders differentially), so the query assertion reads the
       // cumulative stream while the selection reads the live frame.
+      await waitForMatch(() => harness.all(), /⌕\s*needle/)
       expect(harness.all()).toMatch(/⌕\s*needle/)
       // The unknown anchor falls back to the clamped selection (the card).
+      await waitForMatch(() => harness.latest(), /❯\s*Handoff/)
       expect(harness.latest()).toMatch(/❯\s*Handoff/)
     } finally {
       harness.dispose()
@@ -82,7 +85,6 @@ describe('scene seeded by the sidebar panel', () => {
       columns: 90,
     })
     try {
-      await waitFor()
       // Move onto the last hit row (the card, then #1, then #2). The moves
       // repaint only the changed cells, so the frame is forced whole before
       // it is read (the harness's own toggleWidth idiom).
@@ -90,7 +92,7 @@ describe('scene seeded by the sidebar panel', () => {
       harness.send('\u001b[B')
       await waitFor()
       harness.toggleWidth()
-      await waitFor()
+      await waitForMatch(() => harness.latest(), /❯\s*#2\s*AI:\s*beta/)
       expect(harness.latest()).toMatch(/❯\s*#2\s*AI:\s*beta/)
 
       // A scope change is a list-shape edit: the highlight returns to the top
@@ -98,7 +100,7 @@ describe('scene seeded by the sidebar panel', () => {
       harness.send('\t')
       await waitFor()
       harness.toggleWidth()
-      await waitFor()
+      await waitForMatch(() => harness.latest(), /❯\s*Handoff/)
       expect(harness.latest()).toMatch(/❯\s*Handoff/)
     } finally {
       harness.dispose()

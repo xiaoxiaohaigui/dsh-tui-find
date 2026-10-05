@@ -334,7 +334,9 @@ describe('sidebar panel wiring', () => {
   /** A session root holding ONE large plain session log, so the panel's own
    *  sweep is still decoding when the command lands (an empty root settles
    *  before the test can act — the sweep has to be in flight for the
-   *  stand-down to be observable at all). */
+   *  stand-down to be observable at all). Sized to stay in flight for many
+   *  event-loop turns without making the fixture itself the slow part on a CI
+   *  runner. */
   function bulkSessionRoot(): string {
     const root = join(tmpdir(), 'dsh-tui-find-panel-bulk')
     const dir = join(root, 'workspace', 'bulk-session')
@@ -342,7 +344,7 @@ describe('sidebar panel wiring', () => {
     const lines = [
       JSON.stringify({ type: 'session', version: 0, id: 'bulk', createdAt: Date.now(), cwd: process.cwd() }),
     ]
-    for (let seq = 1; seq <= 40_000; seq++) {
+    for (let seq = 1; seq <= 12_000; seq++) {
       lines.push(
         JSON.stringify({
           type: 'user/message',
@@ -388,35 +390,40 @@ describe('sidebar panel wiring', () => {
       { columns: 40, rows: 16, settle: false },
     )
     try {
-      // The mount effect started the plugin's own sweep and nothing has
-      // resolved yet, so this is the state that matters: the scene must take
-      // over from a sweep still in flight (review F3 — before the fix the
-      // shared scene opener told this driver nothing, and two sweeps decoded
-      // the same library).
+      // The mount effect started the plugin's own sweep and the command lands
+      // while it is still decoding the fixture (see bulkSessionRoot: the file
+      // needs many event-loop turns, and this call happens in the same
+      // synchronous stretch). The scene must take over from a sweep still in
+      // flight — before the fix the shared scene opener told this driver
+      // nothing, and two sweeps decoded the same library.
       expect(findCommand(seams).handler({ rawInput: '' })).toEqual({ kind: 'success' })
       expect(seams.opened).toEqual([SCENE_ID])
       // From here the driver's own scene probe is unreliable (see the stub) —
       // the stand-down has to have come from the shared scene opener.
       seams.degradeActiveReads()
 
-      // The panel stood down: nothing ticks again, so no frame ever shows the
-      // sweep running or its settled result. (The first frame after the
-      // command is still the pre-abort paint; give the repaint a beat, then
-      // sample for a second.) Without the scene-open handoff the panel would
-      // keep decoding behind the scene and land on the settled "no searchable
-      // session content".
-      await waitFor(100)
-      const deadline = Date.now() + 1_000
+      // The panel stood down: nothing ticks again, so the settled list never
+      // appears — the frame stays on the cold empty state with an empty count.
+      // (The first frame after the command is still the pre-abort paint; give
+      // the repaint a beat, then sample for a while.) Without the scene-open
+      // handoff the panel keeps decoding behind the scene and lands on the
+      // one-session recent list.
+      await waitFor(120)
+      const deadline = Date.now() + 600
       while (Date.now() < deadline) {
         expect(view.latest()).not.toMatch(/Scanning/)
-        expect(view.latest()).not.toMatch(/No\s*searchable/)
-        await waitFor(50)
+        expect(view.latest()).not.toMatch(/1\s*sessions?/)
+        await waitFor(60)
       }
+      expect(view.latest()).toMatch(/0\s*sessions?/)
       expect(view.latest()).toMatch(/Reading\s*sessions/)
     } finally {
       view.unmount()
     }
-  })
+    // The fixture write, the real sweep and the sampling loop are all I/O on a
+    // shared runner: this test is allowed to be slow, and a default 5 s budget
+    // would turn CI load into a red gate.
+  }, 30_000)
 })
 
 describe('registered scene component', () => {

@@ -17,7 +17,7 @@ import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/sc
 import { setLangOverride } from '../src/i18n.js'
 import { buildFindPanelComponent, type FindPanelProps, type PanelHostApi, type PanelKeyEvent } from '../src/panel.js'
 import { FindPanelDriver } from '../src/panel-model.js'
-import { stripAnsi } from './harness.js'
+import { stripAnsi, waitForMatch } from './harness.js'
 
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
@@ -189,15 +189,15 @@ describe('find panel component', () => {
       expect(view.output()).toMatch(/Title\s*a/)
       expect(view.output()).toMatch(/1\s*sessions/)
 
+      // The store updates synchronously on delivery; only the repaint lags.
       view.send('n')
       view.send('eedle')
-      await new Promise(resolve => setTimeout(resolve, 40))
       const snapshot = view.driver.getSnapshot()
       expect(snapshot.query).toBe('needle')
       expect(snapshot.hits).toHaveLength(1)
       // Card + its one hit row: the list is the same row model the scene draws.
       expect(snapshot.rows.map(row => row.rowId)).toEqual(['s:a', 'm:a:0'])
-      expect(view.output()).toMatch(/needle/)
+      await waitForMatch(() => view.output(), /needle/)
     } finally {
       view.unmount()
     }
@@ -276,10 +276,11 @@ describe('find panel component', () => {
     const view = await mountPanel()
     expect(view.listeners.size).toBe(1)
     view.unmount()
-    await new Promise(resolve => setTimeout(resolve, 30))
     // The host's adapter keeps one listener set per panel instance: a leaked
     // registration would keep dispatching keys into a dead component (and, on
-    // a remount, deliver every key twice).
+    // a remount, deliver every key twice). Polled rather than slept on —
+    // cleanup lands on React's schedule, not on the test's.
+    await waitForMatch(() => String(view.listeners.size), /^0$/)
     expect(view.listeners.size).toBe(0)
   })
 
@@ -345,7 +346,9 @@ describe('find panel component', () => {
     await new Promise(resolve => setTimeout(resolve, 60))
     try {
       // Ink re-renders differentially, so content is asserted against the
-      // cumulative stream rather than one frame.
+      // cumulative stream rather than one frame; the first paint carries both
+      // lines, so the poll is a formality under load.
+      await waitForMatch(() => stripAnsi(output), /Scanning\s*2\/9/)
       const frame = stripAnsi(output)
       expect(frame).toMatch(/Scanning\s*2\/9/)
       expect(frame).toMatch(/Reading\s*sessions/)
