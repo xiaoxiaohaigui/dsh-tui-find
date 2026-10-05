@@ -15,13 +15,13 @@ import type { ScanProgress, ScannedSession } from './core/scan.js'
 import type { SearchScope } from './core/search.js'
 import { displayWidth, tailWidth, truncateWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
-import { displayTitle, type TextColor, type Ui } from './find-types.js'
+import { displayTitle, type RowUi, type TextColor, type Ui } from './find-types.js'
 
 /**
  * A dim-italic hint line whose `**key**` spans render bold — the HintLine
  * discipline from the host's design system, recreated on the scene-side kit.
  */
-export function HintLine(props: { React: TuiSceneProps['React']; ui: Ui; text: string }): React.ReactElement {
+export function HintLine(props: { React: TuiSceneProps['React']; ui: RowUi; text: string }): React.ReactElement {
   const { React: R, ui, text } = props
   const { Text } = ui
   const parts = text.split('**')
@@ -120,8 +120,11 @@ export function composeHeaderRight(input: {
 }
 
 /** One composable hint segment: `text` carries the HintLine `**key**`
- *  markup, and a `mandatory` segment survives every width. */
-type HintSegment = { readonly text: string; readonly mandatory?: boolean }
+ *  markup, and a `mandatory` segment survives every width. Exported with
+ *  {@link fitHintLine} so the sidebar panel composes its own (much narrower)
+ *  hint line through the same fitting rules instead of a second
+ *  implementation that wraps where this one truncates. */
+export type HintSegment = { readonly text: string; readonly mandatory?: boolean }
 
 /** Rendered width of a HintLine string — the `**` markers are styling, not
  *  content, so they must not eat into the columns budget. */
@@ -140,7 +143,7 @@ function hintWidth(text: string): number {
  * a wrapped hint used to steal a content row from the scroll region
  * (REVIEW R-070).
  */
-function fitHintLine(segments: readonly HintSegment[], columns: number): string {
+export function fitHintLine(segments: readonly HintSegment[], columns: number): string {
   const budget = Math.max(1, columns - 2)
   const kept = [...segments]
   const line = (): string => kept.map(segment => segment.text).join(' · ')
@@ -274,7 +277,7 @@ export function SearchCard(props: {
  *  keep their dim treatment under per-span coloring. */
 export function HighlightedText(props: {
   React: TuiSceneProps['React']
-  ui: Ui
+  ui: RowUi
   text: string
   ranges: readonly (readonly [number, number])[]
   color: TextColor

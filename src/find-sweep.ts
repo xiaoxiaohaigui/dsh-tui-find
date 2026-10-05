@@ -15,8 +15,73 @@ import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { t } from './i18n.js'
 import type { ResolvedConfig } from './config.js'
-import { compareSessionRecency, type ScanProgress, type ScannedSession, type SessionScanner } from './core/scan.js'
+import { compareSessionRecency, type ScanOptions, type ScanProgress, type ScannedSession, type SessionScanner } from './core/scan.js'
 import { PARTIAL_FLUSH_MAX_MS, PARTIAL_FLUSH_MS, type StatusNote } from './find-types.js'
+
+/**
+ * The scan request one sweep makes, assembled from the row config. Shared by
+ * the two sweepers (this scene hook and the sidebar panel's driver): the
+ * options decide which sessions and messages even EXIST for a surface, so a
+ * drift between them would show the panel a different index than the scene
+ * hands over to — the same reason find-rows.ts owns the list shape.
+ */
+export function buildScanOptions(
+  config: ResolvedConfig,
+  handlers: {
+    readonly signal: AbortSignal
+    readonly onProgress: (progress: ScanProgress) => void
+    readonly onSession: (session: ScannedSession) => void
+  },
+): ScanOptions {
+  return {
+    indexTools: config.indexTools,
+    indexThinking: config.indexThinking,
+    maxMessageChars: config.maxMessageChars,
+    // Delegated sub-agent runs stay out of the list and the search index
+    // unless the config asks for them (default off; see config.ts).
+    includeSubagents: config.showSubagentSessions,
+    ...(config.sessionRoot === undefined ? {} : { sessionRoot: config.sessionRoot }),
+    signal: handlers.signal,
+    onProgress: handlers.onProgress,
+    onSession: handlers.onSession,
+  }
+}
+
+/**
+ * The progressive-flush policy both sweepers publish their streaming list
+ * with. Arrivals are enumeration order (readdir); each flush is MRU-sorted —
+ * but a LATER arrival can still be more recent than everything already on
+ * screen and insert above it, shifting the displayed rows down. That is why
+ * both surfaces anchor their selection by `rowId` instead of trusting the
+ * index across a flush (REVIEW R-103). A cold sweep delivers each arrival in
+ * its own event-loop turn, and every flush hands the search derivation a
+ * fresh session-list identity — one full search over the accumulated prefix,
+ * in query mode. So the flush interval doubles with the prefix (the
+ * geometric-growth argument): the sweep's total re-search cost stays
+ * proportional to a single final search instead of the session count squared,
+ * while the header's progress ticks stay per-arrival.
+ */
+export class SessionFlush {
+  private readonly partial: ScannedSession[] = []
+  private nextFlushAt = 0
+  private gap = PARTIAL_FLUSH_MS
+
+  /** Record one arrival and answer what to publish: the accumulated list,
+   *  MRU-sorted, when this arrival is due — `undefined` while the gap has not
+   *  elapsed. */
+  push(session: ScannedSession, now: number = Date.now()): readonly ScannedSession[] | undefined {
+    this.partial.push(session)
+    if (now < this.nextFlushAt) return undefined
+    this.nextFlushAt = now + this.gap
+    this.gap = Math.min(this.gap * 2, PARTIAL_FLUSH_MAX_MS)
+    return this.settled()
+  }
+
+  /** Everything recorded so far, MRU-sorted — the sweep's running list. */
+  settled(): readonly ScannedSession[] {
+    return [...this.partial].sort(compareSessionRecency)
+  }
+}
 
 export function useSessionSweep(
   React: TuiSceneProps['React'],
@@ -39,51 +104,25 @@ export function useSessionSweep(
 
   useEffect(() => {
     const signal = new AbortController()
-    // Sessions resolved so far, in arrival order. Each onSession callback
-    // hands over the exact object the completed sweep's array holds, so the
-    // final setSessions below replaces — not duplicates — the accumulation
-    // and the search-side per-object fold caches stay warm.
-    const partial: ScannedSession[] = []
-    let nextFlushAt = 0
-    let flushGap = PARTIAL_FLUSH_MS
+    // Each onSession callback hands over the exact objects the completed
+    // sweep's array holds, so the final setSessions below replaces — not
+    // duplicates — the accumulation and the search-side per-object fold
+    // caches stay warm. The publish schedule is {@link SessionFlush}'s.
+    const flush = new SessionFlush()
     // The scanner's running withheld-sub-agent count; the last tick (sent
     // after the loop, totals settled) is the sweep's answer.
     let hidden = 0
-    const scanOptions = {
-      indexTools: config.indexTools,
-      indexThinking: config.indexThinking,
-      maxMessageChars: config.maxMessageChars,
-      // Delegated sub-agent runs stay out of the list and the search index
-      // unless the config asks for them (default off; see config.ts).
-      includeSubagents: config.showSubagentSessions,
-      ...(config.sessionRoot === undefined ? {} : { sessionRoot: config.sessionRoot }),
+    const scanOptions = buildScanOptions(config, {
       signal: signal.signal,
       onProgress: (next: ScanProgress) => {
         hidden = next.hiddenSubagents
         setProgress(next)
       },
       onSession: (session: ScannedSession) => {
-        partial.push(session)
-        // Arrivals are enumeration order (readdir), sorted here into the
-        // scanner's recency order, so each flush is internally MRU-sorted —
-        // but a LATER arrival can still be more recent than everything already
-        // on screen and insert above it, shifting the displayed rows down.
-        // That is why the scene anchors its selection by `rowId` instead of
-        // trusting the index across a flush (REVIEW R-103). A cold sweep
-        // delivers each arrival in its own event-loop turn, and every flush
-        // hands the memos a fresh `sessions` identity — one full search over
-        // the accumulated prefix, in query mode. So the flush interval
-        // doubles with the prefix (the geometric-growth argument): the
-        // sweep's total re-search cost stays proportional to a single final
-        // search instead of the session count squared, while the header's
-        // progress ticks stay per-arrival.
-        const now = Date.now()
-        if (now < nextFlushAt) return
-        nextFlushAt = now + flushGap
-        flushGap = Math.min(flushGap * 2, PARTIAL_FLUSH_MAX_MS)
-        setSessions([...partial].sort(compareSessionRecency))
+        const flushed = flush.push(session)
+        if (flushed !== undefined) setSessions(flushed)
       },
-    }
+    })
     void scanner
       .scan(scanOptions)
       .then(result => {

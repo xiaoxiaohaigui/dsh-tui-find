@@ -22,6 +22,7 @@
  * (`pendingQuery`) is process-lifetime module state consumed exactly once, so
  * every test that sets it reads it back through the registered component.
  */
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ReactElement } from 'react'
@@ -33,8 +34,8 @@ import { DEFAULT_SHORTCUT, resolveConfig } from '../src/config.js'
 import { SessionScanner } from '../src/core/scan.js'
 import { dict } from '../src/i18n.js'
 import { apply, inject, name, SCENE_ID } from '../src/main.js'
-import { FindScene } from '../src/scene.js'
-import { mount, sessionWithMessages, waitFor, type HarnessSceneProps } from './harness.js'
+import { FindScene, type SceneSeed } from '../src/scene.js'
+import { mount, mountKitComponent, panelKit, sessionWithMessages, waitFor, waitForMatch, type HarnessSceneProps } from './harness.js'
 
 // These mounts activate the real plugin: keep the watermark journal off so no
 // test ever writes against the real ~/.dsh-tui tree, and point the default
@@ -74,13 +75,24 @@ function stubSeams() {
   const closed: string[] = []
   const shortcuts: Array<{ combo: string; description: string; handler: () => void }> = []
   const commands: CommandEntry[] = []
+  const panels: Array<{ id: string; title: string; component: unknown }> = []
   let active: { id: string } | undefined
   let failOpen = false
+  // Real hosts resolve `ctx.get('tuiScenes')` through a liveness gate that
+  // rejects reads made from async callbacks (the panel sweep's own supersede
+  // probe runs there). `degradeActiveReads()` models that: from then on the
+  // active getter throws, so the probe degrades to "no scene" exactly like the
+  // documented real-host behavior.
+  let activeReadsThrow = false
   return {
     opened,
     closed,
     shortcuts,
     commands,
+    panels,
+    degradeActiveReads: (): void => {
+      activeReadsThrow = true
+    },
     scene: (id: string): SceneEntry | undefined => scenes.get(id),
     /** Make the next open() answer false, as a host that refuses to mount. */
     failNextOpen: (): void => {
@@ -88,6 +100,7 @@ function stubSeams() {
     },
     scenesService: {
       get active(): { id: string } | undefined {
+        if (activeReadsThrow) throw new Error('dsh-tui: tuiScenes read rejected outside a live activation')
         return active
       },
       register(entry: SceneEntry): () => void {
@@ -137,6 +150,24 @@ function stubSeams() {
         }
       },
     },
+    /** The 0.13+ `tuiPanels` shape the plugin consumes: register keeps the
+     *  descriptor, list answers with the host-assigned final ids, badge is
+     *  recorded. */
+    panelsService: {
+      register(descriptor: { id: string; title: string; component: unknown }, _identity?: unknown): () => void {
+        panels.push(descriptor)
+        return () => {
+          const at = panels.indexOf(descriptor)
+          if (at >= 0) panels.splice(at, 1)
+        }
+      },
+      list(): Array<{ id: string; title: string }> {
+        return panels.map(descriptor => ({ id: `act1:${descriptor.id}`, title: descriptor.title }))
+      },
+      badge(): boolean {
+        return true
+      },
+    },
   }
 }
 
@@ -154,7 +185,13 @@ afterEach(async () => {
  *  composition that has no TUI runtime at all — the entry that stays armed
  *  and silently does nothing. */
 async function applyPlugin(
-  options: { scenes?: boolean; shortcuts?: boolean; commands?: boolean } = {},
+  options: {
+    scenes?: boolean
+    shortcuts?: boolean
+    commands?: boolean
+    panels?: boolean
+    config?: Record<string, unknown>
+  } = {},
 ): Promise<{ seams: Seams; fiber: { dispose(): Promise<void> } }> {
   const seams = stubSeams()
   const root = new Context()
@@ -162,9 +199,10 @@ async function applyPlugin(
   if (options.commands !== false) root.reflect.provide('commands', seams.commandsService)
   if (options.shortcuts !== false) root.reflect.provide('tuiShortcuts', seams.shortcutsService)
   if (options.scenes !== false) root.reflect.provide('tuiScenes', seams.scenesService)
+  if (options.panels === true) root.reflect.provide('tuiPanels', seams.panelsService)
   // `lang` is pinned per activation so the entry copy the host renders is
   // deterministic; the scene assertions do not depend on it.
-  const fiber = root.plugin({ name, inject, apply: (ctx: Ctx) => apply(ctx, { lang: 'en' }) })
+  const fiber = root.plugin({ name, inject, apply: (ctx: Ctx) => apply(ctx, { lang: 'en', ...options.config }) })
   await fiber
   activations.push(() => fiber.dispose())
   return { seams, fiber }
@@ -178,7 +216,7 @@ function findCommand(seams: Seams): CommandEntry {
 
 /** The scene element the registered wrapper produces. Only the four props the
  *  wrapper does not fill in itself are needed (React/ui/channel/close); config,
- *  scanner, notify and initialQuery come from the plugin. The cast mirrors the
+ *  scanner, notify and initialSeed come from the plugin. The cast mirrors the
  *  host boundary — the wrapper's contract is the element it returns, not the
  *  full prop bag a renderer hands it. */
 function sceneElement(seams: Seams): ReactElement {
@@ -188,9 +226,11 @@ function sceneElement(seams: Seams): ReactElement {
 }
 
 /** The seed the scene will read on mount, taken exactly as FindScene takes it
- *  (`useState(() => props.initialQuery())`). */
-function readSeed(seams: Seams): string {
-  return (sceneElement(seams).props as { initialQuery: () => string }).initialQuery()
+ *  (`useState(() => props.initialSeed?.())`). The plugin's wrapper always
+ *  returns a seed — a spent/absent one is `{ query: '' }`, never a fall-through
+ *  to some other caller's query. */
+function readSeed(seams: Seams): SceneSeed {
+  return (sceneElement(seams).props as { initialSeed: () => SceneSeed }).initialSeed()
 }
 
 describe('/find command entry', () => {
@@ -220,8 +260,8 @@ describe('/find command entry', () => {
 
     expect(seams.opened).toEqual([SCENE_ID, SCENE_ID])
     expect(seams.closed).toEqual([SCENE_ID])
-    expect(readSeed(seams)).toBe('second words')
-    expect(readSeed(seams)).toBe('')
+    expect(readSeed(seams)).toEqual({ query: 'second words' })
+    expect(readSeed(seams)).toEqual({ query: '' })
   })
 
   it('answers the designed error when the composition has no scenes seam', async () => {
@@ -248,7 +288,7 @@ describe('/find command entry', () => {
     })
     // A failed open leaves no scene to consume the seed: keeping it would leak
     // these words into the NEXT scene, whichever entry opens it.
-    expect(readSeed(seams)).toBe('')
+    expect(readSeed(seams)).toEqual({ query: '' })
   })
 })
 
@@ -282,6 +322,95 @@ describe('global shortcut entry', () => {
   })
 })
 
+describe('sidebar panel wiring', () => {
+  /** A session root holding ONE large plain session log, so the panel's own
+   *  sweep is still decoding when the command lands (an empty root settles
+   *  before the test can act — the sweep has to be in flight for the
+   *  stand-down to be observable at all). */
+  function bulkSessionRoot(): string {
+    const root = join(tmpdir(), 'dsh-tui-find-panel-bulk')
+    const dir = join(root, 'workspace', 'bulk-session')
+    mkdirSync(dir, { recursive: true })
+    const lines = [
+      JSON.stringify({ type: 'session', version: 0, id: 'bulk', createdAt: Date.now(), cwd: process.cwd() }),
+    ]
+    for (let seq = 1; seq <= 40_000; seq++) {
+      lines.push(
+        JSON.stringify({
+          type: 'user/message',
+          seq,
+          time: Date.now(),
+          data: { content: [{ type: 'text', text: `needle row ${seq}` }], source: { kind: 'user' } },
+        }),
+      )
+    }
+    writeFileSync(join(dir, 'session.jsonl'), lines.join('\n'))
+    return root
+  }
+
+  it('registers the panel and makes its sweep stand down when /find opens the scene', async () => {
+    const sessionRoot = bulkSessionRoot()
+    const { seams } = await applyPlugin({ panels: true, config: { sessionRoot } })
+    const panel = seams.panels[0]
+    expect(panel).toBeDefined()
+    expect(panel!.id).toBe('search')
+
+    // Mount the component the host would: a panel-sized kit, a stub host API.
+    const listeners = new Set<() => void>()
+    const Component = panel!.component as React.ComponentType<Record<string, unknown>>
+    const view = await mountKitComponent(
+      React.createElement(Component, {
+        React,
+        ui: panelKit(40, 16),
+        host: {
+          snapshot: () => ({ sessionId: 'session', cwd: process.cwd() }),
+          onKey: (listener: () => void) => {
+            listeners.add(listener)
+            return () => {
+              listeners.delete(listener)
+            }
+          },
+        },
+        width: 40,
+        height: 16,
+        focused: true,
+        visible: true,
+        mode: 'split',
+      }),
+      { columns: 40, rows: 16, settle: false },
+    )
+    try {
+      // The mount effect started the plugin's own sweep and nothing has
+      // resolved yet, so this is the state that matters: the scene must take
+      // over from a sweep still in flight (review F3 — before the fix the
+      // shared scene opener told this driver nothing, and two sweeps decoded
+      // the same library).
+      expect(findCommand(seams).handler({ rawInput: '' })).toEqual({ kind: 'success' })
+      expect(seams.opened).toEqual([SCENE_ID])
+      // From here the driver's own scene probe is unreliable (see the stub) —
+      // the stand-down has to have come from the shared scene opener.
+      seams.degradeActiveReads()
+
+      // The panel stood down: nothing ticks again, so no frame ever shows the
+      // sweep running or its settled result. (The first frame after the
+      // command is still the pre-abort paint; give the repaint a beat, then
+      // sample for a second.) Without the scene-open handoff the panel would
+      // keep decoding behind the scene and land on the settled "no searchable
+      // session content".
+      await waitFor(100)
+      const deadline = Date.now() + 1_000
+      while (Date.now() < deadline) {
+        expect(view.latest()).not.toMatch(/Scanning/)
+        expect(view.latest()).not.toMatch(/No\s*searchable/)
+        await waitFor(50)
+      }
+      expect(view.latest()).toMatch(/Reading\s*sessions/)
+    } finally {
+      view.unmount()
+    }
+  })
+})
+
 describe('registered scene component', () => {
   it('wraps FindScene with the activation scanner, notifier and resolved config', async () => {
     const first = await applyPlugin()
@@ -291,7 +420,7 @@ describe('registered scene component', () => {
       config: unknown
       scanner: unknown
       notify: unknown
-      initialQuery: () => string
+      initialSeed: () => SceneSeed | undefined
     }
 
     expect(element.type).toBe(FindScene)
@@ -301,7 +430,7 @@ describe('registered scene component', () => {
     expect(props.scanner).not.toBe((sceneElement(second.seams).props as { scanner: unknown }).scanner)
     expect(typeof props.notify).toBe('function')
     expect(props.config).toEqual(resolveConfig({ lang: 'en' }))
-    expect(typeof props.initialQuery).toBe('function')
+    expect(typeof props.initialSeed).toBe('function')
   })
 
   it('consumes the /find seed exactly once', async () => {
@@ -310,8 +439,8 @@ describe('registered scene component', () => {
 
     // Process-lifetime module state: the first mount reads the words (the
     // command's own handler trims them), and no later mount sees them again.
-    expect(readSeed(seams)).toBe('needle two')
-    expect(readSeed(seams)).toBe('')
+    expect(readSeed(seams)).toEqual({ query: 'needle two' })
+    expect(readSeed(seams)).toEqual({ query: '' })
   })
 
   it('renders the seeded query through the real host renderer, once', async () => {

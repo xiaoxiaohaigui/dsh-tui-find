@@ -158,6 +158,17 @@ export function whenSeamMounted<T>(
   label: string,
   probe: () => T | undefined,
   use: (seam: T) => void,
+  options: {
+    /**
+     * Suppress the give-up TOAST (the info log stays). For a seam whose
+     * absence is the DESIGNED state on older hosts — the sidebar panel on
+     * any host before 0.13.0 — the toast would fire on every boot once the
+     * budget lapses, reporting a missing feature the user never had. Late
+     * mounting is still polled for; only the announcement is silenced, and
+     * the host's own skew warning covers "0.13+ but the row is absent".
+     */
+    readonly quiet?: boolean
+  } = {},
 ): void {
   const run = (seam: T): void => {
     try {
@@ -191,7 +202,7 @@ export function whenSeamMounted<T>(
       ctx.logger.info(
         `dsh-tui-find: ${label} never mounted within the ${Math.round(SEAM_TOTAL_BUDGET_MS / 1000)} s budget; the feature stays unavailable this session`,
       )
-      announceGiveUp(ctx)
+      if (options.quiet !== true) announceGiveUp(ctx)
     },
   )
   // A deactivated/restarted activation must not leave poll timers behind.

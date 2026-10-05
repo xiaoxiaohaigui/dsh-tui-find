@@ -37,14 +37,14 @@ import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
 import type { Notifier } from './notify.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
-import { regexRejection, searchSessions, sessionCwdMatches, type SearchScope } from './core/search.js'
+import { regexRejection, searchSessions, type SearchScope } from './core/search.js'
+import { buildRows, buildSearchOptions, rowSession, sinceMsFor } from './find-rows.js'
 import { messageAtLine } from './preview.js'
 import { displayWidth, spreadRow, truncateWidth } from './width.js'
 import { HelpOverlay } from './help.js'
 import {
   CHROME_LINES,
   PREVIEW_CHROME_LINES,
-  PREVIEW_HITS,
   PANE_CHROME_LINES,
   formatWhen,
   hasTerminalImageHooks,
@@ -84,16 +84,27 @@ type SceneMenuState = ContextMenuState<SceneMenuItem>
  *  host has no toast service (0.9.x) or none was passed. */
 const noopNotify: Notifier = () => {}
 
-/** The session a list row belongs to — both row kinds carry one. */
-function rowSession(row: FlatRow): ScannedSession {
-  return row.kind === 'session' ? row.session : row.hit.session
+/**
+ * The one-shot state a scene mount is seeded with. The sidebar panel opens
+ * the scene with the query it was showing plus the row the user clicked, so
+ * the full-screen surface continues that search instead of starting over
+ * (`/find <words>` seeds the query alone; rowId stays absent).
+ */
+export interface SceneSeed {
+  readonly query: string
+  /** `FlatRow.rowId` to select once the sweep delivers that row. */
+  readonly rowId?: string
 }
 
 export function FindScene(props: TuiSceneProps & {
   config: ResolvedConfig
   /** Plugin-scoped scanner (created in main.tsx): its decode cache outlives the scene. */
   scanner: SessionScanner
-  initialQuery: () => string
+  /** The query the scene mounts with — the simple seed path (tests, or a
+   *  caller with no row to land on). Superseded by {@link SceneSeed}. */
+  initialQuery?: () => string
+  /** The full seed, consumed exactly once before the first render. */
+  initialSeed?: () => SceneSeed | undefined
   /** Host toast surface (0.10+, structural soft-probe in notify.ts); the
    *  footer status stays the primary in-scene feedback either way. */
   notify?: Notifier
@@ -103,7 +114,8 @@ export function FindScene(props: TuiSceneProps & {
   const { Box, Text, useTerminalSize } = ui
   const { useState, useEffect, useMemo, useRef, useCallback } = React
 
-  const [query, setQuery] = useState(() => props.initialQuery())
+  const [seed] = useState<SceneSeed>(() => props.initialSeed?.() ?? { query: props.initialQuery?.() ?? '' })
+  const [query, setQuery] = useState(seed.query)
   const [scope, setScope] = useState<SearchScope>(config.defaultScope)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(config.defaultTime)
   const [useRegex, setUseRegex] = useState(config.regex)
@@ -151,6 +163,9 @@ export function FindScene(props: TuiSceneProps & {
   // `rowId` is the anchor the next render reconciles the index against.
   const selectedRef = useRef(0)
   const rowsRef = useRef<readonly FlatRow[]>([])
+  /** The row a sidebar-panel handoff asked for (see {@link SceneSeed}):
+   *  held until the streaming sweep delivers it, then cleared. */
+  const handoffRowId = useRef<string | undefined>(seed.rowId)
   /** The session an open confirm pane commits — written when the pane opens,
    *  so a second Enter inside the SAME stdin chunk cannot fall back to the
    *  pre-move render closure (R-102). */
@@ -159,27 +174,18 @@ export function FindScene(props: TuiSceneProps & {
   useSessionSweep(React, { scanner, config, setSessions, setProgress, setStatus, setHiddenSubagents })
 
   const recentMode = query.trim().length === 0
-  // The time window's cutoff, quantized to the minute: renders within the
-  // same minute share one cutoff, so the `hits`/`flat` memos stay stable
-  // across direction-key steps, toasts and progress ticks instead of
-  // re-searching on every render — while a mounted scene that sits open
-  // still crosses its own window boundary on the first render after the
-  // minute flips (the boundary can trail the exact one by up to a minute).
-  const sinceMs =
-    timeFilter === 'all'
-      ? undefined
-      : Math.floor(Date.now() / 60_000) * 60_000 - (timeFilter === '7d' ? 7 : 30) * 86_400_000
+  // The window cutoff is quantized to the minute (see sinceMsFor): renders
+  // within the same minute share one cutoff, so the `hits`/`flat` memos stay
+  // stable across direction-key steps, toasts and progress ticks instead of
+  // re-searching on every render.
+  const sinceMs = sinceMsFor(timeFilter)
   const hits = useMemo(
     () =>
-      searchSessions(sessions, query, {
-        scope,
-        repoCwd: channel.cwd,
-        caseSensitive: config.caseSensitive,
-        ...(config.pinyin ? { pinyin: true } : {}),
-        ...(useRegex ? { regex: true } : {}),
-        ...(titleOnly ? { titleOnly: true } : {}),
-        ...(sinceMs === undefined ? {} : { sinceMs }),
-      }),
+      searchSessions(
+        sessions,
+        query,
+        buildSearchOptions(config, { scope, repoCwd: channel.cwd, useRegex, titleOnly, sinceMs }),
+      ),
     [sessions, query, scope, channel, config.caseSensitive, config.pinyin, useRegex, titleOnly, sinceMs],
   )
   // The scene mirrors the core's own regex screening so a pattern that is not
@@ -194,65 +200,14 @@ export function FindScene(props: TuiSceneProps & {
     [useRegex, query, config.caseSensitive],
   )
 
-  // Flatten to rows. Recent mode lists every session that holds conversation
-  // content (the scanner's MRU order), narrowed by the time window; results
-  // mode groups hits per session — the title hit (if any) rides the card's
-  // title line, message hits render under the card.
+  // Flatten to rows (see find-rows.ts — the sidebar panel builds the same
+  // list from the same function, so a panel handoff cannot land on a row this
+  // surface never rendered).
   const recentScopeCwd = channel.cwd
-  const flat = useMemo<FlatRow[]>(() => {
-    if (recentMode) {
-      return sessions
-        .filter(
-          session =>
-            session.messages.length > 0 &&
-            (scope === 'all' || sessionCwdMatches(recentScopeCwd ?? '', session.header.cwd ?? '')) &&
-            (sinceMs === undefined || session.modifiedAt >= sinceMs),
-        )
-        .map(session => ({ kind: 'session' as const, session, titleHit: undefined, rowId: `s:${session.id}` }))
-    }
-    const rows: FlatRow[] = []
-    for (const hit of hits) {
-      const titleHit = hit.hits.find(entry => entry.kind === 'title')
-      const messageHits = hit.hits.filter(entry => entry.kind === 'message')
-      const isExpanded = expanded.has(hit.session.id)
-      const shown = isExpanded ? messageHits.length : Math.min(PREVIEW_HITS, messageHits.length)
-      rows.push({
-        kind: 'session',
-        session: hit.session,
-        titleHit,
-        hits: hit.hits,
-        hitTotal: hit.total,
-        rowId: `s:${hit.session.id}`,
-      })
-      // The fold badge belongs to the final visible hit row only, and only
-      // when the card actually has hidden hits or shows them under a state
-      // the badge can leave: attaching it to every row would repeat the same
-      // (+N) on the card, and a card with nothing to fold carries no control
-      // to click. A card whose hits are all visible WITHOUT an expand-state
-      // (≤ PREVIEW_HITS) is the third case: there is no fold at all.
-      const foldable = messageHits.length > PREVIEW_HITS
-      for (let index = 0; index < shown; index++) {
-        const message = messageHits[index]!
-        rows.push({
-          kind: 'message',
-          hit,
-          message,
-          index,
-          // Identity is the matched MESSAGE, not the row the fold happens to
-          // put it on: folding moves this row without moving the message (see
-          // FlatRow). sourceIndex is set for every message hit — only title
-          // hits leave it undefined, and they never become rows — so the
-          // ordinal is a defensive fallback, not a second identity rule.
-          rowId: `m:${hit.session.id}:${message.sourceIndex ?? index}`,
-          fold:
-            foldable && index === shown - 1
-              ? { hidden: messageHits.length - shown, expanded: isExpanded }
-              : undefined,
-        })
-      }
-    }
-    return rows
-  }, [recentMode, sessions, hits, expanded, sinceMs, scope, recentScopeCwd])
+  const flat = useMemo<FlatRow[]>(
+    () => buildRows({ sessions, hits, recentMode, scope, repoCwd: recentScopeCwd, sinceMs, expanded }),
+    [recentMode, sessions, hits, expanded, sinceMs, scope, recentScopeCwd],
+  )
 
   // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
   // from the top), hit rows answer the full hit vocabulary. The selection is
@@ -302,6 +257,22 @@ export function FindScene(props: TuiSceneProps & {
     selectTo(current => Math.min(current, Math.max(0, flat.length - 1)))
   }, [flat.length, selectTo])
 
+  // A panel handoff owns the initial selection until its row exists: rows
+  // arrive with the streaming sweep, so the row the user clicked in the
+  // sidebar can be several frames away. Waiting HERE (not in an effect) keeps
+  // the frame that delivers the row from painting the list on row 0 first and
+  // then jumping — the same render-phase discipline the re-anchor above uses.
+  if (handoffRowId.current !== undefined) {
+    const index = flat.findIndex(row => row.rowId === handoffRowId.current)
+    if (index !== -1) {
+      handoffRowId.current = undefined
+      if (index !== selectedRef.current) {
+        selectedRef.current = index
+        setSelected(index)
+      }
+    }
+  }
+
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 
   // The reader's geometry, decided once per render: the split layout is a
@@ -349,7 +320,19 @@ export function FindScene(props: TuiSceneProps & {
   })
 
   // Reset selection when the query, scope, time window or match mode changes shape.
+  const firstResetRun = useRef(true)
   useEffect(() => {
+    const firstRun = firstResetRun.current
+    firstResetRun.current = false
+    // A panel handoff owns the MOUNT-time selection (the mount run of this
+    // effect is not a user edit): wait for the row instead of resetting to 0.
+    if (firstRun && handoffRowId.current !== undefined) return
+    // Any later run IS an edit — and it supersedes a handoff that never
+    // materialised (the user typed before the streaming sweep delivered the
+    // row, or the new query filtered it out). Clearing it here is what keeps
+    // this rule alive for the REST of the mount: the row-anchor block above
+    // stops waiting, so subsequent edits reset the highlight normally.
+    handoffRowId.current = undefined
     selectTo(0)
   }, [query, scope, timeFilter, useRegex, titleOnly, selectTo])
 

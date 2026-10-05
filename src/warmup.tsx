@@ -39,6 +39,7 @@ import { t } from './i18n.js'
 import type { SessionScanner } from './core/scan.js'
 import { prewarmFolds, PREWARM_MAX_MESSAGES, PREWARM_MAX_MS } from './core/search.js'
 import { registerSeamWithRetry } from './seam.js'
+import type { SweepClaim, SweepGate } from './sweep-gate.js'
 
 /** Quiet delay between apply and the warm-up sweep: long enough that the
  *  TUI boot has fully settled (the sweep must never compete with it), short
@@ -177,6 +178,11 @@ export interface WarmupDriverOptions {
    *  own sweep takes over; the background copy would only duplicate decode
    *  work). */
   readonly isSceneOpen: () => boolean
+  /** The plugin's single-sweep slot (sweep-gate.ts), shared with the sidebar
+   *  panel's driver. Absent = unarbitrated: the 0.9.x-shaped compositions and
+   *  the seam tests that predate the panel keep the old behavior (this sweep
+   *  is the only background one). */
+  readonly gate?: SweepGate
 }
 
 /**
@@ -190,6 +196,9 @@ export class WarmupDriver {
   private timer: ReturnType<typeof setTimeout> | undefined
   private controller: AbortController | undefined
   private started = false
+  /** This sweep's hold on the single-sweep slot, released on every settle
+   *  path (complete / cancel / supersede / dispose). */
+  private claim: SweepClaim | undefined
 
   constructor(
     private readonly ctx: Context,
@@ -241,6 +250,14 @@ export class WarmupDriver {
     this.started = true
     if (!this.options.config().warmup) return
     if (this.options.isSceneOpen()) return
+    // Single-sweep discipline (sweep-gate.ts): a panel sweep in flight owns
+    // the scanner — the user asked for that search, and this warm-up's whole
+    // purpose (a hot cache before the first search) is being served by it. A
+    // denied claim ends the warm-up for this activation; no view ever
+    // appeared, so there is nothing to settle.
+    const claim = this.options.gate?.claim('warmup')
+    if (this.options.gate !== undefined && claim === undefined) return
+    this.claim = claim
     const controller = new AbortController()
     this.controller = controller
     const config = this.options.config()
@@ -305,12 +322,18 @@ export class WarmupDriver {
       })
   }
 
-  /** Whether this sweep's work is already moot: the user cancelled it, or
-   *  /find opened and its own sweep supersedes this one. Settles the driver
-   *  on the scene-open path (the scan's own onProgress tick does, but the
-   *  prewarm's does not fire until its first yield). */
+  /** Whether this sweep's work is already moot: the user cancelled it, a
+   *  panel sweep preempted it, or /find opened and its own sweep supersedes
+   *  this one. Settles the driver on the scene-open path (the scan's own
+   *  onProgress tick does, but the prewarm's does not fire until its first
+   *  yield). */
   private superseded(controller: AbortController): boolean {
     if (controller.signal.aborted) return true
+    if (this.claim?.lost() === true) {
+      controller.abort()
+      this.settle(controller)
+      return true
+    }
     if (!this.options.isSceneOpen()) return false
     controller.abort()
     this.settle(controller)
@@ -319,15 +342,15 @@ export class WarmupDriver {
 
   private settle(controller: AbortController): void {
     if (this.controller === controller) this.controller = undefined
+    // Release through the claim (never through the gate directly): a stale
+    // claim must not free a slot its successor now holds.
+    this.claim?.release()
+    this.claim = undefined
     this.store.update('idle', 0, undefined)
   }
 }
 
-export interface WarmupOptions {
-  readonly scanner: SessionScanner
-  readonly config: () => ResolvedConfig
-  readonly isSceneOpen: () => boolean
-}
+export interface WarmupOptions extends WarmupDriverOptions {}
 
 /**
  * Wire the warm-up for one activation: register the progress view when the

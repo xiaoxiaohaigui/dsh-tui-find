@@ -21,6 +21,10 @@
  *   background warm-up index's progress row above the prompt, via
  *   `src/warmup.tsx`; the warm-up sweep itself rides the plugin-scoped
  *   scanner so the first /find open pays per-file stats, not a cold decode.
+ * - `tuiPanels.register` (0.13.0+, structural soft probe) — the sidebar
+ *   panel (`src/panel.tsx`), the plugin's single-column search list living in
+ *   the host's right column; `src/panel-model.ts` is its state and
+ *   `src/sweep-gate.ts` keeps its sweep and the warm-up's from overlapping.
  *
  * Every registration is scoped with `ctx.effect` so deactivation unwinds
  * them all; guarded registrations tolerate the host's cold-boot liveness
@@ -42,9 +46,12 @@ import { registerCommandTree } from './command-tree.js'
 import { SessionScanner } from './core/scan.js'
 import { dict, setLangOverride, t } from './i18n.js'
 import { makeNotifier } from './notify.js'
-import { FindScene } from './scene.js'
+import { registerFindPanel } from './panel.js'
+import { FindPanelDriver } from './panel-model.js'
+import { FindScene, type SceneSeed } from './scene.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 import { registerSettingsSection } from './settings.js'
+import { SweepGate } from './sweep-gate.js'
 import { setupWarmup } from './warmup.js'
 
 export const name = 'dsh-tui-find'
@@ -75,11 +82,13 @@ export const COMMAND_CONTRIBUTION_ID = 'dsh-tui-find.find'
 export const SHORTCUT_COMBO = DEFAULT_SHORTCUT
 
 /**
- * Query seeded by a `/find <words>` invocation and consumed by the scene on
- * mount. Process-lifetime module state is safe here: the TUI is single-
- * window, the scene is a singleton, and the value is consumed exactly once.
+ * The one-shot seed the next scene mount consumes: `/find <words>` sets the
+ * query, the sidebar panel sets the query AND the row it wants selected (see
+ * scene.tsx's SceneSeed). Process-lifetime module state is safe here: the TUI
+ * is single-window, the scene is a singleton, and the value is consumed
+ * exactly once per mount.
  */
-let pendingQuery = ''
+let pendingSeed: SceneSeed | undefined
 
 /** Resolve the effective plugin config once per activation. */
 function resolveActivationConfig(config: PluginConfig | undefined): ResolvedConfig {
@@ -160,6 +169,59 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // nothing (compositions without `agents` stay pending; see `inject`).
   const host = ctx.get('tuiPluginHost', false)
 
+  /**
+   * Whether the full-screen find scene is up. Read from a deferred timer and
+   * from the panel's sweep ticks, i.e. possibly outside any live Cordis
+   * activation: the caller-bound getter throws there (the liveness gate sees
+   * no activation token), so degrade to "not open" — safe by design, because
+   * an actually-open scene aborts the warm-up and the panel sweep through the
+   * scene-open path (让位), not through this probe.
+   */
+  const isSceneOpen = (): boolean => {
+    try {
+      return ctx.get('tuiScenes', false)?.active?.id === SCENE_ID
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * The panel's driver, once this activation built one (setupScenes below).
+   * Held mutably because `openSceneWith` is defined first and the scene
+   * runtime can mount later.
+   */
+  let panelDriver: FindPanelDriver | undefined
+
+  /**
+   * Open the scene with a one-shot seed. Every entry point (the `/find`
+   * command, the global shortcut and the sidebar panel) comes through here, so
+   * the seed, the remount cycling and the "the scene supersedes the panel's
+   * sweep" handoff have exactly one owner: an already-open scene does NOT
+   * remount on re-open, so a fresh seed would be silently dropped — cycle the
+   * scene to force the mount that consumes it.
+   */
+  const openSceneWith = (seed: SceneSeed): boolean => {
+    const scenes = ctx.get('tuiScenes', false)
+    if (scenes === undefined) return false
+    pendingSeed = seed
+    if (scenes.active?.id === SCENE_ID) scenes.close()
+    const opened = scenes.open(SCENE_ID)
+    if (!opened) {
+      // A failed open leaves no scene to consume the seed; keeping it would
+      // leak these words into a later shortcut-opened scene. The panel's
+      // sweep was never told to stand down either (see below).
+      pendingSeed = undefined
+      return false
+    }
+    // The scene sweeps on mount. The panel's driver is only reachable here —
+    // the driver's own scene probe runs inside async scan callbacks, where the
+    // caller-bound `tuiScenes` getter can degrade to "no scene" — so this is
+    // the call that keeps `/find` and Alt+F from leaving a second sweep
+    // decoding behind the scene.
+    panelDriver?.yieldToScene()
+    return true
+  }
+
   // The search scene itself. The profile loader can interleave rows: this
   // apply can run before the TUI runtimes mount (observed on a real
   // 0.10.1 + engine rc.2 boot, where the soft-probe below returned
@@ -178,16 +240,42 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     // restart rebuilds the in-memory index (decoded text lives only in
     // memory), so the journal is a durable record, not a resume source.
     const scanner = new SessionScanner({ watermarkPath: watermarkJournalPath() })
+    // One sweep slot per activation, shared by the warm-up and the sidebar
+    // panel (sweep-gate.ts): the scanner's decode cache and watermark journal
+    // are single-tenant, so the two background-ish sweepers take turns — the
+    // user-facing panel outranks the opportunistic warm-up.
+    const gate = new SweepGate()
+    const driver = new FindPanelDriver({
+      scanner,
+      config: () => runtimeConfig,
+      isSceneOpen,
+      gate,
+      openScene: seed => openSceneWith(seed),
+    })
+    // Visible to the shared scene opener above, so `/find` and the global
+    // shortcut can make the panel's sweep stand down.
+    panelDriver = driver
+    // Registered on 0.13.0+ only (the sidebar itself is that new): a no-op
+    // everywhere else, like every other optional seam in this plugin.
+    registerFindPanel(ctx, { driver })
+    ctx.effect(() => () => {
+      driver.dispose()
+      // A disposed driver must not be handed a later scene opening.
+      if (panelDriver === driver) panelDriver = undefined
+    })
     const component = (props: TuiSceneProps) => (
       <FindScene
         {...props}
         config={runtimeConfig}
         scanner={scanner}
         notify={notify}
-        initialQuery={() => {
-          const value = pendingQuery
-          pendingQuery = ''
-          return value
+        initialSeed={() => {
+          // Consumed exactly once, and never falling through to a caller's
+          // `initialQuery`: this wrapper speaks the seed path only, so a spent
+          // seed means an empty query — not somebody else's default.
+          const value = pendingSeed
+          pendingSeed = undefined
+          return value ?? { query: '' }
         }}
       />
     )
@@ -222,13 +310,8 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       // liveness gate sees no activation token). Degrade to "not open" —
       // safe by design, because an actually-open scene aborts the warm-up
       // through the scene-open path (让位), not through this probe.
-      isSceneOpen: () => {
-        try {
-          return ctx.get('tuiScenes', false)?.active?.id === SCENE_ID
-        } catch {
-          return false
-        }
-      },
+      isSceneOpen,
+      gate,
     })
   }
   whenSeamMounted(ctx, 'tuiScenes', () => ctx.get('tuiScenes', false), setupScenes)
@@ -254,19 +337,10 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     // the raw input out of the session log.
     recordInput: false,
     handler: invocation => {
-      const scenes = ctx.get('tuiScenes', false)
-      if (scenes === undefined) {
+      if (ctx.get('tuiScenes', false) === undefined) {
         return { kind: 'error', text: 'dsh-tui-find: TUI scenes seam unavailable' }
       }
-      pendingQuery = invocation.rawInput.trim()
-      // An already-open scene does not remount on re-open, so a new
-      // `/find <words>` while the scene is up would silently drop the
-      // query — cycle the scene to force a remount that consumes it.
-      if (scenes.active?.id === SCENE_ID) scenes.close()
-      const opened = scenes.open(SCENE_ID)
-      // A failed open leaves no scene to consume the seed; keeping it
-      // would leak these words into a later shortcut-opened scene.
-      if (!opened) pendingQuery = ''
+      const opened = openSceneWith({ query: invocation.rawInput.trim() })
       return opened
         ? { kind: 'success' }
         : { kind: 'error', text: 'dsh-tui-find: failed to open the find scene' }
@@ -348,8 +422,12 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
           handler: () => {
             const scenes = ctx.get('tuiScenes', false)
             if (scenes === undefined) return
+            // The shortcut toggles nothing: a second press while the scene
+            // holds the screen must not remount it (that would lose the
+            // query). Otherwise it opens through the shared entry so the
+            // panel's sweep stands down — an empty seed is the recent list.
             if (scenes.active?.id === SCENE_ID) return
-            scenes.open(SCENE_ID)
+            openSceneWith({ query: '' })
           },
         },
         ctx,

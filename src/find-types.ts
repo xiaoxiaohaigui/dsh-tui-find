@@ -16,6 +16,15 @@ import type { MessageHit, SessionHit } from './core/search.js'
 
 /** The host ui kit's component/hook surface, derived from the scene props. */
 export type Ui = TuiSceneProps['ui']
+/**
+ * The minimal kit the shared ROW renderers touch (the list, its hit rows, a
+ * hint line): text and boxes only. The full-screen scene passes its whole kit
+ * and the sidebar panel passes the host's narrowed panel kit — both satisfy
+ * this, and the renderers stay honest about what they actually use (a blanket
+ * cast at the panel boundary would let a renderer reach for a member the
+ * panel's kit does not have, which is a crash, not a type error).
+ */
+export type RowUi = Pick<Ui, 'Box' | 'Text'>
 /** The host's parsed-key flags, derived from the ui kit's own useInput. */
 export type InputKey = Parameters<Parameters<Ui['useInput']>[0]>[1]
 /** The color vocabulary Text accepts (theme keys + raw values). */
@@ -197,8 +206,8 @@ type SceneColor = TextColor | 'claude' | 'accent'
  * assistant role colour, the right-click context menu). A wrong probe
  * degrades — an uncoloured role mark, an unattached menu — never a crash.
  */
-export function hasTerminalImageHooks(ui: Ui): boolean {
-  return typeof (ui as Ui & { useTerminalImages?: unknown }).useTerminalImages === 'function'
+export function hasTerminalImageHooks(ui: object): boolean {
+  return typeof (ui as { useTerminalImages?: unknown }).useTerminalImages === 'function'
 }
 
 /**
@@ -212,7 +221,7 @@ export function hasTerminalImageHooks(ui: Ui): boolean {
  * ever absent from a kit that no longer speaks `claude` either, the host
  * lookup degrades to no colour — the chain's dim end.
  */
-export function roleMarkColor(ui: Ui, role: 'user' | 'assistant' | 'tool'): TextColor {
+export function roleMarkColor(ui: object, role: 'user' | 'assistant' | 'tool'): TextColor {
   if (role !== 'assistant') return ROLE_MARK[role].color as TextColor
   const accent: SceneColor = 'accent'
   return hasTerminalImageHooks(ui) ? (accent as TextColor) : (ROLE_MARK.assistant.color as TextColor)
@@ -255,6 +264,30 @@ export function formatWhen(at: number | undefined): string {
   if (days <= 7) return t('when-days', { n: days })
   const date = new Date(at)
   return t('when-date', { m: date.getMonth() + 1, d: date.getDate() })
+}
+
+/**
+ * Append one input event's characters to a query. Only real characters reach
+ * the query — control bytes inside a paste (newlines included) must not type
+ * invisibly — and a `current` with nothing appended is returned unchanged so
+ * the caller's state setter can bail out. Shared by the scene's input hook
+ * and the sidebar panel's key handler: the two surfaces must edit the query
+ * the same way or the same keystrokes would search different things.
+ */
+export function appendQueryText(current: string, input: string): string {
+  const typed = input.replace(/\p{Cc}/gu, '')
+  return typed.length === 0 ? current : current + typed
+}
+
+/**
+ * Drop the query's last CODE POINT — a UTF-16 code-unit slice would leave a
+ * lone surrogate behind after backspacing over an emoji.
+ */
+export function dropQueryTail(current: string): string {
+  if (current.length === 0) return current
+  const characters = [...current]
+  characters.pop()
+  return characters.join('')
 }
 
 /** Title fallback mirroring the host picker: cwd basename, then id prefix. */

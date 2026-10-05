@@ -53,8 +53,7 @@ export type Harness = {
   dispose(): void
 }
 
-export function stripAnsi(value: string): string {
-  return value
+export function stripAnsi(value: string): string {  return value
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
@@ -290,6 +289,82 @@ export async function mount(
     dispose() {
       // Ink's TTY cleanup uses writeSync on fd 1 when no fd is present. Mark
       // the test stream non-TTY before unmounting so the harness stays quiet.
+      stdout.isTTY = false
+      instance.unmount()
+    },
+  }
+}
+
+/** The narrowed kit the host hands a plugin panel, stood up on the real host
+ *  ui module: Box/Text are the host's own, Divider is stubbed (the design
+ *  system module is not part of the 0.9.3 kit this repo builds against and the
+ *  panel only asks it for one row), and the size hooks report the panel box. */
+export function panelKit(width: number, height: number): unknown {
+  const Divider = (): React.ReactElement =>
+    React.createElement(
+      hostUi.Box,
+      null,
+      React.createElement(hostUi.Text, { dimColor: true }, '\u2500'.repeat(Math.max(1, width - 2))),
+    )
+  return {
+    Box: hostUi.Box,
+    Text: hostUi.Text,
+    Divider,
+    useTerminalSize: () => ({ columns: width, rows: height }),
+  }
+}
+
+/**
+ * Mount one already-built element against the real host ui kit with the same
+ * fake TTY scaffolding {@link mount} uses — for components that are not scenes
+ * (the sidebar panel, mounted by a host adapter this repo does not build
+ * against). Frames are captured the same way, so the same assertions work.
+ */
+export async function mountKitComponent(
+  element: React.ReactElement,
+  options: { columns?: number; rows?: number; settle?: boolean } = {},
+): Promise<{ output(): string; latest(): string; unmount(): void }> {
+  const columns = options.columns ?? 40
+  const rows = options.rows ?? 16
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean
+    setRawMode(mode: boolean): PassThrough
+    ref(): void
+    unref(): void
+  }
+  stdin.isTTY = true
+  stdin.setRawMode = () => stdin
+  stdin.ref = () => {}
+  stdin.unref = () => {}
+  let output = ''
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      output += chunk.toString()
+      callback()
+    },
+  }) as Writable & { isTTY: boolean; columns: number; rows: number; getColorDepth(): number }
+  stdout.isTTY = true
+  stdout.columns = columns
+  stdout.rows = rows
+  stdout.getColorDepth = () => 8
+  const instance = await hostUi.render(element, {
+    stdout,
+    stdin,
+    stderr: process.stderr,
+    patchConsole: false,
+    exitOnCtrlC: false,
+  })
+  // `settle: false` returns right after the commit — for tests that must act
+  // while the component's own first effect is still in flight.
+  if (options.settle !== false) await waitFor()
+  const frameTail = (): string => {
+    const start = output.lastIndexOf('\u001b[?2026h')
+    return start < 0 ? output : output.slice(start)
+  }
+  return {
+    output: () => stripAnsi(output),
+    latest: () => stripAnsi(frameTail()),
+    unmount: () => {
       stdout.isTTY = false
       instance.unmount()
     },

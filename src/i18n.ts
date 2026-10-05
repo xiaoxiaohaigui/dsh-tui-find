@@ -230,6 +230,16 @@ export const dict = {
   'warmup-progress': { zh: '后台索引 {{resolved}}/{{total}}', en: 'Indexing {{resolved}}/{{total}}' },
   'warmup-initial': { zh: '后台索引中…', en: 'Indexing…' },
 
+  // ── sidebar panel (`tuiPanels`, 0.13.0+) ──────────────────────────────
+  // The panel's tab title is a literal handed to the host at registration
+  // time (the descriptor has no key form), so it resolves through t() once.
+  'panel-title-find': { zh: '搜索', en: 'Search' },
+  'panel-placeholder': { zh: '输入以搜索', en: 'Type to search' },
+  'panel-open-failed': { zh: '无法打开 /find 场景', en: 'Could not open the /find scene' },
+  'hint-seg-open': { zh: '**Enter** 打开', en: '**Enter** open' },
+  'hint-seg-fold': { zh: 'Tab 折叠', en: 'Tab fold' },
+  'hint-seg-type': { zh: '输入搜索', en: 'Type to search' },
+
   // ── command tree provider (`tuiCommandTrees` suggestion metadata) ─────
   // The zh/en pair is handed to the host wholesale and picked by the HOST's
   // language at render time (never through t()); the en text mirrors the

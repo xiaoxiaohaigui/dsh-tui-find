@@ -20,8 +20,8 @@ import {
   type ContextBoxProps,
   type ContextMenuEventLike,
   type FlatRow,
+  type RowUi,
   type TextColor,
-  type Ui,
   type WheelBoxProps,
   type WheelEventLike,
 } from './find-types.js'
@@ -66,7 +66,7 @@ function rowLineCount(row: FlatRow): number {
  */
 function FoldBadge(props: {
   React: TuiSceneProps['React']
-  ui: Ui
+  ui: RowUi
   /** The badge text, chevron included — measured by the caller for its own
    *  text budget, so the caller composes it once. */
   label: string
@@ -100,7 +100,7 @@ function FoldBadge(props: {
 
 export function ListView(props: {
   React: TuiSceneProps['React']
-  ui: Ui
+  ui: RowUi
   rows: readonly FlatRow[]
   selected: number
   height: number

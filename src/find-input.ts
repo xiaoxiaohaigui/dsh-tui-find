@@ -25,7 +25,9 @@ import {
   type PreviewLine,
 } from './preview.js'
 import {
+  appendQueryText,
   CHROME_LINES,
+  dropQueryTail,
   type CopyEntry,
   type FlatRow,
   type InputKey,
@@ -416,21 +418,15 @@ export function useFindInput(deps: FindInputDeps): void {
         return
       }
       if (key.backspace || key.delete) {
-        // Delete a whole CODE POINT — a UTF-16 code-unit slice would leave a
-        // lone surrogate behind after backspacing over an emoji.
-        setQuery(current => {
-          if (current.length === 0) return current
-          const characters = [...current]
-          characters.pop()
-          return characters.join('')
-        })
+        // Delete a whole CODE POINT (see dropQueryTail) — the panel's own
+        // backspace rides the same primitive.
+        setQuery(dropQueryTail)
         return
       }
       if (input.length > 0 && plain) {
         // Only real characters reach the query — control bytes inside a
-        // paste (newlines included) must not type invisibly.
-        const typed = input.replace(/\p{Cc}/gu, '')
-        if (typed.length > 0) setQuery(current => current + typed)
+        // paste (newlines included) must not type invisibly (appendQueryText).
+        setQuery(current => appendQueryText(current, input))
       }
     },
     { isActive: true },
