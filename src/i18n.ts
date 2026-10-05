@@ -235,6 +235,11 @@ export const dict = {
   // time (the descriptor has no key form), so it resolves through t() once.
   'panel-title-find': { zh: '搜索', en: 'Search' },
   'panel-placeholder': { zh: '输入以搜索', en: 'Type to search' },
+  // R-156: the panel's status row LEADS with the effective scope. Tab's notice
+  // is cleared by the very next query edit, and the panel has no other
+  // persistent home for the scope (the empty query row is caret-only while
+  // focused — R-154), so the row itself has to carry it.
+  'panel-scope-tag': { zh: '范围：{{scope}}', en: 'Scope: {{scope}}' },
   'panel-open-failed': { zh: '无法打开 /find 场景', en: 'Could not open the /find scene' },
   'hint-seg-open': { zh: '**Enter** 打开', en: '**Enter** open' },
   'hint-seg-fold': { zh: 'Shift+Tab 折叠', en: 'Shift+Tab fold' },

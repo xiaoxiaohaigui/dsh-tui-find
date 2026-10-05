@@ -19,7 +19,7 @@ import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/sc
 import { setLangOverride } from '../src/i18n.js'
 import { buildFindPanelComponent, type FindPanelProps, type PanelHostApi, type PanelKeyEvent } from '../src/panel.js'
 import { FindPanelDriver } from '../src/panel-model.js'
-import { stripAnsi, waitForMatch, waitUntil } from './harness.js'
+import { stripAnsi, waitFor, waitForMatch, waitUntil } from './harness.js'
 
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
@@ -96,6 +96,17 @@ interface ViewFixture {
   send(input: string, key: Record<string, unknown> = {}): boolean
   output(): string
   latest(): string
+  /** One WHOLE frame matching `pattern`, returned so the caller keeps its own
+   *  `expect` (a deadline miss surfaces as a normal assertion diff). A plain
+   *  `latest()` read cannot do this job: an ordinary update is written as a CELL
+   *  DIFF — cursor moves between the runs that changed — so a row that merely
+   *  changed is never readable in it. The read therefore goes through a repaint
+   *  (the resize path paints the frame whole — the handoff suite's rule, R-140),
+   *  and the repaint must be issued IMMEDIATELY after the edit it is meant to
+   *  read: a flip that lands while ink still has the update queued absorbs it
+   *  into the whole frame, while one issued after the queue drained writes
+   *  nothing at all (measured: 0 bytes). */
+  wholeFrame(pattern: RegExp): Promise<string>
   unmount(): void
 }
 
@@ -208,6 +219,13 @@ async function mountPanel(
   })
   await new Promise(resolve => setTimeout(resolve, 60))
 
+  /** The last painted frame, ANSI stripped (see wholeFrame for when a frame —
+   *  rather than the cumulative stream — is the thing to read). */
+  const latest = (): string => {
+    const start = output.lastIndexOf('\u001b[?2026h')
+    return stripAnsi(start < 0 ? output : output.slice(start))
+  }
+
   return {
     driver,
     opened,
@@ -225,9 +243,21 @@ async function mountPanel(
       return consumed
     },
     output: () => stripAnsi(output),
-    latest: () => {
-      const start = output.lastIndexOf('\u001b[?2026h')
-      return stripAnsi(start < 0 ? output : output.slice(start))
+    latest,
+    async wholeFrame(pattern: RegExp): Promise<string> {
+      const deadline = Date.now() + 4_000
+      let frame = ''
+      for (;;) {
+        // The FIRST flip has to be immediate (see the interface note): a repaint
+        // issued while ink still has the update queued absorbs that update into
+        // a whole-frame render, while a repaint issued after the queue drained
+        // writes nothing at all — the frame is already on screen.
+        stdout.columns = stdout.columns === width ? width + 1 : width
+        stdout.emit('resize')
+        await waitFor(60)
+        frame = latest()
+        if (pattern.test(frame) || Date.now() >= deadline) return frame
+      }
     },
     unmount: () => {
       stdout.isTTY = false
@@ -341,9 +371,14 @@ describe('find panel component', () => {
       expect(view.send('\t')).toBe(true)
       expect(view.driver.scope()).toBe('all')
       expect(view.driver.getSnapshot().rows.map(row => row.rowId)).toEqual(['s:a', 's:b'])
-      // The status row announces it in the scene's own words (the frame
-      // collapses blank cells, hence the loose spaces — see the layout test).
-      await waitForMatch(() => view.output(), /All\s*sessions/)
+      // The status row announces it in the scene's own words. Read off a WHOLE
+      // frame: the switch is written as a CELL DIFF of the row it replaces, so
+      // the cumulative stream only holds a stitched fragment of the new text
+      // (with the R-156 scope tag in front of it, the diff keeps even more of
+      // the old row). `wholeFrame` returns what it got, so a miss here is an
+      // assertion diff rather than a timeout.
+      const switched = await view.wholeFrame(/Scope\s*switched\s*to\s*"All\s*sessions"/)
+      expect(switched).toMatch(/Scope\s*switched\s*to\s*"All\s*sessions"/)
 
       // Shift+Tab is the fold, so it must NOT move the scope (on a recent-mode
       // card there is nothing to fold, which is why nothing changes at all).
@@ -352,6 +387,35 @@ describe('find panel component', () => {
       // …and plain Tab flips it back.
       expect(view.send('', { tab: true })).toBe(true)
       expect(view.driver.scope()).toBe('repo')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('keeps naming the scope on the status row after the notice is cleared (R-156)', async () => {
+    // The Tab switch's only feedback used to be the `scope-switched` notice,
+    // and the next query edit wipes it — leaving no way to tell which scope the
+    // list was built from. The status row carries it now.
+    const foreign = { ...stubSession('b'), header: { cwd: 'P:\\elsewhere', createdAt: undefined } }
+    const view = await mountPanel({ sessions: [stubSession('a'), foreign] })
+    try {
+      // Recent mode already names the configured scope (the built-in default).
+      expect(view.output()).toMatch(/Scope:\s*This\s*repo/)
+
+      view.send('\t')
+      const switched = await view.wholeFrame(/Scope\s*switched\s*to\s*"All\s*sessions"/)
+      expect(switched).toMatch(/Scope\s*switched\s*to\s*"All\s*sessions"/)
+      expect(view.driver.scope()).toBe('all')
+
+      // One typed character clears that notice (`setQuery`) and re-shapes the
+      // list. The scope has to survive on the row itself — the frame read here
+      // is painted after the edit, so a surviving notice would be a failure.
+      view.send('needle')
+      const frame = await view.wholeFrame(/Scope:\s*All\s*sessions/)
+      expect(frame).toMatch(/Scope:\s*All\s*sessions/)
+      // The notice is gone from the live frame — the tag is the only thing left
+      // naming the scope, which is the whole point of R-156.
+      expect(frame).not.toMatch(/switched/)
     } finally {
       view.unmount()
     }

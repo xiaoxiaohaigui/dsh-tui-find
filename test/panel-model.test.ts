@@ -478,6 +478,37 @@ describe('FindPanelDriver — the scope', () => {
       { query: 'needle', rowId: 's:foreign', expanded: [], scope: 'all' },
     ])
   })
+
+  it('publishes the effective scope for the status row, past the notice (R-156)', async () => {
+    // The switch notice is the only thing that used to name the scope, and the
+    // next query edit clears it — so the row needs the scope from the snapshot.
+    const fixture = await ready({ defaultScope: 'all' })
+    expect(fixture.snapshot().scope).toBe('all')
+
+    fixture.driver.toggleScope()
+    expect(fixture.snapshot().scope).toBe('repo')
+    expect(fixture.snapshot().notice).toBeDefined()
+
+    // The edit kills the notice; the scope field must stay put.
+    fixture.driver.appendInput('needle')
+    expect(fixture.snapshot().notice).toBeUndefined()
+    expect(fixture.snapshot().scope).toBe('repo')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local', 'm:local:0'])
+  })
+
+  it('seeds the resolved scope before anything publishes (R-156)', () => {
+    // The store's module-level empty snapshot cannot read config, so the driver
+    // seeds it in its constructor: the panel's FIRST painted frame already names
+    // the scope it is searching rather than the built-in default.
+    const driver = new FindPanelDriver({
+      scanner: stubScanner() as unknown as SessionScanner,
+      config: () => resolveConfig({ defaultScope: 'all' }),
+      isSceneOpen: () => false,
+      openScene: () => true,
+    })
+    expect(driver.getSnapshot().scope).toBe('all')
+    expect(driver.getSnapshot().phase).toBe('cold')
+  })
 })
 
 describe('FindPanelDriver — selection', () => {

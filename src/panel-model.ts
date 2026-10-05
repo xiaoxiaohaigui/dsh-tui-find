@@ -47,6 +47,11 @@ export interface PanelNotice {
 export interface PanelSnapshot {
   readonly phase: 'cold' | 'indexing' | 'ready' | 'failed'
   readonly query: string
+  /** The scope the list on screen was built with — Tab's session override when
+   *  there is one, the configured `defaultScope` otherwise. The status row
+   *  renders it (R-156): the switch's notice dies on the next query edit, and
+   *  a panel that has been typed into must still say which scope it searched. */
+  readonly scope: SearchScope
   /** Live sweep progress; undefined once the sweep has landed. */
   readonly progress: ScanProgress | undefined
   /** The count a landed sweep left behind (R-115's settled-sub-agent rule). */
@@ -64,6 +69,9 @@ export interface PanelSnapshot {
 const EMPTY_SNAPSHOT: PanelSnapshot = {
   phase: 'cold',
   query: '',
+  // The configured default of a driver that has not published yet; the
+  // constructor publishes the RESOLVED one (a store cannot read config).
+  scope: 'repo',
   progress: undefined,
   hiddenSubagents: 0,
   hits: [],
@@ -80,6 +88,7 @@ function sameSnapshot(a: PanelSnapshot, b: PanelSnapshot): boolean {
   return (
     a.phase === b.phase &&
     a.query === b.query &&
+    a.scope === b.scope &&
     a.progress === b.progress &&
     a.hiddenSubagents === b.hiddenSubagents &&
     a.hits === b.hits &&
@@ -166,7 +175,14 @@ export class FindPanelDriver {
    *  — see {@link bindBadge}. */
   private setBadge: ((badge: { readonly level: 'info' | 'warning' | 'error'; readonly unread: number } | null) => void) | undefined
 
-  constructor(private readonly options: PanelDriverOptions) {}
+  constructor(private readonly options: PanelDriverOptions) {
+    // Seed the store with the resolved scope: the module-level empty snapshot
+    // cannot read config, and the panel's first painted frame must already name
+    // the scope it is searching (R-156). No listeners exist yet, so this is a
+    // plain field write — and `sameSnapshot` keeps it a no-op on the repo
+    // default, where the two agree.
+    this.publish()
+  }
 
   getSnapshot = (): PanelSnapshot => this.store.getSnapshot()
 
@@ -264,7 +280,8 @@ export class FindPanelDriver {
    * at all, so the selection goes back to the top like a query edit: an old
    * highlight (or a handoff anchor) must not survive into a different result
    * set. The notice is what the status row shows until the next query edit,
-   * and it is the same string the scene toasts.
+   * and it is the same string the scene toasts; the status row's own scope tag
+   * (R-156) is what keeps the scope readable after that edit clears it.
    */
   toggleScope(): void {
     const next: SearchScope = this.scope() === 'repo' ? 'all' : 'repo'
@@ -581,6 +598,7 @@ export class FindPanelDriver {
     this.store.set({
       phase: this.phase,
       query: this.query,
+      scope: this.scope(),
       progress: this.progress,
       hiddenSubagents: this.hiddenSubagents,
       hits: this.hits,

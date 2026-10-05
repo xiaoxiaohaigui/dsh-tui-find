@@ -312,6 +312,14 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
       hitTotal,
       settledHiddenSubagents: snapshot.hiddenSubagents,
     })
+    // R-156: the status row leads with the scope the list was built with. Tab's
+    // notice is the only thing that ever named it, and `setQuery` clears that
+    // notice on the next keystroke — without this tag a user who switched to
+    // "all sessions" and typed one character could no longer tell. It leads the
+    // row so a narrow panel truncates the counts, never the scope.
+    const scopeTag = t('panel-scope-tag', {
+      scope: t(snapshot.scope === 'repo' ? 'scope-repo' : 'scope-all'),
+    })
     const emptyText =
       snapshot.phase === 'indexing' || snapshot.phase === 'cold'
         ? t('reading-sessions')
@@ -380,7 +388,12 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
             wrap="truncate-end"
             {...(snapshot.notice !== undefined ? { color: snapshot.notice.tone === 'error' ? 'error' as const : 'success' as const } : { dimColor: true })}
           >
-            {truncateWidth(snapshot.notice?.text ?? status, contentWidth)}
+            {/* A notice takes the row over — but every notice either names the
+                scope itself (`scope-switched`) or is the more urgent message. */}
+            {truncateWidth(
+              snapshot.notice !== undefined ? snapshot.notice.text : `${scopeTag} · ${status}`,
+              contentWidth,
+            )}
           </Text>
         </Box>
         {showDivider ? <ui.Divider /> : null}
