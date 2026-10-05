@@ -17,7 +17,7 @@ import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/sc
 import { setLangOverride } from '../src/i18n.js'
 import { buildFindPanelComponent, type FindPanelProps, type PanelHostApi, type PanelKeyEvent } from '../src/panel.js'
 import { FindPanelDriver } from '../src/panel-model.js'
-import { stripAnsi, waitForMatch } from './harness.js'
+import { stripAnsi, waitForMatch, waitUntil } from './harness.js'
 
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
@@ -140,6 +140,12 @@ async function mountPanel(
     { stdout, stdin, stderr: process.stderr, patchConsole: false, exitOnCtrlC: false },
   )
   await new Promise(resolve => setTimeout(resolve, 60))
+  // The mount settle is not a guarantee that the sweep has LANDED: the driver
+  // scans asynchronously, and on a loaded runner the first paint is legitimately
+  // the cold one ("0 sessions", no cards). Wait for the delivery itself rather
+  // than for a wall-clock delay, so the layout assertions below run against a
+  // settled panel on every machine; a genuine stall still trips their `expect`.
+  await waitUntil(() => driver.getSnapshot().rows.length > 0)
 
   return {
     driver,

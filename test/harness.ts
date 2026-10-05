@@ -104,6 +104,19 @@ export async function waitForMatch(stream: () => string, pattern: RegExp, timeou
   }
 }
 
+/** Poll a predicate until it holds or the deadline lapses — the state-shaped
+ *  sibling of {@link waitForMatch}, for waits that are not about a painted
+ *  frame (a driver settling, a listener unregistering). Callers keep their
+ *  `expect` after the wait, so a deadline miss surfaces as their own
+ *  assertion diff rather than a helper error. */
+export async function waitUntil(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) return
+    await waitFor(25)
+  }
+}
+
 export function sessionWithMessages(texts: readonly string[]): ScannedSession {
   return {
     id: 'preview-wiring-session',
