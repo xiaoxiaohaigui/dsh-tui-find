@@ -51,8 +51,10 @@ export const PANEL_ICON = '⌕'
 /** Below this many columns the host shows its "too narrow" notice instead of
  *  mounting the component — the list's own budget assumes roughly this. */
 export const PANEL_MIN_COLUMNS = 28
-/** PanelBar order: after the builtins (todo 10 · info 15 · jobs 20 ·
- *  trajectory 25 · agents 30 · workspace 35 · companion 40). */
+/** PanelBar order: after the builtins (todo 10 · info 15 · jobs 20 · btw 22 ·
+ *  trajectory 25 · agents 30 · workspace 35 · companion 40, as of the
+ *  post-0.13.0 main). New builtin panels keep landing below this, so 50 keeps
+ *  the plugin's tab at the end of the bar. */
 export const PANEL_ORDER = 50
 /** The tab title, resolved through t() at registration (the descriptor takes
  *  a literal — plugins have no i18n-key form). */
