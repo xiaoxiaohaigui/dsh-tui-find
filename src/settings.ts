@@ -439,6 +439,11 @@ function registerNamespaceScope(
       defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
       defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
       layout: z.union(['split', 'classic']).default(resolved.layout),
+      // The panel row's own switch: on this generation the namespace IS the
+      // value source, so a key missing here would let a stored `false` resolve
+      // back to the default (on) and re-register the panel on every boot —
+      // exactly the "it comes back" failure the row exists to prevent (R-145).
+      panel: z.boolean().default(resolved.panel),
       caseSensitive: z.boolean().default(resolved.caseSensitive),
       regex: z.boolean().default(resolved.regex),
       pinyin: z.boolean().default(resolved.pinyin),
@@ -537,6 +542,7 @@ type ConfigValue = {
   defaultScope?: 'repo' | 'all'
   defaultTime?: 'all' | '7d' | '30d'
   layout?: 'split' | 'classic'
+  panel?: boolean
   caseSensitive?: boolean
   regex?: boolean
   pinyin?: boolean

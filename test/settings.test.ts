@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { LIVE_CONFIG_KEYS, resolveConfig } from '../src/config.js'
+import { LIVE_CONFIG_KEYS, resolveConfig, type Config } from '../src/config.js'
 import {
   registerSettingsSection,
   resolveSettingsNamespace,
@@ -79,13 +79,18 @@ function fakeContext(options: FakeOptions = {}): { ctx: Context; seen: Recorded 
   return { ctx: ctx as unknown as Context, seen }
 }
 
-/** Wiring over a mutable raw config, mirroring main.tsx's thunk. */
-function wiringOver(raw: { current: Record<string, unknown> }): SettingsWiring & {
+/** Wiring over a mutable raw config, mirroring main.tsx's thunk. The optional
+ *  second argument stands in for the apply-time row config `resolveConfig`
+ *  receives in main.tsx (the namespace schema's defaults come from there). */
+function wiringOver(
+  raw: { current: Record<string, unknown> },
+  resolved?: Config,
+): SettingsWiring & {
   applied: Array<{ layout: string; warmup: boolean }>
 } {
   const applied: Array<{ layout: string; warmup: boolean }> = []
   return {
-    resolved: resolveConfig(undefined),
+    resolved: resolveConfig(resolved),
     readRaw: () => raw.current,
     onResolved: next => applied.push({ layout: next.layout, warmup: next.warmup }),
     applied,
@@ -289,8 +294,7 @@ describe('settings namespace', () => {
     expect(schema?.({ layout: 'classic' })['layout']).toBe('classic')
   })
 
-  it('carries the sub-agent switch in the ≤0.1.6 namespace schema', () => {
-    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
+  it('carries the sub-agent switch in the ≤0.1.6 namespace schema', () => {    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
     const { ctx } = fakeContext({
       settings: {
         register: (_namespace: unknown, registered: unknown) => {
@@ -306,5 +310,26 @@ describe('settings namespace', () => {
     // plugin's own default), on when the stored value says so.
     expect(schema?.({})['showSubagentSessions']).toBe(false)
     expect(schema?.({ showSubagentSessions: true })['showSubagentSessions']).toBe(true)
+  })
+
+  it('carries the panel switch in the ≤0.1.6 namespace schema (R-145)', () => {
+    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
+    const { ctx } = fakeContext({
+      settings: {
+        register: (_namespace: unknown, registered: unknown) => {
+          schema = registered as NonNullable<typeof schema>
+          return { get: () => ({}), watch: () => () => {} }
+        },
+      },
+    })
+
+    // On this generation the namespace IS the value source (the provider hands
+    // back `schema(base ⊕ user)` from `scope.get()`), so a `panel` key missing
+    // from it would resolve a stored `false` back to the default (on) and
+    // re-register the panel on every start — the exact failure the row exists
+    // to prevent. Default first: the apply-time resolved value.
+    registerSettingsSection(ctx, wiringOver({ current: {} }, { panel: false }))
+    expect(schema?.({})['panel']).toBe(false)
+    expect(schema?.({ panel: true })['panel']).toBe(true)
   })
 })

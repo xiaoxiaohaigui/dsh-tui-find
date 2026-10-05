@@ -63,7 +63,7 @@ function stubSession(
 interface PanelFixture {
   driver: FindPanelDriver
   scanner: StubScanner
-  opened: Array<{ query: string; rowId?: string }>
+  opened: Array<{ query: string; rowId?: string; expanded: readonly string[] }>
   setConfig(config: Config): void
   setSceneOpen(open: boolean): void
   failNextOpen(): void
@@ -75,7 +75,7 @@ function makeDriver(
   options: { gate?: SweepGate } = {},
 ): PanelFixture {
   const scanner = stubScanner()
-  const opened: Array<{ query: string; rowId?: string }> = []
+  const opened: Array<{ query: string; rowId?: string; expanded: readonly string[] }> = []
   let currentConfig: Config = config
   let sceneOpen = false
   let refuseOpen = false
@@ -86,7 +86,11 @@ function makeDriver(
     ...(options.gate === undefined ? {} : { gate: options.gate }),
     openScene: seed => {
       if (refuseOpen) return false
-      opened.push({ query: seed.query, ...(seed.rowId === undefined ? {} : { rowId: seed.rowId }) })
+      opened.push({
+        query: seed.query,
+        ...(seed.rowId === undefined ? {} : { rowId: seed.rowId }),
+        expanded: seed.expanded ?? [],
+      })
       return true
     },
   })
@@ -119,7 +123,7 @@ async function flush(): Promise<void> {
 const GATE = { resolved: 1, total: 2, decodedBytes: 10, resumed: 0, hiddenSubagents: 0 }
 
 describe('FindPanelDriver — the sweep', () => {
-  it('sweeps once per activation, lazily on the first attach', async () => {
+  it('sweeps lazily on attach, and never twice at once', async () => {
     const fixture = makeDriver()
     expect(fixture.snapshot().phase).toBe('cold')
     expect(fixture.scanner.calls).toEqual([])
@@ -130,7 +134,8 @@ describe('FindPanelDriver — the sweep', () => {
     // The scan inherits the plugin's own posture (sub-agents default off).
     expect(fixture.scanner.calls[0]!.options.includeSubagents).toBe(false)
 
-    // Idempotent: a tab switch back does not start a second sweep.
+    // Idempotent while one is in flight: re-mounting mid-sweep (a tab switch
+    // back, a sidebar reopen) does not stack a second decode.
     fixture.driver.attach()
     expect(fixture.scanner.calls).toHaveLength(1)
 
@@ -138,6 +143,29 @@ describe('FindPanelDriver — the sweep', () => {
     await flush()
     expect(fixture.snapshot().phase).toBe('ready')
     expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:a'])
+  })
+
+  it('re-sweeps on the next attach, so content added since the last sweep is found', async () => {
+    // R-135: a settled sweep used to be final for the whole activation, so
+    // sessions created (or messages appended) after it were searchable in the
+    // scene — which re-sweeps on every mount — and invisible in the panel.
+    const fixture = makeDriver()
+    fixture.driver.attach()
+    fixture.scanner.calls[0]!.resolve([stubSession('a')])
+    await flush()
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:a'])
+
+    // Back to the tab after the settle: one fresh pass, over the rows already
+    // on screen (the list does not blank out while it runs).
+    fixture.driver.detach()
+    fixture.driver.attach()
+    expect(fixture.scanner.calls).toHaveLength(2)
+    expect(fixture.snapshot().phase).toBe('indexing')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:a'])
+
+    fixture.scanner.calls[1]!.resolve([stubSession('b', { modifiedAt: 400 }), stubSession('a')])
+    await flush()
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:b', 's:a'])
   })
 
   it('streams sessions in as the sweep yields them', async () => {
@@ -480,7 +508,28 @@ describe('FindPanelDriver — the scene handoff', () => {
     fixture.driver.select(2)
 
     expect(fixture.driver.openSelected()).toBe(true)
-    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 's:b' }])
+    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 's:b', expanded: [] }])
+  })
+
+  it('hands over the unfolded sessions, so a hit row past the preview budget can land', async () => {
+    // R-136: the scene rebuilds the row list, and a folded card carries only
+    // PREVIEW_HITS of its hits — a row the panel shows because the user
+    // unfolded the card would not exist there.
+    const fixture = makeDriver()
+    fixture.driver.attach()
+    fixture.scanner.calls[0]!.resolve([stubSession('a', { messages: 8, matches: 8 })])
+    await flush()
+    fixture.driver.appendInput('needle')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:a', 'm:a:0', 'm:a:1', 'm:a:2'])
+
+    fixture.driver.toggleFold()
+    expect(fixture.snapshot().expanded.has('a')).toBe(true)
+    const deep = fixture.snapshot().rows.findIndex(row => row.rowId === 'm:a:6')
+    expect(deep).toBeGreaterThan(0)
+    fixture.driver.select(deep)
+
+    expect(fixture.driver.openSelected()).toBe(true)
+    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 'm:a:6', expanded: ['a'] }])
   })
 
   it('aborts its own sweep before opening the scene', async () => {
@@ -542,6 +591,31 @@ describe('FindPanelDriver — the scene handoff', () => {
     expect(fixture.snapshot().phase).toBe('indexing')
   })
 
+  it('restarts a FAILED index when the scene refuses to open, keeping the failure reason', async () => {
+    // R-146: the refused-open branch only recognised `cold`, so a panel whose
+    // sweep had FAILED (its rows still on screen) stayed failed — and the one
+    // line explaining the failure was overwritten by the open error.
+    const fixture = makeDriver()
+    fixture.driver.attach()
+    const failed = fixture.scanner.calls[0]!
+    failed.options.onSession?.(stubSession('a'))
+    failed.reject(new Error('boom'))
+    await flush()
+    expect(fixture.snapshot().phase).toBe('failed')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:a'])
+
+    fixture.failNextOpen()
+    expect(fixture.driver.openSelected()).toBe(false)
+    expect(fixture.scanner.calls).toHaveLength(2)
+    expect(fixture.snapshot().phase).toBe('indexing')
+    expect(fixture.snapshot().notice?.tone).toBe('error')
+    expect(fixture.snapshot().notice?.text).toContain('boom')
+
+    fixture.scanner.calls[1]!.resolve([stubSession('a')])
+    await flush()
+    expect(fixture.snapshot().phase).toBe('ready')
+  })
+
   it('is a no-op on an empty list', async () => {
     const fixture = makeDriver()
     fixture.driver.attach()
@@ -587,6 +661,34 @@ describe('FindPanelDriver — the background badge', () => {
     fixture.scanner.calls[0]!.reject(new Error('boom'))
     await flush()
     expect(setBadge).toHaveBeenCalledWith({ level: 'error', unread: 0 })
+  })
+
+  it('stands down when the panel row goes off: no sweep, no badge, no stale binding', async () => {
+    // R-144: switching the row off used to release the registration only —
+    // the in-flight sweep kept decoding for a panel that can never come back,
+    // and its settle still called badge() with an id the host no longer owned
+    // (the host logs a warn the plugin cannot catch).
+    const gate = new SweepGate()
+    const fixture = makeDriver({}, { gate })
+    const setBadge = vi.fn()
+    fixture.driver.bindBadge(setBadge)
+    fixture.driver.attach()
+    fixture.driver.detach()
+    const call = fixture.scanner.calls[0]!
+    expect(gate.current()).toBe('panel')
+
+    fixture.driver.standDown()
+    expect(call.options.signal?.aborted).toBe(true)
+    expect(gate.current()).toBeUndefined()
+    // Cleared while the registration is still live (see FindPanelRegistration),
+    // then dropped: nothing may address the host with the dead id again.
+    expect(setBadge).toHaveBeenCalledWith(null)
+    setBadge.mockClear()
+
+    call.resolve([stubSession('a')])
+    await flush()
+    expect(setBadge).not.toHaveBeenCalled()
+    expect(fixture.snapshot().phase).toBe('cold')
   })
 })
 

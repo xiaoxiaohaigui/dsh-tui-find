@@ -40,7 +40,12 @@ import type { FindPanelDriver } from './panel-model.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 import { tailWidth, truncateWidth } from './width.js'
 
-/** Panel id: the host namespaces it as `dsh-tui-find:search`. */
+/** Panel id SUFFIX only: the host assigns the final id when it accepts the
+ *  registration (the descriptor's id is never the wiring key), and the panel
+ *  is addressed through {@link resolvePanelId} — `<pluginId>:search` when the
+ *  activation carries a verified component identity, `act<N>:search` on the
+ *  direct-activation path this plugin rides. Neither form is something a user
+ *  types into the host's enable list. */
 export const PANEL_ID = 'search'
 /** The panel API generation this module is written against — the host rejects
  *  any other value outright (`TUI_PANEL_API_VERSION`). */
@@ -406,20 +411,32 @@ export interface FindPanelHandle {
 export class FindPanelRegistration {
   private handle: FindPanelHandle | undefined
 
-  constructor(private readonly register: () => FindPanelHandle) {}
+  /**
+   * @param register - starts one registration attempt.
+   * @param onStandDown - called when the row goes off (and on dispose): the
+   *   driver stops its sweep and drops its badge binding. It runs BEFORE the
+   *   registration is released — the host refuses `badge()` once it no longer
+   *   owns the panel, and warns about it (R-144).
+   */
+  constructor(
+    private readonly register: () => FindPanelHandle,
+    private readonly onStandDown: () => void = () => {},
+  ) {}
 
-  /** Register when enabled (idempotent), dispose when not. */
+  /** Register when enabled (idempotent), stand down and dispose when not. */
   sync(enabled: boolean): void {
     if (enabled) {
       this.handle ??= this.register()
       return
     }
+    this.onStandDown()
     this.handle?.dispose()
     this.handle = undefined
   }
 
   /** Plugin dispose: no registration outlives the activation. */
   dispose(): void {
+    this.onStandDown()
     this.handle?.dispose()
     this.handle = undefined
   }

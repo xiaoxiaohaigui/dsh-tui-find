@@ -13,7 +13,9 @@
  *
  * The driver owns three things the scene owns internally for its own surface:
  *
- * - the sweep (one per activation, lazily on first attach), on the SAME
+ * - the sweep (one per attach — the first builds the index, a later one
+ *   re-checks it against the warmed cache, so sessions and messages that
+ *   appeared since the last sweep are found here too), on the SAME
  *   plugin-scoped scanner the warm-up and the scene use, so every decode it
  *   pays for is a decode the others do not;
  * - the search derivation (find-rows.ts), so the rows the panel shows are the
@@ -168,14 +170,22 @@ export class FindPanelDriver {
   subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
 
   /** The view mounted and this panel is the active one: make sure the index
-   *  is being built. Idempotent — a re-mount (panel switch, sidebar reopen)
-   *  does not start a second sweep, a sweep aborted by a scene open is
-   *  restarted here, and a FAILED sweep gets one more chance per mount (a
-   *  transient read error must not leave the panel dead for the session; the
-   *  retry is bounded by the user actually coming back to the tab). */
+   *  is being built. A re-mount while a sweep is already in flight does
+   *  nothing (tab switches must not stack sweeps), but a mount AFTER a settled
+   *  sweep starts a fresh one: sessions created and messages appended since
+   *  the last sweep — including the conversation the user is in — have to be
+   *  searchable here too, or the panel and the scene would answer the same
+   *  query with different rows (the invariant find-rows.ts opens with).
+   *
+   *  The restart is cheap by construction: the plugin-scoped scanner serves
+   *  every unchanged file from its decode cache and resumes grown logs from
+   *  their offset watermark, so it pays per-file stats, not a cold decode.
+   *  A FAILED sweep keeps getting one more chance per mount (a transient read
+   *  error must not leave the panel dead for the session; the retry is bounded
+   *  by the user actually coming back to the tab). */
   attach(): void {
     this.mounted = true
-    if (this.phase === 'cold' || this.phase === 'failed') this.beginSweep()
+    if (this.controller === undefined) this.beginSweep()
   }
 
   /** The view unmounted (another tab, sidebar collapsed): the index keeps
@@ -291,12 +301,25 @@ export class FindPanelDriver {
   openSelected(): boolean {
     const row = this.rows[this.selected]
     if (row === undefined) return false
-    const opened = this.options.openScene({ query: this.query, rowId: row.rowId })
+    const opened = this.options.openScene({
+      query: this.query,
+      rowId: row.rowId,
+      // The scene REBUILDS these rows, and only an expanded session carries
+      // hit rows past the preview budget — so a row the user can see here
+      // because they unfolded the card has to travel with that fold, or the
+      // anchor would never land (and would go on to hijack the next edit;
+      // R-136).
+      expanded: [...this.expanded],
+    })
     if (!opened) {
       // A host without a live scenes runtime, or a scene registration that
       // never landed. Keep the list alive; the notice explains the key.
-      if (this.phase === 'cold') this.beginSweep()
-      this.notice = { text: t('panel-open-failed'), tone: 'error' }
+      // A scan FAILURE is the better explanation — it is why the list is
+      // short, and the restart below is the recovery a later mount would have
+      // triggered anyway — so it survives this refused open (R-146).
+      const failure = this.phase === 'failed' ? this.notice : undefined
+      if (this.phase === 'cold' || this.phase === 'failed') this.beginSweep()
+      this.notice = failure ?? { text: t('panel-open-failed'), tone: 'error' }
       this.publish()
       return false
     }
@@ -322,13 +345,38 @@ export class FindPanelDriver {
 
   /** Plugin dispose: nothing outlives the activation. */
   dispose(): void {
+    this.standDown()
+  }
+
+  /**
+   * The `panel` row was switched off, or the activation is going away: this
+   * panel will not render again before a plugin reload, so the sweep is
+   * stopped (decoding for a surface that can never come back is pure waste)
+   * and the badge binding is dropped.
+   *
+   * The badge is CLEARED before the binding goes away, and both happen while
+   * the registration is still live: once the host releases the panel it no
+   * longer owns the id, and `badge()` refuses with a warn — a warn the plugin
+   * cannot catch, because it is the host that logs it (R-144).
+   */
+  standDown(): void {
+    try {
+      this.setBadge?.(null)
+    } catch {
+      // Additive: a rejected badge call changes nothing else.
+    }
+    this.setBadge = undefined
+    this.mounted = false
     this.abortSweep()
   }
 
   // ── the sweep ─────────────────────────────────────────────────────────
 
   private beginSweep(): void {
-    if (this.phase === 'indexing') return
+    // "In flight" is the controller, not the phase: a settled sweep keeps its
+    // rows and `ready`, and a re-attach is allowed to start a new pass over
+    // them (see attach()).
+    if (this.controller !== undefined) return
     const claim = this.options.gate?.claim('panel')
     if (this.options.gate !== undefined && claim === undefined) return
     this.claim = claim

@@ -97,10 +97,14 @@ export function useSessionSweep(
      *  tick, and the header must keep saying why the list is shorter than
      *  the sweep's own total (REVIEW R-115). */
     setHiddenSubagents: (next: number) => void
+    /** The sweep is over — landed or failed. Fired AFTER the final state
+     *  updates are scheduled, so a consumer's effect sees the settled list
+     *  (the seed handoff's "this row never arrived" decision; R-136). */
+    onSettled?: () => void
   },
 ): void {
   const { useEffect } = React
-  const { scanner, config, setSessions, setProgress, setStatus, setHiddenSubagents } = options
+  const { scanner, config, setSessions, setProgress, setStatus, setHiddenSubagents, onSettled } = options
 
   useEffect(() => {
     const signal = new AbortController()
@@ -130,6 +134,7 @@ export function useSessionSweep(
           setSessions(result)
           setHiddenSubagents(hidden)
           setProgress(undefined)
+          onSettled?.()
         }
       })
       .catch((error: unknown) => {
@@ -139,6 +144,8 @@ export function useSessionSweep(
           text: t('scan-failed', { error: error instanceof Error ? error.message : String(error) }),
           tone: 'error',
         })
+        // Over either way: nothing more is streaming in.
+        onSettled?.()
       })
     return () => {
       signal.abort()

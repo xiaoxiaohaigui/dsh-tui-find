@@ -267,7 +267,13 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     // live-editable, and "off" must mean NEVER REGISTERED — the host re-appends
     // a plugin id to its enable list on every registration, so a register-then-
     // remove dance would come back on the next boot (REVIEW R-128).
-    const panelRegistration = new FindPanelRegistration(() => registerFindPanel(ctx, { driver }))
+    // The second argument is the stand-down the row switch owes the driver:
+    // "off" must also stop a sweep that is already in flight and clear the
+    // badge while the host still owns the panel (R-144).
+    const panelRegistration = new FindPanelRegistration(
+      () => registerFindPanel(ctx, { driver }),
+      () => driver.standDown(),
+    )
     panelRegistration.sync(runtimeConfig.panel)
     ctx.effect(() => () => {
       panelRegistration.dispose()

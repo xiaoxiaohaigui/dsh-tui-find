@@ -307,8 +307,26 @@ describe('find panel component', () => {
     }
   })
 
-  it('unsubscribes its key listener when the panel unmounts', async () => {
-    const view = await mountPanel()
+  it('builds the index from a COLD mount, handing the host cwd to the driver itself', async () => {
+    // R-137: the prewarmed fixture above does the driver's `attach()` AND
+    // `setRepoCwd(cwd)` for it, which left the component's own
+    // `host.snapshot().cwd → driver.setRepoCwd` wiring uncovered — and in the
+    // default repo scope NOTHING is listed without that cwd, so this is the
+    // load-bearing line. `prewarm: false` mounts the panel the way the host
+    // does: cold store, mount effect starts the sweep.
+    const view = await mountPanel({ prewarm: false })
+    try {
+      // The card can only appear if the component pushed the cwd its own
+      // sessions carry (STUB_CWD) — the scanner stub delivers them either way.
+      await waitForMatch(() => view.output(), /Title\s*a/)
+      expect(view.output()).toMatch(/Title\s*a/)
+      expect(view.driver.getSnapshot().rows.map(row => row.rowId)).toEqual(['s:a'])
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('unsubscribes its key listener when the panel unmounts', async () => {    const view = await mountPanel()
     expect(view.listeners.size).toBe(1)
     view.unmount()
     // The host's adapter keeps one listener set per panel instance: a leaked

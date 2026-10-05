@@ -76,6 +76,7 @@ function stubSeams() {
   const shortcuts: Array<{ combo: string; description: string; handler: () => void }> = []
   const commands: CommandEntry[] = []
   const panels: Array<{ id: string; title: string; component: unknown }> = []
+  const settingsNamespaces: string[] = []
   let active: { id: string } | undefined
   let failOpen = false
   // Real hosts resolve `ctx.get('tuiScenes')` through a liveness gate that
@@ -168,6 +169,25 @@ function stubSeams() {
         return true
       },
     },
+    /** The ≤0.1.6 `dsh-settings` shape: `register(ns, schema)` owns the
+     *  namespace and hands back a scope whose `get()` is the plugin's value
+     *  source. `get()` resolves the REGISTERED SCHEMA over the stored section
+     *  exactly like the real provider does (dsh-settings 0.1.1 `register`:
+     *  `resolved: this.resolve(schema, base, section)`) — a raw `{}` would
+     *  model a provider that does not exist and would make the R-145 test
+     *  below pass for the wrong reason. An EMPTY store is still the
+     *  interesting case: every key the schema does not declare falls back to
+     *  its own default. */
+    settingsService: {
+      register(
+        namespace: string,
+        schema: (value: Record<string, unknown>) => Record<string, unknown>,
+      ): { get(): Record<string, unknown>; watch(): () => void } {
+        settingsNamespaces.push(namespace)
+        return { get: () => schema({}), watch: () => () => {} }
+      },
+    },
+    settingsNamespaces,
   }
 }
 
@@ -190,6 +210,8 @@ async function applyPlugin(
     shortcuts?: boolean
     commands?: boolean
     panels?: boolean
+    /** Mount the ≤0.1.6 settings service (namespace registration path). */
+    settings?: boolean
     config?: Record<string, unknown>
   } = {},
 ): Promise<{ seams: Seams; fiber: { dispose(): Promise<void> } }> {
@@ -200,6 +222,7 @@ async function applyPlugin(
   if (options.shortcuts !== false) root.reflect.provide('tuiShortcuts', seams.shortcutsService)
   if (options.scenes !== false) root.reflect.provide('tuiScenes', seams.scenesService)
   if (options.panels === true) root.reflect.provide('tuiPanels', seams.panelsService)
+  if (options.settings === true) root.reflect.provide('settings', seams.settingsService)
   // `lang` is pinned per activation so the entry copy the host renders is
   // deterministic; the scene assertions do not depend on it.
   const fiber = root.plugin({ name, inject, apply: (ctx: Ctx) => apply(ctx, { lang: 'en', ...options.config }) })
@@ -331,6 +354,27 @@ describe('sidebar panel wiring', () => {
     expect(seams.panels).toEqual([])
   })
 
+  it('stays off when the settings namespace resolves the panel row to false', async () => {
+    // R-145: on the ≤0.1.6 generation the namespace is the plugin's only value
+    // source. A `panel` key missing from its schema makes a stored `false`
+    // come back as the default (on), and the panel is registered again on
+    // every start — the very "it comes back" failure the row exists to stop.
+    const off = await applyPlugin({ panels: true, settings: true, config: { panel: false } })
+    await waitFor(120)
+    // Positive control that the namespace path really ran: without this the
+    // empty panel list below could just mean the settings service never
+    // mounted.
+    expect(off.seams.settingsNamespaces).toEqual(['dsh-tui-find'])
+    expect(off.seams.panels).toEqual([])
+
+    // …and the same wiring with the default (on) DOES register, so the
+    // assertion above is about the resolved value, not a dead path.
+    const on = await applyPlugin({ panels: true, settings: true })
+    await waitFor(120)
+    expect(on.seams.settingsNamespaces).toEqual(['dsh-tui-find'])
+    expect(on.seams.panels).toHaveLength(1)
+  })
+
   /** A session root holding ONE large plain session log, so the panel's own
    *  sweep is still decoding when the command lands (an empty root settles
    *  before the test can act — the sweep has to be in flight for the
@@ -358,16 +402,35 @@ describe('sidebar panel wiring', () => {
     return root
   }
 
-  it('registers the panel and makes its sweep stand down when /find opens the scene', async () => {
-    const sessionRoot = bulkSessionRoot()
-    const { seams } = await applyPlugin({ panels: true, config: { sessionRoot } })
-    const panel = seams.panels[0]
-    expect(panel).toBeDefined()
-    expect(panel!.id).toBe('search')
+  /** The same fixture class, sized so its sweep SETTLES: the positive control
+   *  below needs a panel that reaches a delivered session (R-139). */
+  function smallSessionRoot(): string {
+    const root = join(tmpdir(), 'dsh-tui-find-panel-small')
+    const dir = join(root, 'workspace', 'small-session')
+    mkdirSync(dir, { recursive: true })
+    const lines = [
+      JSON.stringify({ type: 'session', version: 0, id: 'small', createdAt: Date.now(), cwd: process.cwd() }),
+    ]
+    for (let seq = 1; seq <= 20; seq++) {
+      lines.push(
+        JSON.stringify({
+          type: 'user/message',
+          seq,
+          time: Date.now(),
+          data: { content: [{ type: 'text', text: `needle row ${seq}` }], source: { kind: 'user' } },
+        }),
+      )
+    }
+    writeFileSync(join(dir, 'session.jsonl'), lines.join('\n'))
+    return root
+  }
 
-    // Mount the component the host would: a panel-sized kit, a stub host API.
+  /** Mount the panel component the way the host would: a panel-sized kit and a
+   *  stub host API. `settle: false` returns before the mount effect's first
+   *  sweep can progress, for the tests that must act while it is in flight. */
+  async function mountPanel(component: unknown, options: { settle?: boolean } = {}) {
     const listeners = new Set<() => void>()
-    const Component = panel!.component as React.ComponentType<Record<string, unknown>>
+    const Component = component as React.ComponentType<Record<string, unknown>>
     const view = await mountKitComponent(
       React.createElement(Component, {
         React,
@@ -387,8 +450,45 @@ describe('sidebar panel wiring', () => {
         visible: true,
         mode: 'split',
       }),
-      { columns: 40, rows: 16, settle: false },
+      { columns: 40, rows: 16, ...(options.settle === false ? { settle: false } : {}) },
     )
+    return { view, listeners }
+  }
+
+  it('shows a settled session card when nothing stands the sweep down', async () => {
+    // R-139's positive control. The stand-down test below asserts only
+    // ABSENCES (`not /Scanning/`, `not /1 sessions/`), and a panel whose sweep
+    // never started — or a fixture that never produced a session — satisfies
+    // every one of them. This round pins the other end of the same harness:
+    // with no command in the way, the frame DOES carry the settled card. (The
+    // count line itself is a one-character edit in ink's cell diff and is not
+    // readable from the stream; the card row is painted whole.)
+    const { seams } = await applyPlugin({ panels: true, config: { sessionRoot: smallSessionRoot() } })
+    const panel = seams.panels[0]
+    expect(panel).toBeDefined()
+
+    const { view } = await mountPanel(panel!.component)
+    try {
+      // The card's meta line is only ever painted by a settled session row.
+      // The TITLE is the session cwd's basename, which differs per checkout
+      // (the host matrix runs in an isolated copy named `repo`), so the
+      // assertion is on the shape and not on this repo's name.
+      await waitForMatch(() => view.output(), /\d+\s*(?:msgs|条)/)
+      expect(view.output()).toMatch(/\d+\s*(?:msgs|条)/)
+      expect(view.output()).toMatch(/❯\s*\S+/)
+    } finally {
+      view.unmount()
+    }
+  }, 30_000)
+
+  it('registers the panel and makes its sweep stand down when /find opens the scene', async () => {
+    const sessionRoot = bulkSessionRoot()
+    const { seams } = await applyPlugin({ panels: true, config: { sessionRoot } })
+    const panel = seams.panels[0]
+    expect(panel).toBeDefined()
+    expect(panel!.id).toBe('search')
+
+    const { view } = await mountPanel(panel!.component, { settle: false })
     try {
       // The mount effect started the plugin's own sweep and the command lands
       // while it is still decoding the fixture (see bulkSessionRoot: the file

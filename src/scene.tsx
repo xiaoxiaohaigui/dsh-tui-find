@@ -94,6 +94,12 @@ export interface SceneSeed {
   readonly query: string
   /** `FlatRow.rowId` to select once the sweep delivers that row. */
   readonly rowId?: string
+  /** Session ids the handoff had unfolded. This scene rebuilds the same rows
+   *  the panel was showing, and a folded card carries only the preview budget
+   *  of its hits — so without the fold, a row the panel offered for a deeper
+   *  hit (`m:<sid>:6`) would never be built here and `rowId` could never land
+   *  (R-136). */
+  readonly expanded?: readonly string[]
 }
 
 export function FindScene(props: TuiSceneProps & {
@@ -125,9 +131,12 @@ export function FindScene(props: TuiSceneProps & {
   // The last sweep's withheld-sub-agent count, kept after `progress` is
   // cleared — the header goes on explaining the shorter list (R-115).
   const [hiddenSubagents, setHiddenSubagents] = useState(0)
+  /** The mount's sweep is over (landed or failed): nothing more is streaming
+   *  in, which is what retires a handoff anchor that never materialised. */
+  const [sweepSettled, setSweepSettled] = useState(false)
   const [mode, setMode] = useState<Mode>('list')
   const [selected, setSelected] = useState(0)
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(seed.expanded ?? []))
   const [status, setStatus] = useState<StatusNote | undefined>(undefined)
   const [menu, setMenu] = useState<SceneMenuState | undefined>(undefined)
   const { columns, rows } = useTerminalSize()
@@ -171,7 +180,17 @@ export function FindScene(props: TuiSceneProps & {
    *  pre-move render closure (R-102). */
   const resumeTargetRef = useRef<ScannedSession | undefined>(undefined)
 
-  useSessionSweep(React, { scanner, config, setSessions, setProgress, setStatus, setHiddenSubagents })
+  useSessionSweep(React, {
+    scanner,
+    config,
+    setSessions,
+    setProgress,
+    setStatus,
+    setHiddenSubagents,
+    // The sweep's end is what retires a handoff anchor that never landed
+    // (see the effect after the row-anchor block).
+    onSettled: () => setSweepSettled(true),
+  })
 
   const recentMode = query.trim().length === 0
   // The window cutoff is quantized to the minute (see sinceMsFor): renders
@@ -272,6 +291,16 @@ export function FindScene(props: TuiSceneProps & {
       }
     }
   }
+
+  // A handoff whose row never arrived: with the sweep over, no later frame can
+  // deliver it, and the block above would otherwise keep the anchor latched —
+  // ready to drag the highlight away the moment the user unfolds that session,
+  // or to survive as a pending handoff until the next edit. Reaching this
+  // effect means the render above did not consume it (R-136).
+  useEffect(() => {
+    if (!sweepSettled) return
+    handoffRowId.current = undefined
+  }, [sweepSettled, flat])
 
   const selectedRow = useMemo<FlatRow | undefined>(() => flat[selected], [flat, selected])
 

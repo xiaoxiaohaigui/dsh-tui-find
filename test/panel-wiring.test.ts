@@ -21,6 +21,7 @@ import {
 } from '../src/panel.js'
 import type { FindPanelDriver } from '../src/panel-model.js'
 import { REGISTER_RETRY_DELAY_MS, SEAM_MOUNT_DELAY_MS, SEAM_TOTAL_BUDGET_MS } from '../src/seam.js'
+import { displayWidth } from '../src/width.js'
 
 /** Minimal activation-context stand-in: warn/info capture, effect collection
  *  and a MUTABLE string-keyed service map (the late-mount tests install a
@@ -112,9 +113,19 @@ describe('registerFindPanel', () => {
 
     expect(panels.register).toHaveBeenCalledTimes(1)
     const descriptor = panels.descriptors[0]!
-    // The host rejects any other apiVersion outright, prefixes the id with the
-    // plugin id, and measures the icon with its own stringWidth — a 2-cell
-    // glyph would be refused and the panel would silently never appear.
+    // The host rejects any other apiVersion outright, measures the icon with
+    // its own stringWidth (a 2-cell glyph is refused, so the panel silently
+    // never appears), floors/ceils minColumns at 12/64, and only accepts a
+    // lower-kebab id. Those are HOST literals: comparing the constants with
+    // themselves would stay green while the constants drifted (R-138), so the
+    // rules are spelled out here — through the repo's own width primitive for
+    // the icon, which is what the host's stringWidth agrees with.
+    expect(PANEL_API_VERSION).toBe(1)
+    expect(displayWidth(PANEL_ICON)).toBe(1)
+    expect(PANEL_MIN_COLUMNS).toBeGreaterThanOrEqual(12)
+    expect(PANEL_MIN_COLUMNS).toBeLessThanOrEqual(64)
+    expect(PANEL_ID).toMatch(/^[a-z][a-z0-9_-]*$/)
+
     expect(descriptor.apiVersion).toBe(PANEL_API_VERSION)
     expect(descriptor.id).toBe(PANEL_ID)
     expect(descriptor.id).toMatch(/^[a-z][a-z0-9_-]*$/)
@@ -333,5 +344,30 @@ describe('FindPanelRegistration', () => {
     provide('tuiPanels', panels.runtime)
     vi.advanceTimersByTime(SEAM_MOUNT_DELAY_MS * 2)
     expect(panels.register).not.toHaveBeenCalled()
+  })
+
+  it('stands the driver down BEFORE the registration is released (R-144)', () => {
+    const panels = stubPanels()
+    const { ctx } = stubCtx({ tuiPanels: panels.runtime })
+    // The order is the point: the driver clears its badge while the host still
+    // owns the panel, so the clear lands instead of being refused (and warned
+    // about) against a released id.
+    let registeredAtStandDown = -1
+    const handle = new FindPanelRegistration(
+      () => registerFindPanel(ctx, { driver: DRIVER }),
+      () => {
+        registeredAtStandDown = panels.descriptors.length
+      },
+    )
+
+    handle.sync(true)
+    expect(panels.descriptors).toHaveLength(1)
+    handle.sync(false)
+    expect(registeredAtStandDown).toBe(1)
+    expect(panels.descriptors).toEqual([])
+    // Going off twice (the settings callback fires on every applied change)
+    // stands down again — it is idempotent — but never re-registers.
+    expect(() => handle.sync(false)).not.toThrow()
+    expect(panels.register).toHaveBeenCalledTimes(1)
   })
 })

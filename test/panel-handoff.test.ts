@@ -7,7 +7,7 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { FindScene, type SceneSeed } from '../src/scene.js'
-import { mount, sessionWithMessages, waitFor, waitForMatch, type HarnessSceneProps } from './harness.js'
+import { mount, sessionWithMessages, waitForMatch, waitUntil, type HarnessSceneProps } from './harness.js'
 
 /** The plugin's registered wrapper, reduced to the seed under test. */
 function seeded(seed: SceneSeed): React.ComponentType<HarnessSceneProps> {
@@ -84,24 +84,88 @@ describe('scene seeded by the sidebar panel', () => {
       component: seeded({ query: 'needle', rowId: 'm:no-such-session:7' }),
       columns: 90,
     })
+    /** Move onto a row, then poll for it on frames forced WHOLE: the moves
+     *  repaint only the changed cells, so a frame read without the width flip
+     *  can miss the selection. The flip belongs INSIDE the poll — a fixed
+     *  sleep before it races ink's key consumption and turns into a 5 s
+     *  timeout instead of a frame (R-140). */
+    const waitForSelection = async (pattern: RegExp): Promise<void> => {
+      await waitForMatch(() => {
+        harness.toggleWidth()
+        return harness.latest()
+      }, pattern)
+      expect(harness.latest()).toMatch(pattern)
+    }
     try {
-      // Move onto the last hit row (the card, then #1, then #2). The moves
-      // repaint only the changed cells, so the frame is forced whole before
-      // it is read (the harness's own toggleWidth idiom).
+      // Move onto the last hit row (the card, then #1, then #2).
       harness.send('\u001b[B')
       harness.send('\u001b[B')
-      await waitFor()
-      harness.toggleWidth()
-      await waitForMatch(() => harness.latest(), /❯\s*#2\s*AI:\s*beta/)
-      expect(harness.latest()).toMatch(/❯\s*#2\s*AI:\s*beta/)
+      await waitForSelection(/❯\s*#2\s*AI:\s*beta/)
 
       // A scope change is a list-shape edit: the highlight returns to the top
       // row — which only happens if the abandoned handoff was dropped.
       harness.send('\t')
-      await waitFor()
-      harness.toggleWidth()
+      await waitForSelection(/❯\s*Handoff/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('drops a handoff that never landed instead of letting it hijack a later fold', async () => {
+    // R-136's fallback. Same seed as above but WITHOUT the fold: the hit row
+    // is past the preview budget, so it never arrives — exactly the shape a
+    // live `titleOnly` edit produces between the panel's last derivation and
+    // this mount. Once the sweep is over the anchor must be dropped; otherwise
+    // unfolding the card here would drag the highlight down to #7.
+    const target = {
+      ...sessionWithMessages(Array.from({ length: 8 }, (_unused, i) => `needle ${i}`)),
+      title: 'Handoff',
+    }
+    const harness = await mount(target, {
+      component: seeded({ query: 'needle', rowId: `m:${target.id}:6` }),
+      columns: 90,
+    })
+    try {
+      // The anchor cannot land: the folded card offers the preview budget only
+      // (its `▸ (+5)` badge says so).
       await waitForMatch(() => harness.latest(), /❯\s*Handoff/)
       expect(harness.latest()).toMatch(/❯\s*Handoff/)
+      expect(harness.latest()).toMatch(/\(\+5\)/)
+
+      // Alt+E unfolds that session. #7 now EXISTS in the list, but nothing
+      // asked for it any more, so the highlight stays on the card. (The row
+      // itself is below the viewport either way — the tells are the badge
+      // disappearing and ❯ staying put: under the latch, the fold would scroll
+      // the list down onto #7.)
+      harness.send('\u001be')
+      await waitUntil(() => {
+        harness.toggleWidth()
+        return !/\(\+5\)/.test(harness.latest())
+      })
+      expect(harness.latest()).not.toMatch(/\(\+5\)/)
+      expect(harness.latest()).toMatch(/❯\s*Handoff/)
+      expect(harness.latest()).not.toMatch(/❯\s*#7/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('lands on a hit row the panel handed over unfolded', async () => {
+    // R-136: without the fold travelling with the seed, a hit past the preview
+    // budget is not in the row list at all, so the anchor could never land —
+    // the scene sat on the session card and the pending anchor stayed latched.
+    const target = { ...sessionWithMessages(Array.from({ length: 8 }, (_unused, i) => `needle ${i}`)), title: 'Handoff' }
+    const harness = await mount(target, {
+      component: seeded({ query: 'needle', rowId: `m:${target.id}:6`, expanded: [target.id] }),
+      columns: 90,
+    })
+    try {
+      // #7 is the seventh message (sourceIndex 6) — the seed must both unfold
+      // the session and land on it. The role label is the language-dependent
+      // one (`You:` / `你:`; this file pins neither), and the frame collapses
+      // padding cells, so both are matched loosely.
+      await waitForMatch(() => harness.latest(), /❯\s*#7\s*\S{1,4}:\s*needle\s*6/)
+      expect(harness.latest()).toMatch(/❯\s*#7\s*\S{1,4}:\s*needle\s*6/)
     } finally {
       harness.dispose()
     }
