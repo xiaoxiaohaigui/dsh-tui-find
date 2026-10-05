@@ -14,10 +14,13 @@
  *   and swallows whatever the panel leaves (useSidePanel: "the right column
  *   owns the keyboard while focused"), so a focused panel is a pure keyboard
  *   surface. Ctrl/Alt chords never arrive (they stay with the host's global
- *   actions), which is why the panel has no regex/title/scope toggles of its
- *   own — it searches with the configured defaults. `pinyin` (default on)
- *   covers what a missing IME caret would otherwise cost: see the note on
- *   `declarePanelCursor`.
+ *   actions), which leaves exactly two modifier keys for the panel's own
+ *   toggles: Tab switches the search scope and Shift+Tab folds, the same
+ *   vocabulary the scene binds to Tab and Alt+E. The rest of the scene's
+ *   controls stay out of reach here (regex/title/time live in config or in the
+ *   scene), and the panel searches with the configured defaults for them.
+ *   `pinyin` (default on) covers what a missing IME caret would otherwise
+ *   cost: see the note on `declarePanelCursor`.
  * - The panel component is unmounted whenever another tab is active
  *   (`mountPolicy: 'active'`), so all state lives in FindPanelDriver
  *   (panel-model.ts) and the component only renders it.
@@ -118,8 +121,9 @@ export interface PanelHostApi {
 }
 
 /** The panel's ui kit: the host's own Box/Text/Divider plus panel-sized
- *  hooks. Box is pointer-only here (no ref, no focus, no keyboard props) —
- *  that is why the query line cannot declare the terminal's IME caret. */
+ *  hooks. The adapter's `TuiPanelUi` TYPE narrows Box to its pointer props
+ *  (no ref); the runtime component is the host's own Box, which does forward
+ *  `ref` — the query row needs exactly that to declare the IME caret (R-153). */
 export interface PanelUi extends RowUi {
   readonly Divider: React.ComponentType<{ readonly title?: string }>
   readonly useTerminalSize: () => { readonly columns: number; readonly rows: number }
@@ -276,7 +280,14 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
             return
           }
           if (key.tab === true || input === '\t') {
-            driver.toggleFold()
+            // Tab switches the search scope and Shift+Tab folds — the scene's
+            // own vocabulary, mapped onto the only two modifier keys a sidebar
+            // panel can own. Alt+E (the scene's fold chord) never arrives here:
+            // the sidebar hands every ctrl/alt chord back to the chat before
+            // the panel's dispatcher runs, so a plugin panel has no Alt layer
+            // at all (useSidePanel: "Ctrl/Alt combos fall through to Chat").
+            if (key.shift === true) driver.toggleFold()
+            else driver.toggleScope()
             event.preventDefault()
             return
           }
@@ -312,13 +323,15 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
     const hintSegments: readonly HintSegment[] = recentMode
       ? [
           { text: t('hint-seg-type'), mandatory: true },
+          { text: t('hint-seg-scope') },
           { text: t('hint-seg-navigate') },
           { text: t('hint-seg-esc') },
         ]
       : [
           { text: t('hint-seg-open'), mandatory: true },
-          { text: t('hint-seg-navigate') },
+          { text: t('hint-seg-scope') },
           { text: t('hint-seg-fold') },
+          { text: t('hint-seg-navigate') },
           { text: t('hint-seg-esc') },
         ]
 

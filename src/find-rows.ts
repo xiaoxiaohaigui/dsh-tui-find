@@ -38,7 +38,9 @@ export function sinceMsFor(timeFilter: TimeFilter, now: number = Date.now()): nu
  * `titleOnly` are parameters rather than config reads because the scene's
  * Alt+R / Alt+N toggles override the config defaults per session; the panel
  * passes the config values straight through (Ctrl/Alt chords never reach a
- * sidebar panel, so it has no toggles of its own — see panel.tsx).
+ * sidebar panel, so those two have no panel-side toggle — see panel.tsx).
+ * `scope` is a parameter for the same reason on BOTH surfaces: the scene seeds
+ * it from config at mount, the panel from config until its own Tab switch.
  */
 export function buildSearchOptions(
   config: ResolvedConfig,

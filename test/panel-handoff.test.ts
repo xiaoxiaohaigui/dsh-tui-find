@@ -6,6 +6,7 @@
  */
 import React from 'react'
 import { describe, expect, it } from 'vitest'
+import { resolveConfig } from '../src/config.js'
 import { FindScene, type SceneSeed } from '../src/scene.js'
 import { mount, sessionWithMessages, waitForMatch, waitUntil, type HarnessSceneProps } from './harness.js'
 
@@ -72,6 +73,60 @@ describe('scene seeded by the sidebar panel', () => {
       expect(harness.latest()).toMatch(/❯\s*Handoff/)
     } finally {
       harness.dispose()
+    }
+  })
+
+  it('searches the scope the handoff carried, not the configured default', async () => {
+    // A Tab-switched panel lists sessions the repo scope excludes, so the seed
+    // has to carry the scope — otherwise this scene rebuilds a DIFFERENT list
+    // and the handed-over row can be missing from it (the `expanded` argument's
+    // reason, one level up).
+    const local = { ...sessionWithMessages(['local needle']), id: 'local', title: 'Local' }
+    const foreign = {
+      ...sessionWithMessages(['foreign needle']),
+      id: 'foreign',
+      title: 'Foreign',
+      header: { cwd: 'P:\\elsewhere', createdAt: Date.now() },
+    }
+    const scanner = { scan: async () => [local, foreign] }
+    // The config default is the REPO scope here, the opposite of the harness's
+    // own default: a scene ignoring the seed can only ever show `Local`.
+    const scoped = (seed: SceneSeed): React.ComponentType<HarnessSceneProps> => {
+      const Scoped = (props: HarnessSceneProps): React.ReactElement =>
+        React.createElement(FindScene, {
+          ...props,
+          config: resolveConfig({ defaultScope: 'repo' }),
+          initialSeed: () => seed,
+        })
+      return Scoped
+    }
+
+    const plain = await mount(local, {
+      component: scoped({ query: 'needle' }),
+      scanner,
+      columns: 90,
+    })
+    try {
+      // Control: without the scope field the configured default applies, and
+      // `Local` showing up is what proves the sweep has landed.
+      await waitForMatch(() => plain.latest(), /❯\s*Local/)
+      expect(plain.latest()).toMatch(/❯\s*Local/)
+      expect(plain.latest()).not.toMatch(/Foreign/)
+    } finally {
+      plain.dispose()
+    }
+
+    const all = await mount(local, {
+      component: scoped({ query: 'needle', scope: 'all' }),
+      scanner,
+      columns: 90,
+    })
+    try {
+      await waitForMatch(() => all.latest(), /Foreign/)
+      expect(all.latest()).toMatch(/Foreign/)
+      expect(all.latest()).toMatch(/Local/)
+    } finally {
+      all.dispose()
     }
   })
 

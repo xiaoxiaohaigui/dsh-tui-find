@@ -9,6 +9,7 @@ import { resolveConfig, type Config } from '../src/config.js'
 import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/scan.js'
 import { t } from '../src/i18n.js'
 import { FindPanelDriver, type PanelSnapshot } from '../src/panel-model.js'
+import type { SearchScope } from '../src/core/search.js'
 import { SweepGate } from '../src/sweep-gate.js'
 
 // No test ever writes the real watermark journal.
@@ -63,7 +64,7 @@ function stubSession(
 interface PanelFixture {
   driver: FindPanelDriver
   scanner: StubScanner
-  opened: Array<{ query: string; rowId?: string; expanded: readonly string[] }>
+  opened: Array<{ query: string; rowId?: string; expanded: readonly string[]; scope?: SearchScope }>
   setConfig(config: Config): void
   setSceneOpen(open: boolean): void
   failNextOpen(): void
@@ -75,7 +76,7 @@ function makeDriver(
   options: { gate?: SweepGate } = {},
 ): PanelFixture {
   const scanner = stubScanner()
-  const opened: Array<{ query: string; rowId?: string; expanded: readonly string[] }> = []
+  const opened: Array<{ query: string; rowId?: string; expanded: readonly string[]; scope?: SearchScope }> = []
   let currentConfig: Config = config
   let sceneOpen = false
   let refuseOpen = false
@@ -90,6 +91,7 @@ function makeDriver(
         query: seed.query,
         ...(seed.rowId === undefined ? {} : { rowId: seed.rowId }),
         expanded: seed.expanded ?? [],
+        ...(seed.scope === undefined ? {} : { scope: seed.scope }),
       })
       return true
     },
@@ -399,6 +401,85 @@ describe('FindPanelDriver — the search derivation', () => {
   })
 })
 
+describe('FindPanelDriver — the scope', () => {
+  /** Two sessions, one in the repo cwd and one elsewhere: the scope decides
+   *  which of them the list can hold at all. */
+  async function ready(config: Config = {}): Promise<PanelFixture> {
+    const fixture = makeDriver(config)
+    fixture.driver.attach()
+    fixture.scanner.calls[0]!.resolve([
+      stubSession('local', { modifiedAt: 300 }),
+      stubSession('foreign', { modifiedAt: 200, cwd: 'P:\\elsewhere' }),
+    ])
+    await flush()
+    return fixture
+  }
+
+  it('starts from the configured default and follows it until Tab overrides it', async () => {
+    const fixture = await ready({ defaultScope: 'all' })
+    expect(fixture.driver.scope()).toBe('all')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local', 's:foreign'])
+
+    // No override yet: a live config edit still moves the panel (the settings
+    // card owns `defaultScope`; the panel only ever overrides it for the
+    // session).
+    fixture.setConfig({ defaultScope: 'repo' })
+    fixture.driver.appendInput('needle')
+    expect(fixture.snapshot().hits.map(hit => hit.session.id)).toEqual(['local'])
+  })
+
+  it('flips the scope on Tab, announcing it in the scene\'s own words', async () => {
+    const fixture = await ready()
+    fixture.driver.appendInput('needle')
+    expect(fixture.snapshot().hits.map(hit => hit.session.id)).toEqual(['local'])
+
+    fixture.driver.toggleScope()
+    expect(fixture.driver.scope()).toBe('all')
+    expect(fixture.snapshot().hits.map(hit => hit.session.id)).toEqual(['local', 'foreign'])
+    expect(fixture.snapshot().notice).toEqual({
+      text: t('scope-switched', { scope: t('scope-all') }),
+      tone: 'info',
+    })
+
+    fixture.driver.toggleScope()
+    expect(fixture.driver.scope()).toBe('repo')
+    expect(fixture.snapshot().hits.map(hit => hit.session.id)).toEqual(['local'])
+    expect(fixture.snapshot().notice?.text).toBe(t('scope-switched', { scope: t('scope-repo') }))
+  })
+
+  it('returns the selection to the top on a scope switch', async () => {
+    // A scope switch is a list-shape edit like a query edit, and the scene's
+    // own Tab branch does the same: the old highlight addresses a row that may
+    // not exist in the new result set.
+    const fixture = await ready({ defaultScope: 'all' })
+    fixture.driver.appendInput('needle')
+    fixture.driver.select(3)
+    expect(fixture.snapshot().selected).toBe(3)
+
+    fixture.driver.toggleScope()
+    expect(fixture.driver.scope()).toBe('repo')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local', 'm:local:0'])
+    expect(fixture.snapshot().selected).toBe(0)
+  })
+
+  it('hands the switched scope to the scene with the row the user picked', async () => {
+    // The scene rebuilds the list; on a Tab-switched panel the configured
+    // default describes a DIFFERENT list, so the handed-over row could be
+    // missing from it (the `expanded` argument's reason, one level up).
+    const fixture = await ready()
+    fixture.driver.appendInput('needle')
+    fixture.driver.toggleScope()
+    expect(fixture.driver.scope()).toBe('all')
+    fixture.driver.select(2)
+    expect(fixture.snapshot().rows[2]?.rowId).toBe('s:foreign')
+
+    expect(fixture.driver.openSelected()).toBe(true)
+    expect(fixture.opened).toEqual([
+      { query: 'needle', rowId: 's:foreign', expanded: [], scope: 'all' },
+    ])
+  })
+})
+
 describe('FindPanelDriver — selection', () => {
   async function ready(): Promise<PanelFixture> {
     const fixture = makeDriver()
@@ -508,7 +589,7 @@ describe('FindPanelDriver — the scene handoff', () => {
     fixture.driver.select(2)
 
     expect(fixture.driver.openSelected()).toBe(true)
-    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 's:b', expanded: [] }])
+    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 's:b', expanded: [], scope: 'repo' }])
   })
 
   it('hands over the unfolded sessions, so a hit row past the preview budget can land', async () => {
@@ -529,7 +610,7 @@ describe('FindPanelDriver — the scene handoff', () => {
     fixture.driver.select(deep)
 
     expect(fixture.driver.openSelected()).toBe(true)
-    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 'm:a:6', expanded: ['a'] }])
+    expect(fixture.opened).toEqual([{ query: 'needle', rowId: 'm:a:6', expanded: ['a'], scope: 'repo' }])
   })
 
   it('aborts its own sweep before opening the scene', async () => {

@@ -153,6 +153,9 @@ export class FindPanelDriver {
   /** The repo scope's cwd, pushed by the view from the host's read-only
    *  session snapshot (the channel cwd the scene reads). */
   private repoCwd: string | undefined
+  /** Tab's scope override for this panel's lifetime; undefined = follow the
+   *  configured default (see {@link scope}). */
+  private scopeOverride: SearchScope | undefined
   private selected = 0
   private controller: AbortController | undefined
   private claim: SweepClaim | undefined
@@ -244,6 +247,35 @@ export class FindPanelDriver {
     this.derive({ resetSelection: true })
   }
 
+  /**
+   * The scope this panel searches with: the configured `defaultScope` until Tab
+   * overrides it for the panel's lifetime, exactly like the scene's own
+   * per-mount scope state. The override is deliberately NOT written back to
+   * config — the panel is a search surface, and `defaultScope` belongs to the
+   * settings card.
+   */
+  scope(): SearchScope {
+    return this.scopeOverride ?? this.options.config().defaultScope
+  }
+
+  /**
+   * Tab: flip the scope (`repo` ⇄ `all`) — the scene's key, its vocabulary and
+   * its list-shape rule. A scope switch changes which sessions are in the list
+   * at all, so the selection goes back to the top like a query edit: an old
+   * highlight (or a handoff anchor) must not survive into a different result
+   * set. The notice is what the status row shows until the next query edit,
+   * and it is the same string the scene toasts.
+   */
+  toggleScope(): void {
+    const next: SearchScope = this.scope() === 'repo' ? 'all' : 'repo'
+    this.scopeOverride = next
+    this.notice = {
+      text: t('scope-switched', { scope: t(next === 'repo' ? 'scope-repo' : 'scope-all') }),
+      tone: 'info',
+    }
+    this.derive({ resetSelection: true })
+  }
+
   /** Typed text: appended through the same primitive the scene's input box
    *  uses (find-types.appendQueryText). */
   appendInput(typed: string): void {
@@ -310,6 +342,10 @@ export class FindPanelDriver {
       // anchor would never land (and would go on to hijack the next edit;
       // R-136).
       expanded: [...this.expanded],
+      // Same reason, one level up: the scene would otherwise rebuild the list
+      // under the CONFIGURED default scope, and on a Tab-switched panel that is
+      // a different list — the row just handed over might not be in it.
+      scope: this.scope(),
     })
     if (!opened) {
       // A host without a live scenes runtime, or a scene registration that
@@ -499,7 +535,7 @@ export class FindPanelDriver {
   private derive(options: { readonly resetSelection?: boolean } = {}): void {
     const config = this.options.config()
     const recentMode = this.query.trim().length === 0
-    const scope: SearchScope = config.defaultScope
+    const scope: SearchScope = this.scope()
     const sinceMs = sinceMsFor(config.defaultTime)
     this.regexRejected =
       config.regex && !recentMode ? regexRejection(this.query.trim(), config.caseSensitive) : undefined

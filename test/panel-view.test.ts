@@ -323,16 +323,53 @@ describe('find panel component', () => {
     }
   })
 
-  it('folds from Tab and paging from PgUp/PgDn', async () => {
+  it('switches the search scope from Tab, keeping the fold on Shift+Tab', async () => {
+    // The panel owns only two modifier keys: the sidebar hands every ctrl/alt
+    // chord to the chat before a plugin panel sees it, so Tab/Shift+Tab are the
+    // whole vocabulary — Tab is the scene's scope toggle, and the fold the
+    // panel used to put on Tab moves to Shift+Tab.
+    const foreign = { ...stubSession('b'), header: { cwd: 'P:\\elsewhere', createdAt: undefined } }
+    const view = await mountPanel({ sessions: [stubSession('a'), foreign] })
+    try {
+      // The empty query is the recent list, filtered by the same scope rule:
+      // the other-cwd session is exactly what the switch brings in.
+      expect(view.driver.scope()).toBe('repo')
+      expect(view.driver.getSnapshot().rows.map(row => row.rowId)).toEqual(['s:a'])
+
+      // The raw byte is the fallback form for a host whose runtime key object
+      // stops carrying `tab` (see PanelKeyFlags).
+      expect(view.send('\t')).toBe(true)
+      expect(view.driver.scope()).toBe('all')
+      expect(view.driver.getSnapshot().rows.map(row => row.rowId)).toEqual(['s:a', 's:b'])
+      // The status row announces it in the scene's own words (the frame
+      // collapses blank cells, hence the loose spaces — see the layout test).
+      await waitForMatch(() => view.output(), /All\s*sessions/)
+
+      // Shift+Tab is the fold, so it must NOT move the scope (on a recent-mode
+      // card there is nothing to fold, which is why nothing changes at all).
+      expect(view.send('', { tab: true, shift: true })).toBe(true)
+      expect(view.driver.scope()).toBe('all')
+      // …and plain Tab flips it back.
+      expect(view.send('', { tab: true })).toBe(true)
+      expect(view.driver.scope()).toBe('repo')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('folds from Shift+Tab and pages from PgUp/PgDn', async () => {
     const view = await mountPanel({ sessions: [stubSession('a', 4)], config: {} })
     try {
       view.send('needle')
       const collapsed = view.driver.getSnapshot().rows.length
-      expect(view.send('\t')).toBe(true)
+      expect(view.send('', { tab: true, shift: true })).toBe(true)
       expect(view.driver.getSnapshot().rows.length).toBeGreaterThan(collapsed)
       expect(view.driver.getSnapshot().expanded.has('a')).toBe(true)
-      expect(view.send('', { tab: true })).toBe(true)
+      expect(view.send('', { tab: true, shift: true })).toBe(true)
       expect(view.driver.getSnapshot().expanded.has('a')).toBe(false)
+      // The fold key never reaches the scope: the query still searches the
+      // scope it started in.
+      expect(view.driver.scope()).toBe('repo')
 
       expect(view.send('', { pageUp: true })).toBe(true)
       expect(view.driver.getSnapshot().selected).toBe(0)

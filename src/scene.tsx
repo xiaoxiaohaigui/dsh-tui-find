@@ -100,6 +100,12 @@ export interface SceneSeed {
    *  hit (`m:<sid>:6`) would never be built here and `rowId` could never land
    *  (R-136). */
   readonly expanded?: readonly string[]
+  /** The scope the caller was searching with (the panel's Tab switch). Absent
+   *  = the configured default, which is what `/find <words>` and every other
+   *  caller mean. Same reason `expanded` travels: this scene must rebuild the
+   *  list the caller showed, or the handed-over `rowId` can be missing from it
+   *  (a Tab-switched panel lists sessions the repo scope excludes). */
+  readonly scope?: SearchScope
 }
 
 export function FindScene(props: TuiSceneProps & {
@@ -122,7 +128,7 @@ export function FindScene(props: TuiSceneProps & {
 
   const [seed] = useState<SceneSeed>(() => props.initialSeed?.() ?? { query: props.initialQuery?.() ?? '' })
   const [query, setQuery] = useState(seed.query)
-  const [scope, setScope] = useState<SearchScope>(config.defaultScope)
+  const [scope, setScope] = useState<SearchScope>(seed.scope ?? config.defaultScope)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(config.defaultTime)
   const [useRegex, setUseRegex] = useState(config.regex)
   const [titleOnly, setTitleOnly] = useState(config.titleOnly)

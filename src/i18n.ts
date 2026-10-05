@@ -237,7 +237,7 @@ export const dict = {
   'panel-placeholder': { zh: '输入以搜索', en: 'Type to search' },
   'panel-open-failed': { zh: '无法打开 /find 场景', en: 'Could not open the /find scene' },
   'hint-seg-open': { zh: '**Enter** 打开', en: '**Enter** open' },
-  'hint-seg-fold': { zh: 'Tab 折叠', en: 'Tab fold' },
+  'hint-seg-fold': { zh: 'Shift+Tab 折叠', en: 'Shift+Tab fold' },
   'hint-seg-type': { zh: '输入搜索', en: 'Type to search' },
 
   // ── command tree provider (`tuiCommandTrees` suggestion metadata) ─────
