@@ -69,7 +69,7 @@ import {
   type ContextMenuState,
   type MenuItem,
 } from './find-menu.js'
-import { ConfirmPane, HintLine, SearchCard, composeHeaderRight, composeListHint, composeReaderHint } from './find-chrome.js'
+import { ConfirmPane, HintLine, SearchCard, composeHeaderRight, composeListHint, composeReaderHint, type EntryAdvisory } from './find-chrome.js'
 import { ListView } from './find-list.js'
 import { PreviewPane, ReaderPane, usePreviewModel } from './find-preview.js'
 import { formatShortcut } from './shortcut-combo.js'
@@ -748,12 +748,22 @@ export function FindScene(props: TuiSceneProps & {
   // reload, and the delivery was dropped — the user saw nothing), and with
   // `shortcut: alt+h` the help sheet's own marked row is unreachable, because
   // that key closes the scene. The legend is repainted with every frame.
+  //
+  // The refused shape outranks it: a combo the host reserves for its own
+  // actions (`alt+r` is the host's Continue) never becomes a binding, the
+  // previous one stays, and the user is left with a key that does nothing
+  // while the settings card keeps showing their choice — that is the more
+  // urgent thing to say, and it also means the accepted combo is NOT the
+  // configured one (main.tsx hands over the accepted one).
+  const acceptedEntry = props.entryCombo
   const entryShadow = sceneKeyShadow(entryCombo)
-  const listHint = composeListHint(
-    columns,
-    splitActive,
-    entryShadow === undefined ? undefined : entryShadow.helpKeys ?? formatShortcut(entryCombo ?? ''),
-  )
+  const entryAdvisory: EntryAdvisory | undefined =
+    acceptedEntry !== undefined && config.shortcut !== undefined && acceptedEntry !== config.shortcut
+      ? { kind: 'refused', combo: formatShortcut(config.shortcut), effective: formatShortcut(acceptedEntry) }
+      : entryShadow === undefined
+        ? undefined
+        : { kind: 'shadowed', key: entryShadow.helpKeys ?? formatShortcut(entryCombo ?? '') }
+  const listHint = composeListHint(columns, splitActive, entryAdvisory)
 
   // The open menu's overlay: a full-viewport click-catcher (click/right-click
   // anywhere outside closes) plus the clamped anchored panel — as SIBLINGS,

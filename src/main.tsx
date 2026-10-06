@@ -531,11 +531,17 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       // R-160, advisory only: some combos are also keys the scene answers
       // itself, and the entry wins there — the toggle branch is the scene's
       // first (find-input.ts), so `alt+h` closes the scene instead of opening
-      // the help sheet. The host reserves none of those combos, so the binding
-      // stays exactly as configured; the user just gets told which scene key
-      // it takes over (the log line plus a toast, since a TUI user cannot read
-      // the log). The help sheet marks the same row (help.tsx) — the one
-      // surface the user can still consult from inside the scene.
+      // the help sheet. The binding stays exactly as configured; the user just
+      // gets told which scene key it takes over (the log line plus a toast,
+      // since a TUI user cannot read the log). The help sheet marks the same
+      // row (help.tsx), and the scene's hint line names it for as long as the
+      // scene is open (scene.tsx) — that last channel is the one the host
+      // cannot drop, unlike this toast.
+      //
+      // Only the ACCEPTED combo is checked on purpose: a configured value the
+      // host refuses never reaches here (the fallback below keeps the previous
+      // binding), and the scene surfaces that other confusion itself by
+      // comparing the accepted combo against the configured one.
       const shadow = sceneKeyShadow(acceptedCombo)
       if (shadow !== undefined) {
         ctx.logger.warn(

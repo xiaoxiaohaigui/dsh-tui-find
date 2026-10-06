@@ -32,5 +32,9 @@
       #                                  scene; a combo the scene answers
       #                                  itself still binds but is shadowed
       #                                  there (logged + toasted, and marked
-      #                                  in the Alt+H sheet). ctrl/alt required
-      #                                  ('off' disables; default 'alt+f')
+      #                                  in the Alt+H sheet), while a combo the
+      #                                  HOST binds (alt+r, ctrl+b, …) is
+      #                                  refused and the previous binding stays
+      #                                  (the scene hint line names the live
+      #                                  one). ctrl/alt required ('off'
+      #                                  disables; default 'alt+f')

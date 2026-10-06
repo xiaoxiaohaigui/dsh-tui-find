@@ -42,6 +42,21 @@ export function HintLine(props: { React: TuiSceneProps['React']; ui: RowUi; text
 }
 
 /**
+ * The entry-combo advisory the list hint line carries (R-160). Two shapes of
+ * the same confusion — "the key I have in mind does not do what I think":
+ *
+ * - `shadowed`: the ACCEPTED combo is also one of the scene's own keys, so
+ *   inside the scene it exits instead (see entry-shadow.ts);
+ * - `refused`: the CONFIGURED combo never became a binding — the host reserves
+ *   it for one of its own actions (`alt+r` is the host's Continue, so a remap
+ *   onto it is refused and the previous binding stays) — and the user needs to
+ *   know which combo is actually live.
+ */
+export type EntryAdvisory =
+  | { readonly kind: 'shadowed'; readonly key: string }
+  | { readonly kind: 'refused'; readonly combo: string; readonly effective: string }
+
+/**
  * The list hint line: key segments joined by ` · `, fitted to the viewport.
  * A static wide/narrow pair cannot track the actual rendered width (CJK
  * labels, per-language lengths), so the line is composed here: the first and
@@ -49,17 +64,23 @@ export function HintLine(props: { React: TuiSceneProps['React']; ui: RowUi; text
  * order when the full line would exceed the columns budget. `splitActive`
  * picks the reader segment's vocabulary (focus arrow vs. Alt+P open).
  *
- * `shadowedKey` names a scene key the configured global entry has taken over
- * (R-160, see entry-shadow.ts); the advisory sits second — right behind the
- * first segment — because it explains why one of the visible keys does
- * something else, and a segment that got dropped for width would explain
- * nothing. It costs the tail segments one slot, which is the right trade for
- * a user whose remap took a scene key over.
+ * `advisory` names either a scene key the accepted global entry has taken
+ * over or a configured combo the host refused (see {@link EntryAdvisory}); it
+ * sits second — right behind the first segment — because it explains why a
+ * visible key does something else, and a segment that got dropped for width
+ * would explain nothing. It costs the tail segments one slot, which is the
+ * right trade for a user whose remap changed what the keys do.
  */
-export function composeListHint(columns: number, splitActive = false, shadowedKey?: string): string {
+export function composeListHint(columns: number, splitActive = false, advisory?: EntryAdvisory): string {
   const segments = [
     t('hint-seg-resume'),
-    ...(shadowedKey === undefined ? [] : [t('hint-seg-shadowed', { key: shadowedKey })]),
+    ...(advisory === undefined
+      ? []
+      : [
+          advisory.kind === 'shadowed'
+            ? t('hint-seg-shadowed', { key: advisory.key })
+            : t('hint-seg-refused', { combo: advisory.combo, effective: advisory.effective }),
+        ]),
     t('hint-seg-scope'),
     // The reader is always on screen in split, so the pane segment names the
     // focus arrow there; classic keeps Alt+P (the only way to open it).

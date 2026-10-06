@@ -746,6 +746,38 @@ describe('global entry toggle (the entry combo closes the scene)', () => {
     }
   })
 
+  it('names the live combo when the host refused the configured one (10-06 real machine)', async () => {
+    // The real sequence: the user remaps to `alt+r` in /settings, the host
+    // refuses it (its own Continue action owns that combo), the plugin keeps
+    // the previous binding — and the card goes on showing alt+r. The toast for
+    // that refusal is as missable as the collision one, so the hint line names
+    // the combo that is actually live.
+    const harness = await mount(sessionWithMessages(['needle body']), {
+      query: '',
+      shortcut: 'alt+r',
+      entryCombo: 'alt+f',
+    })
+    try {
+      harness.toggleWidth()
+      await waitFor()
+      const painted = harness.all().replace(/\s+/g, '')
+      // en is pinned for this whole file (see the top-of-file override).
+      expect(painted).toContain('Alt+Rrefused—theentryisAlt+F')
+    } finally {
+      harness.dispose()
+    }
+
+    // Nothing to say while the accepted binding is the configured one.
+    const agree = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'alt+f', entryCombo: 'alt+f' })
+    try {
+      agree.toggleWidth()
+      await waitFor()
+      expect(agree.all().replace(/\s+/g, '')).not.toContain('refusedbythehost')
+    } finally {
+      agree.dispose()
+    }
+  })
+
   it('exits from the help layer too — the toggle is not layer-scoped', async () => {
     const harness = await mount(sessionWithMessages(['needle body']), { query: '' })
     try {

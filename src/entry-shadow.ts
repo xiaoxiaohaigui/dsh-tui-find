@@ -8,8 +8,10 @@
  * handful of chords. But the `shortcut` row accepts combos the scene ALSO
  * answers (`alt+h` is the help chord, `alt+c` the copy chord, `ctrl+tab` the
  * scope switch, and `alt+backspace` a branch with no modifier gate at all),
- * and the host's registry reserves none of them: the entry keeps working and
- * the scene's own action for that key disappears while the scene is open.
+ * and the host's registry reserves none of THOSE (`alt+r` is the exception —
+ * it is the host's own Continue action, so a remap onto it is refused before
+ * this table ever matters): the entry keeps working and the scene's own action
+ * for that key disappears while the scene is open.
  *
  * This module names that overlap so the two user-visible surfaces can say so:
  * main.tsx warns once per accepted binding (log + toast) and the help sheet

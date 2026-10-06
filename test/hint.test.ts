@@ -74,26 +74,64 @@ describe('list hint composition (the entry-key advisory)', () => {
     setLangOverride('zh')
     // `shortcut: alt+h` cannot be explained by the help sheet — that very key
     // closes the scene — so the hint line carries it.
-    expect(painted(composeListHint(120, false, 'Alt+H'))).toContain('Alt+H 已被入口占用')
+    expect(painted(composeListHint(120, false, { kind: 'shadowed', key: 'Alt+H' }))).toContain(
+      'Alt+H 已被入口占用',
+    )
     // The advisory sits second: at every width that still paints more than the
     // first segment it is the one that survives, and only the tail drops. (A
     // terminal narrow enough to cut it is narrow enough to cut every middle
     // segment — the row is a prefix fill, not a per-segment priority list.)
     for (const columns of [120, 100, 80]) {
       setLangOverride('zh')
-      expect(painted(composeListHint(columns, false, 'Alt+R')), `${columns} columns`).toContain(
+      expect(painted(composeListHint(columns, false, { kind: 'shadowed', key: 'Alt+R' })), `${columns} columns`).toContain(
         'Alt+R 已被入口占用',
       )
+    }
+  })
+
+  it('names the live combo when the host refused the configured one (10-06 real machine)', () => {
+    setLangOverride('zh')
+    // alt+r is the host's own Continue action: the registry refuses it, the
+    // plugin keeps the previous binding, and the settings card goes on showing
+    // alt+r. The hint line has to say which combo is actually live.
+    const line = painted(composeListHint(120, false, { kind: 'refused', combo: 'Alt+R', effective: 'Alt+F' }))
+    expect(line).toContain('Alt+R 未被宿主接受，实际入口 Alt+F')
+
+    setLangOverride('en')
+    expect(painted(composeListHint(120, false, { kind: 'refused', combo: 'Alt+R', effective: 'Alt+F' }))).toContain(
+      'Alt+R refused — the entry is Alt+F',
+    )
+  })
+
+  it('keeps both advisories at the common 80-column terminal, in both languages', () => {
+    // The row is a prefix fill: an advisory that does not fit is dropped, not
+    // truncated. The English refusal copy shipped 46 cells wide in its first
+    // draft and vanished at exactly 80 columns — the width a terminal most
+    // often has, and the one the scene harness renders at.
+    for (const lang of ['zh', 'en'] as const) {
+      setLangOverride(lang)
+      expect(painted(composeListHint(80, false, { kind: 'shadowed', key: 'Alt+H' })), `${lang} shadowed`).toContain(
+        lang === 'zh' ? 'Alt+H 已被入口占用' : 'Alt+H taken by the entry',
+      )
+      expect(
+        painted(composeListHint(80, false, { kind: 'refused', combo: 'Alt+R', effective: 'Alt+F' })),
+        `${lang} refused`,
+      ).toContain(lang === 'zh' ? 'Alt+R 未被宿主接受，实际入口 Alt+F' : 'Alt+R refused — the entry is Alt+F')
     }
   })
 
   it('keeps the advisory and the keys row on exactly one line at every width', () => {
     for (const lang of ['zh', 'en'] as const) {
       setLangOverride(lang)
-      for (let columns = 1; columns <= 140; columns++) {
-        const line = painted(composeListHint(columns, false, 'Alt+H'))
-        expect(line).not.toMatch(/\n/)
-        expect(displayWidth(line)).toBeLessThanOrEqual(Math.max(1, columns - 2))
+      for (const advisory of [
+        { kind: 'shadowed', key: 'Alt+H' } as const,
+        { kind: 'refused', combo: 'Alt+R', effective: 'Alt+F' } as const,
+      ]) {
+        for (let columns = 1; columns <= 140; columns++) {
+          const line = painted(composeListHint(columns, false, advisory))
+          expect(line).not.toMatch(/\n/)
+          expect(displayWidth(line)).toBeLessThanOrEqual(Math.max(1, columns - 2))
+        }
       }
     }
   })

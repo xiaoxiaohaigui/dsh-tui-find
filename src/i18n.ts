@@ -341,6 +341,21 @@ export const dict = {
   // (that very key closes the scene). The hint line is the durable channel:
   // it is repainted with the scene and names the taken key.
   'hint-seg-shadowed': { zh: '**{{key}}** 已被入口占用', en: '**{{key}}** taken by the entry' },
+  // The other half of the same confusion (真机 10-06): the CONFIGURED combo
+  // never became a binding because the host reserves it for one of ITS OWN
+  // actions (alt+r is the host's Continue), and the plugin keeps the previous
+  // binding — so the user remaps and nothing changes. The refusal is logged and
+  // toasted at registration time, and both of those are missable for the same
+  // reason as above, so the hint line names the combo that is actually live.
+  // Kept SHORT on purpose: the hint row is a prefix fill, so a segment wider
+  // than the leftover budget silently drops at the common 80-column terminal
+  // (the first draft's "refused by the host — the entry is" measured 46 cells
+  // and vanished exactly there; test/hint.test.ts pins 80 columns in both
+  // languages).
+  'hint-seg-refused': {
+    zh: '**{{combo}}** 未被宿主接受，实际入口 **{{effective}}**',
+    en: '**{{combo}}** refused — the entry is **{{effective}}**',
+  },
 } as const satisfies Record<string, { zh: string; en: string }>
 
 export type I18nKey = keyof typeof dict
