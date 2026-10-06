@@ -213,6 +213,14 @@ export const dict = {
     zh: '快捷键 {{combo}} 被宿主拒绝，保持原绑定',
     en: 'Shortcut {{combo}} rejected by the host; keeping the previous binding',
   },
+  // R-160: the entry is a toggle and its closing half is the scene's first
+  // branch, so a combo the scene ALSO answers (`alt+h` = help, `ctrl+tab` =
+  // scope) keeps the entry but loses that scene key. Advisory, not an error:
+  // the binding stays exactly as configured — see src/entry-shadow.ts.
+  'toast-shortcut-shadow': {
+    zh: '快捷键 {{combo}} 也是场景内的「{{action}}」：场景内按它先退出，该功能被压掉',
+    en: 'Shortcut {{combo}} is also the scene\u2019s "{{action}}": inside the scene it exits first, shadowing that action',
+  },
   // The seam helpers' give-up (seam.ts, R-107): the registration is terminal
   // for the activation, and the logger line is invisible inside a TUI — the
   // user only sees "it started fine, but /find never opens".
@@ -291,6 +299,20 @@ export const dict = {
     zh: '全局打开 / 关闭 /find（shortcut 配置可改键）',
     en: 'Toggle /find from anywhere (remap via shortcut config)',
   },
+  // R-160: PREFIXED to the action cell of a row whose key the configured
+  // global entry has taken (the toggle branch runs before every other branch,
+  // so that key closes the scene instead — see src/entry-shadow.ts). Without
+  // it the sheet would list the same combo twice with no hint of which one
+  // wins inside the scene; prefixed, a narrow terminal's tail truncation eats
+  // the action copy, never the reason the key no longer works.
+  'help-shadowed': {
+    zh: '（入口键占用：本键先退出）',
+    en: '(entry key takes it: this key exits first)',
+  },
+  // The entry-shadow table's name for the dispatcher's ungated Backspace /
+  // Delete branch (the sheet has no row for it, so this copy only ever reaches
+  // the toast).
+  'scene-key-backspace': { zh: '删除查询末尾字符', en: 'Delete the last query character' },
   'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },

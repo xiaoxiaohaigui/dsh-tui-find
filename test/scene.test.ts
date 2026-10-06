@@ -693,6 +693,26 @@ describe('global entry toggle (the entry combo closes the scene)', () => {
     }
   })
 
+  it('takes over a chord the scene answers itself, shadowing it (R-160)', async () => {
+    // `shortcut: alt+h` is a combo the host accepts (none of the scene's own
+    // Alt chords are reserved), and the toggle branch runs FIRST: Alt+H closes
+    // the scene instead of opening the help sheet. That trade is what main.tsx
+    // warns about at registration time and what the sheet marks on its own
+    // Alt+H row (src/entry-shadow.ts) — pinned here against the real
+    // dispatcher, not the table.
+    const harness = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'alt+h' })
+    try {
+      harness.send(altLetter('h'))
+      await waitFor()
+      expect(harness.closed()).toBe(1)
+      // The sheet never opened: its Tab row ('Toggle scope') is the marker the
+      // sibling test reads off the cumulative stream.
+      expect(harness.all()).not.toMatch(/Toggle\s*scope/i)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('exits from the help layer too — the toggle is not layer-scoped', async () => {
     const harness = await mount(sessionWithMessages(['needle body']), { query: '' })
     try {

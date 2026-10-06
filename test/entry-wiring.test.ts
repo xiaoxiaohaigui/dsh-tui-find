@@ -83,6 +83,9 @@ function stubSeams() {
   const commands: CommandEntry[] = []
   const panels: Array<{ id: string; title: string; component: unknown }> = []
   const settingsNamespaces: string[] = []
+  // The 0.10+ transient-notification surface. The notifier soft-probes it, so
+  // recording here also proves the plugin does not depend on it.
+  const toasts: string[] = []
   let active: { id: string } | undefined
   let failOpen = false
   // Real hosts resolve `ctx.get('tuiScenes')` through a liveness gate that
@@ -97,6 +100,13 @@ function stubSeams() {
     shortcuts,
     commands,
     panels,
+    toasts,
+    toastService: {
+      show(text: string): boolean {
+        toasts.push(String(text))
+        return true
+      },
+    },
     degradeActiveReads: (): void => {
       activeReadsThrow = true
     },
@@ -234,6 +244,9 @@ async function applyPlugin(
   if (options.shortcuts !== false) root.reflect.provide('tuiShortcuts', seams.shortcutsService)
   if (options.scenes !== false) root.reflect.provide('tuiScenes', seams.scenesService)
   if (options.panels === true) root.reflect.provide('tuiPanels', seams.panelsService)
+  // The toast surface is additive feedback on every path (notify.ts): mounted
+  // here so the advisory wording of a shadowed entry combo is observable.
+  root.reflect.provide('tuiToast', seams.toastService)
   if (options.settings === true) root.reflect.provide('settings', seams.settingsService)
   // `lang` is pinned per activation so the entry copy the host renders is
   // deterministic; the scene assertions do not depend on it.
@@ -359,6 +372,34 @@ describe('global shortcut entry', () => {
 
     expect(() => seams.shortcuts[0]!.handler()).not.toThrow()
     expect(seams.opened).toEqual([])
+  })
+
+  it('warns once when the accepted combo is a key the scene answers itself', async () => {
+    // R-160: the entry is a toggle whose closing half is the scene's FIRST
+    // branch (find-input.ts), so a combo the scene also answers keeps the
+    // binding but loses that scene key — the host reserves none of these, so
+    // the binding must stay exactly as configured and the user only gets TOLD
+    // (log + toast; the help sheet marks the row — see entry-shadow.ts).
+    const { seams } = await applyPlugin({ config: { shortcut: 'alt+h' } })
+    expect(seams.shortcuts.map(entry => entry.combo)).toEqual(['alt+h'])
+    expect(seams.toasts).toHaveLength(1)
+    // The combo is spelled the way the user reads keys, and the toast names
+    // the scene action that stops responding (Alt+H is the help chord).
+    expect(seams.toasts[0]).toContain('Alt+H')
+    expect(seams.toasts[0]).toContain(dict['help-list-help'].en)
+
+    // A free combo says nothing: the advisory is about the overlap only.
+    const free = await applyPlugin({ config: { shortcut: 'alt+g' } })
+    expect(free.seams.shortcuts.map(entry => entry.combo)).toEqual(['alt+g'])
+    expect(free.seams.toasts).toEqual([])
+
+    // …and it follows the ACCEPTED binding, not the configured value: a combo
+    // the host refuses falls back to the default (which is free), so the only
+    // toast is the rejection notice.
+    const rejected = await applyPlugin({ config: { shortcut: 'ctrl+v' } })
+    expect(rejected.seams.shortcuts.map(entry => entry.combo)).toEqual([DEFAULT_SHORTCUT])
+    expect(rejected.seams.toasts).toHaveLength(1)
+    expect(rejected.seams.toasts[0]).toContain('ctrl+v')
   })
 })
 

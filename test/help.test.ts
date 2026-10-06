@@ -52,6 +52,68 @@ describe('helpSections', () => {
     expect(row?.action).toMatch(/toggle|open \/ close/i)
   })
 
+  it('marks the row whose key a colliding entry combo has taken (R-160)', () => {
+    setLangOverride('en')
+    // `shortcut: alt+h` binds the help chord to the entry: the toggle branch
+    // wins inside the scene, so the sheet's own Alt+H row must say so — it is
+    // the only place a user inside the scene can learn it. The row keeps its
+    // key cell (the sheet stays the scene's key inventory) and gains the
+    // marker in the action cell.
+    const sections = helpSections(100, false, 'alt+h')
+    const rows = sections[0]!.rows
+    const shadowed = rows.filter(row => row.keys === 'Alt+H')
+    // Two rows spell the same combo — the scene's own chord and the global
+    // entry's — and only the SHADOWED one is marked. The marker LEADS the
+    // action cell: a narrow terminal truncates the tail, and a marker that got
+    // cut away would leave the row advertising a key that no longer does it.
+    expect(shadowed).toHaveLength(2)
+    expect(shadowed[0]!.action).toContain(t('help-shadowed'))
+    expect(shadowed[0]!.action.startsWith(t('help-shadowed'))).toBe(true)
+    expect(shadowed[1]!.action).not.toContain(t('help-shadowed'))
+    expect(shadowed[0]!.action).toMatch(/entry key takes it/i)
+
+    // The marker follows the layout/keys vocabulary too: the scope row is the
+    // one the entry takes over at `shortcut: ctrl+tab`.
+    const tab = helpSections(100, false, 'ctrl+tab')[0]!.rows.find(row => row.keys === 'Tab')
+    expect(tab?.action).toContain(t('help-shadowed'))
+
+    // …and a free combo marks nothing at all.
+    const free = helpSections(100, false, DEFAULT_SHORTCUT)
+    expect(free.flatMap(section => section.rows).some(row => row.action.includes(t('help-shadowed')))).toBe(false)
+    const off = helpSections(100, false)
+    expect(off.flatMap(section => section.rows).some(row => row.action.includes(t('help-shadowed')))).toBe(false)
+  })
+
+  it('keeps the shadow marker on screen when the action itself is truncated', () => {
+    setLangOverride('en')
+    // 80 columns — the narrow end of a real terminal: the marker plus the Tab
+    // row's own copy no longer fit, so the action is cut. The marker must
+    // survive that cut: it is the only explanation for a key that does
+    // something else now.
+    const sections = helpSections(80, false, 'ctrl+tab')
+    const row = sections[0]!.rows.find(entry => entry.keys === 'Tab')
+    expect(row?.action.startsWith(t('help-shadowed'))).toBe(true)
+    expect(row?.action.endsWith('…')).toBe(true)
+    // The untouched rows keep their plain copy (no stray marker anywhere else).
+    const marked = sections
+      .flatMap(section => section.rows)
+      .filter(entry => entry.action.includes(t('help-shadowed')))
+    expect(marked.map(entry => entry.keys)).toEqual(['Tab'])
+  })
+
+  it('keeps the marked rows inside the row budget', () => {
+    setLangOverride('zh')
+    const columns = 40
+    const sections = helpSections(columns, false, 'alt+h')
+    const keyWidth = keysColumnWidth(sections)
+    const actionBudget = Math.max(1, columns - 2 - keyWidth - 2)
+    for (const section of sections) {
+      for (const row of section.rows) {
+        expect(displayWidth(row.action)).toBeLessThanOrEqual(actionBudget)
+      }
+    }
+  })
+
   it('keeps the keys column language-free while actions localize', () => {
     setLangOverride('zh')
     const zh = helpSections(100)

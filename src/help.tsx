@@ -28,6 +28,7 @@
  */
 import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
+import { sceneKeyShadow } from './entry-shadow.js'
 import { t } from './i18n.js'
 import { formatShortcut } from './shortcut-combo.js'
 import { displayWidth, truncateWidth } from './width.js'
@@ -71,6 +72,11 @@ export function keysColumnWidth(sections: readonly HelpSection[]): number {
  * copy instead of overflowing the line.
  *
  * The keys column is intentionally language-free — only `action` localizes.
+ *
+ * `toggleCombo` does two things: it spells the global entry's own row, and it
+ * identifies the row that combo has taken over inside the scene (`shortcut:
+ * alt+h` makes the help chord exit instead of opening this sheet — R-160), so
+ * that row's action carries the `help-shadowed` marker.
  */
 export function helpSections(
   columns: number,
@@ -84,7 +90,13 @@ export function helpSections(
    */
   toggleCombo?: string,
 ): readonly HelpSection[] {
-  const sections: readonly HelpSection[] = [
+  /** A draft row: the sheet's own rows plus the flag that keeps the ENTRY's
+   *  row out of the shadow marking. The entry row spells the same combo as the
+   *  scene chord it takes over (`shortcut: alt+h` spells Alt+H twice), and the
+   *  marker belongs on the chord whose action stops working — not on the entry
+   *  that took it. */
+  type DraftRow = HelpRow & { readonly entryRow?: boolean }
+  const sections: ReadonlyArray<{ title: string; rows: readonly DraftRow[] }> = [
     {
       title: t('help-section-list'),
       rows: [
@@ -111,7 +123,7 @@ export function helpSections(
         // the scene's own dispatcher — see shortcut-combo.ts).
         ...(toggleCombo === undefined
           ? []
-          : [{ keys: formatShortcut(toggleCombo), action: t('help-list-global') }]),
+          : [{ keys: formatShortcut(toggleCombo), action: t('help-list-global'), entryRow: true }]),
         { keys: 'layout', action: t('help-list-layout') },
       ],
     },
@@ -142,9 +154,23 @@ export function helpSections(
   ]
   const contentWidth = Math.max(1, columns - CONTENT_MARGIN)
   const actionBudget = Math.max(1, contentWidth - keysColumnWidth(sections) - KEY_GUTTER)
+  // A combo the scene also answers is SHADOWED by the entry: the toggle branch
+  // runs first, so that key closes the scene instead of doing what this sheet
+  // says (R-160). Mark the row it took — without it the sheet lists the same
+  // combo twice (this row and the global-entry row) and the user has no way to
+  // tell which one wins inside the scene. The marker LEADS the cell: the row
+  // budget truncates the tail, and a cut-off marker would leave the row
+  // claiming an action the key no longer performs.
+  const shadowedKeys = sceneKeyShadow(toggleCombo)?.helpKeys
   return sections.map(section => ({
     title: section.title,
-    rows: section.rows.map(row => ({ keys: row.keys, action: truncateWidth(row.action, actionBudget) })),
+    rows: section.rows.map(row => ({
+      keys: row.keys,
+      action: truncateWidth(
+        row.entryRow !== true && row.keys === shadowedKeys ? `${t('help-shadowed')} ${row.action}` : row.action,
+        actionBudget,
+      ),
+    })),
   }))
 }
 

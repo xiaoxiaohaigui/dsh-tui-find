@@ -47,6 +47,7 @@ import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { Config, DEFAULT_SHORTCUT, readConfigValues, resolveConfig, resolveShortcut, type Config as PluginConfig, type ResolvedConfig } from './config.js'
 import { registerCommandTree } from './command-tree.js'
 import { SessionScanner } from './core/scan.js'
+import { sceneKeyShadow } from './entry-shadow.js'
 import { dict, setLangOverride, t } from './i18n.js'
 import { makeNotifier } from './notify.js'
 import { registerFindPanel, FindPanelRegistration } from './panel.js'
@@ -54,6 +55,7 @@ import { FindPanelDriver } from './panel-model.js'
 import { FindScene, type SceneSeed } from './scene.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 import { registerSettingsSection } from './settings.js'
+import { formatShortcut } from './shortcut-combo.js'
 import { SweepGate } from './sweep-gate.js'
 import { setupWarmup } from './warmup.js'
 
@@ -526,6 +528,27 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       shortcutDispose = dispose
       shortcutCombo = acceptedCombo
       previous?.()
+      // R-160, advisory only: some combos are also keys the scene answers
+      // itself, and the entry wins there — the toggle branch is the scene's
+      // first (find-input.ts), so `alt+h` closes the scene instead of opening
+      // the help sheet. The host reserves none of those combos, so the binding
+      // stays exactly as configured; the user just gets told which scene key
+      // it takes over (the log line plus a toast, since a TUI user cannot read
+      // the log). The help sheet marks the same row (help.tsx) — the one
+      // surface the user can still consult from inside the scene.
+      const shadow = sceneKeyShadow(acceptedCombo)
+      if (shadow !== undefined) {
+        ctx.logger.warn(
+          `dsh-tui-find: shortcut '${acceptedCombo}' is also a key the scene answers; inside /find it exits instead of ${shadow.actionKey}`,
+        )
+        notify(
+          t('toast-shortcut-shadow', {
+            combo: formatShortcut(acceptedCombo),
+            action: t(shadow.actionKey),
+          }),
+          'info',
+        )
+      }
     }
     try {
       const dispose = registerCandidate()
