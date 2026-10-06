@@ -82,6 +82,14 @@ describe('helpSections', () => {
     expect(free.flatMap(section => section.rows).some(row => row.action.includes(t('help-shadowed')))).toBe(false)
     const off = helpSections(100, false)
     expect(off.flatMap(section => section.rows).some(row => row.action.includes(t('help-shadowed')))).toBe(false)
+
+    // A SHIFT-carrying combo marks nothing either (R-164): the toggle matches
+    // shift strictly, so `Alt+H` still opens this very sheet. The entry's own
+    // row is still listed, spelled the way the config spells it.
+    const shifted = helpSections(100, false, 'alt+shift+h')[0]!.rows
+    expect(shifted.filter(row => row.keys === 'Alt+H')).toHaveLength(1)
+    expect(shifted.some(row => row.keys === 'Alt+Shift+H')).toBe(true)
+    expect(shifted.some(row => row.action.includes(t('help-shadowed')))).toBe(false)
   })
 
   it('keeps the shadow marker on screen when the action itself is truncated', () => {

@@ -622,6 +622,10 @@ describe('global entry toggle (the entry combo closes the scene)', () => {
    */
   const altLetter = (letter: string): string => `\u001b[${letter.codePointAt(0)};3u`
 
+  /** The same form with modifier 4 = Shift+Alt (the host's `decodeModifier`
+   *  arithmetic: 1 + shift(1) + alt(2)). The only spelling that carries both. */
+  const altShiftLetter = (letter: string): string => `\u001b[${letter.codePointAt(0)};4u`
+
   it('closes the scene when the configured combo is pressed again', async () => {
     // The host's shortcut registry never dispatches while a plugin scene owns
     // the keyboard (Chat's useInput yields to it), so the close half of the
@@ -710,6 +714,35 @@ describe('global entry toggle (the entry combo closes the scene)', () => {
       expect(harness.all()).not.toMatch(/Toggle\s*scope/i)
     } finally {
       harness.dispose()
+    }
+  })
+
+  it('leaves the printed key working when the entry carries shift (R-164)', async () => {
+    // The toggle's matcher compares the shift flag while the scene's own
+    // branches ignore it. So with `alt+shift+h` as the entry, Alt+Shift+H is the
+    // spelling that exits and plain Alt+H still opens the help sheet — the key
+    // every surface prints keeps working, which is why that combo is reported
+    // nowhere (src/entry-shadow.ts, test/entry-shadow.test.ts).
+    const shifted = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'alt+shift+h' })
+    try {
+      shifted.send(altShiftLetter('h'))
+      await waitFor()
+      expect(shifted.closed()).toBe(1)
+    } finally {
+      shifted.dispose()
+    }
+
+    const plain = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'alt+shift+h' })
+    try {
+      plain.send(altLetter('h'))
+      await waitFor()
+      expect(plain.closed()).toBe(0)
+      // The sheet opened instead (its Tab row is what these assertions read),
+      // and the hint line says nothing about a taken key.
+      expect(await painted(plain, /Toggle\s*scope/i)).toMatch(/Toggle\s*scope/i)
+      expect(plain.all().replace(/\s+/g, '')).not.toContain('Alt+Htakenbytheentry')
+    } finally {
+      plain.dispose()
     }
   })
 

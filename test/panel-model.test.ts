@@ -202,6 +202,8 @@ describe('FindPanelDriver — the sweep', () => {
     expect(settled.progress).toBeUndefined()
     expect(settled.notice?.tone).toBe('error')
     expect(settled.notice?.text).toContain('boom')
+    // Both error notices declare that the scope tag must lead them (R-165).
+    expect(settled.notice?.namesScope).toBe(false)
   })
 
   it('aborts an in-flight sweep and frees the slot on dispose', () => {
@@ -439,6 +441,9 @@ describe('FindPanelDriver — the scope', () => {
     expect(fixture.snapshot().notice).toEqual({
       text: t('scope-switched', { scope: t('scope-all') }),
       tone: 'info',
+      // The one notice that names the scope itself, so the status row must not
+      // repeat its tag in front of it (R-165).
+      namesScope: true,
     })
 
     fixture.driver.toggleScope()
@@ -663,7 +668,14 @@ describe('FindPanelDriver — the scene handoff', () => {
     await flush()
     fixture.failNextOpen()
     expect(fixture.driver.openSelected()).toBe(false)
-    expect(fixture.snapshot().notice).toEqual({ text: t('panel-open-failed'), tone: 'error' })
+    // `namesScope: false` is what makes the status row lead this notice with the
+    // scope tag (R-165): the message outlives the next query edit, the scope
+    // must not go off screen with it.
+    expect(fixture.snapshot().notice).toEqual({
+      text: t('panel-open-failed'),
+      tone: 'error',
+      namesScope: false,
+    })
 
     // The notice is not permanent: the user's next edit clears it (the panel
     // has no timer of its own — the scene's status ages out, this one needs a

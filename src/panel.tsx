@@ -388,10 +388,17 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
             wrap="truncate-end"
             {...(snapshot.notice !== undefined ? { color: snapshot.notice.tone === 'error' ? 'error' as const : 'success' as const } : { dimColor: true })}
           >
-            {/* A notice takes the row over — but every notice either names the
-                scope itself (`scope-switched`) or is the more urgent message. */}
+            {/* R-165: the scope leads EVERY row shape. A notice takes the counts
+                over, and the error notices outlive a query edit (`setQuery`
+                clears the switch's notice, the next sweep a failure's) — with
+                the tag in front, the scope never leaves the screen with them.
+                `scope-switched` is the one notice that already names it. */}
             {truncateWidth(
-              snapshot.notice !== undefined ? snapshot.notice.text : `${scopeTag} · ${status}`,
+              snapshot.notice === undefined
+                ? `${scopeTag} · ${status}`
+                : snapshot.notice.namesScope
+                  ? snapshot.notice.text
+                  : `${scopeTag} · ${snapshot.notice.text}`,
               contentWidth,
             )}
           </Text>

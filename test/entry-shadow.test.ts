@@ -12,7 +12,10 @@
  *    (shortcut-combo.ts's strict matcher, the same one the scene dispatches
  *    with), and
  * 2. the help sheet really has the row the shadow names — otherwise the
- *    marker the sheet appends would never be painted anywhere.
+ *    marker the sheet appends would never be painted anywhere,
+ *
+ * and that no shadow is claimed for a SHIFT-carrying combo (R-164): the row
+ * these surfaces name is then still doing what the sheet says.
  *
  * The behavior itself (the entry winning over the scene's own chord) is pinned
  * on the real dispatcher in test/scene.test.ts.
@@ -67,10 +70,35 @@ describe('sceneKeyShadow', () => {
       expect(shadow, combo).toBeDefined()
       expect(shadow?.helpKeys).toBe(keys)
       // Shift+Alt+C arrives as meta + 'C' and still reaches the scene's
-      // `altOnly && lower === 'c'` branch — as does the entry matcher.
+      // `altOnly && lower === 'c'` branch — as does the entry matcher, which is
+      // what makes the collision real for the SHIFT-FREE combo. A shift-carrying
+      // combo is a different spelling of the same chord and is deliberately not
+      // reported: see the R-164 test below.
       expect(matchesShortcut(combo, keys.slice(-1), keypress({ meta: true }))).toBe(true)
-      expect(sceneKeyShadow(combo.replace('alt+', 'alt+shift+'))?.helpKeys).toBe(keys)
     }
+  })
+
+  it('reports nothing for a shift-carrying combo: the printed key still works (R-164)', () => {
+    // The toggle matches the combo STRICTLY (matchesShortcut compares shift)
+    // while the scene's own branches ignore it. So `alt+shift+h` exits the scene
+    // on exactly that spelling, and the key every surface prints — `Alt+H` — is
+    // untouched: naming it as taken would be a claim the user can watch fail.
+    for (const combo of [
+      'alt+shift+h',
+      'alt+shift+e',
+      'ctrl+shift+tab',
+      'alt+shift+up',
+      'ctrl+shift+backspace',
+    ]) {
+      expect(sceneKeyShadow(combo), combo).toBeUndefined()
+    }
+    // What the combo takes is its own spelling — the toggle working as
+    // configured, not a collision with the scene's key.
+    expect(matchesShortcut('alt+shift+h', 'h', keypress({ meta: true, shift: true }))).toBe(true)
+    expect(matchesShortcut('alt+shift+h', 'h', keypress({ meta: true }))).toBe(false)
+    // …and the shift-free twin is still reported, so the gate cannot quietly
+    // swallow the collision it exists for.
+    expect(sceneKeyShadow('alt+h')?.helpKeys).toBe('Alt+H')
   })
 
   it('names the ungated navigation keys any combo can reach', () => {

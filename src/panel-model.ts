@@ -36,10 +36,17 @@ import { buildScanOptions, SessionFlush } from './find-sweep.js'
 import type { SweepClaim, SweepGate } from './sweep-gate.js'
 
 /** A transient one-line notice the panel shows above its hint (scan failure,
- *  a refused scene open). Same shape as the scene's StatusNote. */
+ *  a refused scene open). The scene's StatusNote shape plus the flag the status
+ *  row needs to keep naming the scope (REVIEW R-165). */
 export interface PanelNotice {
   readonly text: string
   readonly tone: 'info' | 'error'
+  /** Whether `text` names the current scope in its own words — `scope-switched`
+   *  does ("Scope switched to …"), and the status row must not repeat it. Every
+   *  other notice is LED by the row's scope tag (R-165): the error notices stay
+   *  until the next query edit or sweep, and the scope must not leave the screen
+   *  with them (R-156's "the row always names the current one"). */
+  readonly namesScope: boolean
 }
 
 /** What the view renders from. Referentially stable snapshots only —
@@ -289,6 +296,7 @@ export class FindPanelDriver {
     this.notice = {
       text: t('scope-switched', { scope: t(next === 'repo' ? 'scope-repo' : 'scope-all') }),
       tone: 'info',
+      namesScope: true,
     }
     this.derive({ resetSelection: true })
   }
@@ -321,7 +329,8 @@ export class FindPanelDriver {
     this.publish()
   }
 
-  /** Flip the selected row's session fold (Tab). */
+  /** Flip the selected row's session fold (Shift+Tab — `Tab` switches the
+   *  scope, REVIEW R-155/R-166). */
   toggleFold(): void {
     const row = this.rows[this.selected]
     if (row === undefined) return
@@ -372,7 +381,7 @@ export class FindPanelDriver {
       // triggered anyway — so it survives this refused open (R-146).
       const failure = this.phase === 'failed' ? this.notice : undefined
       if (this.phase === 'cold' || this.phase === 'failed') this.beginSweep()
-      this.notice = failure ?? { text: t('panel-open-failed'), tone: 'error' }
+      this.notice = failure ?? { text: t('panel-open-failed'), tone: 'error', namesScope: false }
       this.publish()
       return false
     }
@@ -487,6 +496,7 @@ export class FindPanelDriver {
         this.notice = {
           text: t('scan-failed', { error: error instanceof Error ? error.message : String(error) }),
           tone: 'error',
+          namesScope: false,
         }
         this.derive()
         this.announceSettled(true)

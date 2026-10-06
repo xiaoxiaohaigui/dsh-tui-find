@@ -20,12 +20,19 @@
  *
  * - the seven `alt+<letter>` chords are gated on `altOnly`
  *   (`meta && !ctrl && !super`) and compare the lowercased input, so only an
- *   alt-without-ctrl combo reaches them (shift does not matter);
+ *   alt-without-ctrl combo reaches them;
  * - `Tab`, the arrows, the page keys and `Backspace`/`Delete` carry no
  *   modifier gate at all, so ANY combo spelling them reaches the branch;
  * - `Enter` is unreachable (`isPlainReturn` refuses modifiers, and a combo
  *   always carries one) and escape combos are refused by the grammar itself
  *   (shortcut-combo.ts), so neither can shadow anything.
+ *
+ * A combo carrying SHIFT is never reported (R-164). The branches above ignore
+ * shift while the toggle matches the combo strictly (`matchesShortcut`
+ * compares the flag), so `alt+shift+h` exits on exactly that spelling while
+ * plain `Alt+H` — the one the sheet prints — still opens the sheet. Marking
+ * that row as taken would be a claim the user can watch fail; what such a combo
+ * takes is its own spelling, i.e. the toggle working as configured.
  *
  * Adding a chord to the scene's dispatcher therefore means adding it here too:
  * test/entry-shadow.test.ts pins each row against the matcher and the branch
@@ -78,13 +85,17 @@ const NAMED_KEY_SHADOWS = new Map<ShortcutNamedKey, SceneKeyShadow>([
 /**
  * The scene binding `combo` takes over inside the scene, or undefined when the
  * combo is free (the common case: `alt+f` and every `ctrl+<letter>` the scene
- * does not answer). An unusable combo shadows nothing — it never becomes a
- * binding in the first place (see resolveShortcut).
+ * does not answer) or carries shift (R-164: it takes its own spelling, never
+ * the shift-free one the sheet prints). An unusable combo shadows nothing — it
+ * never becomes a binding in the first place (see resolveShortcut).
  */
 export function sceneKeyShadow(combo: string | undefined): SceneKeyShadow | undefined {
   if (combo === undefined) return undefined
   const parsed = parseShortcutCombo(combo)
   if (parsed === undefined) return undefined
+  // R-164: the shift-free spelling is the one every user-visible surface names,
+  // and the scene's branches answer it whatever shift does.
+  if (parsed.shift) return undefined
   if (parsed.named !== undefined) return NAMED_KEY_SHADOWS.get(parsed.named)
   if (parsed.char === undefined) return undefined
   // The Alt chords are `altOnly`: ctrl (or a bare alt-less combo, which the

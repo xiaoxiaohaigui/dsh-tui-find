@@ -125,6 +125,9 @@ async function mountPanel(
     /** Wrap the mounted element — the cursor tests provide the host's own
      *  cursor-declaration context so the panel's declaration is observable. */
     wrap?: (element: React.ReactElement) => React.ReactElement
+    /** Refuse every scene open, so the panel records its error notice — the
+     *  R-165 row shape (`panel-open-failed`). */
+    refuseOpen?: boolean
   } = {},
 ): Promise<ViewFixture> {
   const sessions = options.sessions ?? [stubSession('a')]
@@ -134,6 +137,7 @@ async function mountPanel(
     config: () => resolveConfig(options.config ?? {}),
     isSceneOpen: () => false,
     openScene: seed => {
+      if (options.refuseOpen === true) return false
       opened.push({ query: seed.query, ...(seed.rowId === undefined ? {} : { rowId: seed.rowId }) })
       return true
     },
@@ -416,6 +420,31 @@ describe('find panel component', () => {
       // The notice is gone from the live frame — the tag is the only thing left
       // naming the scope, which is the whole point of R-156.
       expect(frame).not.toMatch(/switched/)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('leads an error notice with the scope, so the scope stays on the row (R-165)', async () => {
+    // The Tab switch's own notice names the scope and dies on the next edit; the
+    // two ERROR notices (a refused scene open, a failed sweep) take the whole row
+    // over and stay until that edit or the next sweep. The tag therefore leads
+    // every row shape — the row always names the current scope.
+    const view = await mountPanel({ sessions: [stubSession('a')], width: 60, refuseOpen: true })
+    try {
+      view.send('\t')
+      await waitFor(60)
+      expect(view.driver.scope()).toBe('all')
+
+      // ↵ with the host refusing the open: the row becomes the error notice.
+      expect(view.send('', { return_: true })).toBe(true)
+      expect(view.driver.getSnapshot().notice?.tone).toBe('error')
+
+      const frame = await view.wholeFrame(/Could\s*not\s*open\s*the\s*\/find\s*scene/)
+      // One row, scope first: "Scope: All sessions · Could not open the /find
+      // scene". (Whitespace-tolerant — the renderer paints each run with cursor
+      // moves, so the spaces between words never reach the stream.)
+      expect(frame).toMatch(/Scope:\s*All\s*sessions\s*·\s*Could\s*not\s*open\s*the\s*\/find\s*scene/)
     } finally {
       view.unmount()
     }
