@@ -22,6 +22,7 @@
  * @module dsh-tui-find/config
  */
 import z from '@deepseek-ai/schemastery'
+import { isPlausibleShortcut } from './shortcut-combo.js'
 
 /** Default global-entry combo. Deliberately NOT Ctrl+Shift+F: mainstream
  *  terminal emulators (Windows Terminal, VS Code, GNOME Terminal, …) bind
@@ -30,51 +31,18 @@ import z from '@deepseek-ai/schemastery'
  *  without the Ctrl+Alt+F conflict with QQ's global shortcut. */
 export const DEFAULT_SHORTCUT = 'alt+f'
 
-/** Modifier tokens that satisfy the host grammar's hard rule (a combo must
- *  carry ctrl or alt; aliases mirror keymap.ts's parser). */
-const META_MODIFIERS = new Set(['ctrl', 'control', 'alt', 'meta', 'option'])
-const NAMED_SHORTCUT_KEYS = new Set([
-  'enter',
-  'return',
-  'esc',
-  'escape',
-  'tab',
-  'backspace',
-  'delete',
-  'up',
-  'down',
-  'left',
-  'right',
-  'home',
-  'end',
-  'pageup',
-  'pagedown',
-  'space',
-])
-
-/** Structural sanity check matching the host combo grammar: modifiers are
- *  unique, the key is one code point or one of the host's named keys, and a
- *  combo carries ctrl or alt. Reserved combos remain the registry's concern. */
-export function isPlausibleShortcut(combo: string): boolean {
-  const parts = combo
-    .split('+')
-    .map(part => part.trim())
-    .filter(part => part !== '')
-  if (parts.length < 2) return false
-  const modifiers = parts.slice(0, -1)
-  const key = parts[parts.length - 1]!
-  const seen = new Set<string>()
-  for (const modifier of modifiers) {
-    const canonical = modifier === 'control' ? 'ctrl' : modifier === 'meta' || modifier === 'option' ? 'alt' : modifier
-    if (canonical !== 'shift' && canonical !== 'ctrl' && canonical !== 'alt') return false
-    if (seen.has(canonical)) return false
-    seen.add(canonical)
-  }
-  if (!seen.has('ctrl') && !seen.has('alt')) return false
-  if ([...key].length !== 1 && !NAMED_SHORTCUT_KEYS.has(key)) return false
-  if (key === 'escape') return false
-  return true
-}
+/**
+ * Structural sanity check matching the host combo grammar: modifiers are
+ * unique, the key is one code point or one of the host's named keys, and a
+ * combo carries ctrl or alt. Reserved combos remain the registry's concern.
+ *
+ * The grammar itself lives in shortcut-combo.ts (src/shortcut-combo.ts),
+ * because the scene's own key dispatcher matches the resolved combo with the
+ * same parser — the global entry is a TOGGLE, and both halves must agree on
+ * what a combo spells. Re-exported here so the settings row validation and
+ * its tests keep one import site.
+ */
+export { isPlausibleShortcut }
 
 /** Result of normalizing the user-facing `shortcut` value. */
 export interface ShortcutResolution {
@@ -147,10 +115,12 @@ export type Config = {
   /** UI language: `auto` (default) follows the host language contract. */
   lang?: 'auto' | 'zh' | 'en'
   /** Global-entry combo for the search scene; must carry ctrl or alt
-   *  (e.g. `alt+f`). `off` disables the global entry (the `/find`
-   *  command keeps working). Default `alt+f` — Ctrl+Shift+F is
-   *  swallowed by mainstream terminals' own find UI before dsh-TUI can
-   *  see it. */
+   *  (e.g. `alt+f`). The combo TOGGLES: pressed with the scene up it closes
+   *  it again (the scene answers it itself — see shortcut-combo.ts). `off`
+   *  disables the global entry (the `/find` command keeps working, and with
+   *  the entry off no combo closes the scene either). Default `alt+f` —
+   *  Ctrl+Shift+F is swallowed by mainstream terminals' own find UI before
+   *  dsh-TUI can see it. */
   shortcut?: string
 }
 

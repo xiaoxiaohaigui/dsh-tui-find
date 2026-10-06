@@ -40,7 +40,7 @@ Uninstall: `dsh plugin --profile dsh-tui remove -w dsh-tui-find`, then restart. 
 |---|---|
 | `/find <query>` | Jump straight to results (space-separate multiple terms) |
 | `/find` | Open the full-screen search scene |
-| `Alt+F` | Global shortcut entry (remap or `off` via the `shortcut` config) |
+| `Alt+F` | Global shortcut entry: one press opens the full-screen search scene, **a second press inside it closes the scene** (remap or `off` via the `shortcut` config; a remap moves both halves) |
 
 Keys inside the scene:
 
@@ -66,7 +66,7 @@ Mouse: left-click selects, hover highlights, the wheel moves the selection by th
 
 > About 10 seconds after startup the plugin pre-builds the index in the background (disable via the `warmup` config), so the first `/find` opens instantly; 0.10+ hosts show an "indexing n/m" row above the prompt — click it to cancel. The warm-up only moves the cold decode into idle time; it does not reduce total decoding.
 
-> The default is `Alt+F`, not `Ctrl+Shift+F`: mainstream terminals reserve that chord for their own find UI and intercept it. On a conflict, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`.
+> The default is `Alt+F`, not `Ctrl+Shift+F`: mainstream terminals reserve that chord for their own find UI and intercept it. On a conflict, remap via the `shortcut` config to any combo carrying `Ctrl` or `Alt`. The entry is a **toggle**: pressing the same combo inside the scene exits it right away (from the list, the confirm, the preview or the help sheet alike), and the key follows the `shortcut` config — the host does not dispatch plugin shortcuts while a plugin scene holds the screen, so the scene matches the close half itself. The `Alt+H` sheet spells the effective combo, and an `off` entry drops that row.
 
 ### Sidebar panel (dsh-TUI 0.13.0+)
 

@@ -63,6 +63,12 @@ type CommandEntry = {
   handler: (invocation: { rawInput: string }) => { kind: string; text?: string }
 }
 
+/** Combos the stub registry refuses the way the real one refuses its reserved
+ *  set (ctrl+v is the host's built-in paste action). One entry is enough: it
+ *  drives the plugin's fallback-to-default path, whose consequence for the
+ *  scene's toggle chord is what the wrapper test pins. */
+const RESERVED_COMBOS = new Set(['ctrl+v'])
+
 /** Stand-ins for the three seams the entries ride: registration records with
  *  activation-scoped disposers, the scenes registry's
  *  register/open/close/active contract (`open` answers false for an unknown
@@ -129,6 +135,12 @@ function stubSeams() {
     },
     shortcutsService: {
       register(combo: string, definition: { description: string; handler: () => void }): () => void {
+        // A combo the real registry reserves (a slice of its fixed list: ctrl+v
+        // is the built-in paste action) is refused with a no-op disposer and
+        // never enters the registry — the plugin's own verification read
+        // (list()) then sees the rejection and falls back to the default, which
+        // is what the accepted-entry-combo test pins.
+        if (RESERVED_COMBOS.has(combo)) return () => {}
         if (shortcuts.some(entry => entry.combo === combo)) return () => {}
         const entry = { combo, description: definition.description, handler: definition.handler }
         shortcuts.push(entry)
@@ -316,7 +328,7 @@ describe('/find command entry', () => {
 })
 
 describe('global shortcut entry', () => {
-  it('opens the scene from the bound handler and no-ops while it is already up', async () => {
+  it('toggles the scene: opens it, closes it on a second press', async () => {
     const { seams, fiber } = await applyPlugin()
     expect(seams.shortcuts).toHaveLength(1)
     const binding = seams.shortcuts[0]!
@@ -325,10 +337,15 @@ describe('global shortcut entry', () => {
 
     binding.handler()
     expect(seams.opened).toEqual([SCENE_ID])
-    // The shortcut toggles nothing: a second press while the scene holds the
-    // screen must not open it again (that would remount and lose the query).
+    // The entry TOGGLES: a second press with the scene up closes it — never an
+    // open() again, which would remount and lose the query.
     binding.handler()
+    expect(seams.closed).toEqual([SCENE_ID])
     expect(seams.opened).toEqual([SCENE_ID])
+
+    // …and it opens again afterwards: the toggle is not one-shot.
+    binding.handler()
+    expect(seams.opened).toEqual([SCENE_ID, SCENE_ID])
 
     // The binding is scoped to the activation: deactivating the plugin row
     // must leave no combo behind for the whole session.
@@ -533,6 +550,7 @@ describe('registered scene component', () => {
     const element = sceneElement(first.seams)
     const props = element.props as {
       config: unknown
+      entryCombo: string | undefined
       scanner: unknown
       notify: unknown
       initialSeed: () => SceneSeed | undefined
@@ -540,12 +558,35 @@ describe('registered scene component', () => {
 
     expect(element.type).toBe(FindScene)
     // One scanner per ACTIVATION (scan.ts's lifecycle contract): its decode
-    // cache outlives scene close/open, so every activation carries its own.
+    // cache outlives scene close/reopen, so every activation carries its own.
     expect(props.scanner).toBeInstanceOf(SessionScanner)
     expect(props.scanner).not.toBe((sceneElement(second.seams).props as { scanner: unknown }).scanner)
     expect(typeof props.notify).toBe('function')
     expect(props.config).toEqual(resolveConfig({ lang: 'en' }))
     expect(typeof props.initialSeed).toBe('function')
+    // The toggle's close half answers the ACCEPTED binding — the default here,
+    // since the stub accepted it.
+    expect(props.entryCombo).toBe(DEFAULT_SHORTCUT)
+  })
+
+  it('hands the scene the ACCEPTED combo, not the refused config value', async () => {
+    // A structurally valid combo the host reserves makes the plugin fall back
+    // to the documented default. The scene closes on the combo it is handed,
+    // so handing it `config.shortcut` would leave the user with a scene that
+    // Alt+F opens and nothing closes.
+    const { seams } = await applyPlugin({ config: { shortcut: 'ctrl+v' } })
+    const props = sceneElement(seams).props as { config: unknown; entryCombo: string | undefined }
+
+    expect(seams.shortcuts.map(entry => entry.combo)).toEqual([DEFAULT_SHORTCUT])
+    expect((props.config as { shortcut: string }).shortcut).toBe('ctrl+v')
+    expect(props.entryCombo).toBe(DEFAULT_SHORTCUT)
+  })
+
+  it('hands no combo to the scene while the global entry is off', async () => {
+    const { seams } = await applyPlugin({ config: { shortcut: 'off' } })
+    expect(seams.shortcuts).toEqual([])
+    const props = sceneElement(seams).props as { entryCombo: string | undefined }
+    expect(props.entryCombo).toBeUndefined()
   })
 
   it('consumes the /find seed exactly once', async () => {

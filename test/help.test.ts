@@ -5,6 +5,7 @@
  * budget instead of letting a row overflow its line.
  */
 import { afterEach, describe, expect, it } from 'vitest'
+import { DEFAULT_SHORTCUT } from '../src/config.js'
 import { helpSections, keysColumnWidth } from '../src/help.js'
 import { setLangOverride, t } from '../src/i18n.js'
 import { displayWidth } from '../src/width.js'
@@ -27,8 +28,28 @@ describe('helpSections', () => {
   })
 
   it('carries the full key inventory: 15 list rows, 7 preview rows, 5 mouse rows', () => {
-    const sections = helpSections(100)
+    const sections = helpSections(100, false, DEFAULT_SHORTCUT)
     expect(sections.map(section => section.rows.length)).toEqual([15, 7, 5])
+  })
+
+  it('spells the configured global entry and drops it when the entry is off', () => {
+    // The sheet lists keys the scene answers: the entry's combo is a real
+    // back-out (the scene matches it — see shortcut-combo.ts), so it is
+    // spelled as CONFIGURED, and an `off` entry has no combo to spell.
+    const remapped = helpSections(100, false, 'ctrl+alt+g')
+    expect(allKeys(remapped)).toContain('Ctrl+Alt+G')
+    expect(allKeys(remapped)).not.toContain('Alt+F')
+    expect(remapped.map(section => section.rows.length)).toEqual([15, 7, 5])
+
+    const off = helpSections(100, false)
+    expect(off.map(section => section.rows.length)).toEqual([14, 7, 5])
+    expect(allKeys(off)).not.toContain('Alt+F')
+  })
+
+  it('describes the global entry as a toggle', () => {
+    setLangOverride('en')
+    const row = helpSections(100, false, DEFAULT_SHORTCUT)[0]?.rows.find(entry => entry.keys === 'Alt+F')
+    expect(row?.action).toMatch(/toggle|open \/ close/i)
   })
 
   it('keeps the keys column language-free while actions localize', () => {
@@ -45,7 +66,7 @@ describe('helpSections', () => {
 
   it('spells the key combos the way the scene and hints do', () => {
     setLangOverride('en')
-    const keys = allKeys(helpSections(100))
+    const keys = allKeys(helpSections(100, false, DEFAULT_SHORTCUT))
     for (const combo of ['<char>', 'Tab', 'Alt+R', 'Alt+T', 'Alt+N', 'Alt+P', 'Alt+C', 'Alt+E', 'Enter', '↑↓', 'PgUp/PgDn', 'Esc', 'Alt+H', 'Alt+F', 'layout', 'n/N', 'Click', '▸ (+N)', 'Hover', 'Wheel']) {
       expect(keys).toContain(combo)
     }

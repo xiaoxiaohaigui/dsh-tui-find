@@ -29,6 +29,7 @@
 import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { t } from './i18n.js'
+import { formatShortcut } from './shortcut-combo.js'
 import { displayWidth, truncateWidth } from './width.js'
 
 /** One help line: a language-free key combo plus its localized action. */
@@ -71,7 +72,18 @@ export function keysColumnWidth(sections: readonly HelpSection[]): number {
  *
  * The keys column is intentionally language-free — only `action` localizes.
  */
-export function helpSections(columns: number, splitActive = false): readonly HelpSection[] {
+export function helpSections(
+  columns: number,
+  splitActive = false,
+  /**
+   * The EFFECTIVE global-entry combo (`config.shortcut`), or undefined when
+   * that entry is off. The sheet spells the combo the user actually has — a
+   * remapped `shortcut` must not be advertised as Alt+F — and an `off` entry
+   * drops the row entirely: the sheet lists keys the scene answers, and an
+   * off entry binds none.
+   */
+  toggleCombo?: string,
+): readonly HelpSection[] {
   const sections: readonly HelpSection[] = [
     {
       title: t('help-section-list'),
@@ -94,7 +106,12 @@ export function helpSections(columns: number, splitActive = false): readonly Hel
         { keys: 'PgUp/PgDn', action: t('help-list-page') },
         { keys: 'Esc', action: t('help-list-esc') },
         { keys: 'Alt+H', action: t('help-list-help') },
-        { keys: 'Alt+F', action: t('help-list-global') },
+        // The global entry, spelled as configured: it opens the scene from
+        // anywhere and closes it again from inside (the toggle half lives in
+        // the scene's own dispatcher — see shortcut-combo.ts).
+        ...(toggleCombo === undefined
+          ? []
+          : [{ keys: formatShortcut(toggleCombo), action: t('help-list-global') }]),
         { keys: 'layout', action: t('help-list-layout') },
       ],
     },
@@ -174,10 +191,13 @@ export function HelpOverlay(props: {
   /** Which layout the scene is rendering: split spells the reader entry as
    *  the focus arrow, classic as Alt+P. */
   splitActive?: boolean
+  /** The effective global-entry combo, or undefined when the entry is off
+   *  (see {@link helpSections}). */
+  toggleCombo?: string | undefined
 }): React.ReactElement {
-  const { ui, columns, rows, splitActive } = props
+  const { ui, columns, rows, splitActive, toggleCombo } = props
   const { Box, Text } = ui
-  const sections = helpSections(columns, splitActive === true)
+  const sections = helpSections(columns, splitActive === true, toggleCombo)
   const keyWidth = keysColumnWidth(sections)
 
   // The body as one flat line list; blank separators between sections carry

@@ -606,3 +606,108 @@ describe('sweep options (sub-agent posture)', () => {
     }
   })
 })
+
+describe('global entry toggle (the entry combo closes the scene)', () => {
+  /**
+   * Alt+<letter> the way an EXTENDED-KEY terminal reports it: kitty CSI u,
+   * `ESC [ codepoint ; modifier u` with modifier 3 = Alt. That is the form the
+   * host's registered `alt+f` matches in production — dsh-TUI pushes CSI >1u /
+   * xterm modifyOtherKeys on terminals that support them.
+   *
+   * Deliberately NOT the two-byte `ESC f` form: the host parses `\x1bf` (and
+   * `\x1bb`) as Alt+→ / Alt+← — iTerm's "natural text editing" word motion —
+   * so it carries no 'f' input at all, and the host's own combo matcher
+   * (`comboMatchesStrict`) refuses it for the entry too. The scene mirrors
+   * that matcher instead of inventing a second, more forgiving one.
+   */
+  const altLetter = (letter: string): string => `\u001b[${letter.codePointAt(0)};3u`
+
+  it('closes the scene when the configured combo is pressed again', async () => {
+    // The host's shortcut registry never dispatches while a plugin scene owns
+    // the keyboard (Chat's useInput yields to it), so the close half of the
+    // toggle is the scene's own branch — matching the resolved `shortcut`
+    // value, which is what opened the scene in the first place.
+    const harness = await mount(sessionWithMessages(['needle body']), { query: '' })
+    try {
+      expect(harness.closed()).toBe(0)
+      harness.send(altLetter('f'))
+      await waitFor()
+      expect(harness.closed()).toBe(1)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('follows a remapped combo and leaves the old chord alone', async () => {
+    const harness = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'alt+g' })
+    try {
+      harness.send(altLetter('f'))
+      await waitFor()
+      // Alt+F is no longer the entry: it must not close the scene, and the
+      // modified letter must not leak into the query either (the typing path
+      // is modifier-gated). A width flip forces a full repaint — frame diffs
+      // do not carry the chrome rows.
+      expect(harness.closed()).toBe(0)
+      harness.toggleWidth()
+      await waitFor()
+      expect(harness.latest()).toMatch(/⌕/)
+      harness.send(altLetter('g'))
+      await waitFor()
+      expect(harness.closed()).toBe(1)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('answers the accepted binding when it differs from the config', async () => {
+    // main.tsx hands over the combo the host actually bound: a configured
+    // value the host refuses as reserved falls back to the default, so the
+    // scene must close on the ACCEPTED chord — answering the config value
+    // instead would leave Alt+F opening a scene that nothing closes.
+    const harness = await mount(sessionWithMessages(['needle body']), {
+      query: '',
+      entryCombo: 'alt+g',
+    })
+    try {
+      harness.send(altLetter('f'))
+      await waitFor()
+      expect(harness.closed()).toBe(0)
+      harness.send(altLetter('g'))
+      await waitFor()
+      expect(harness.closed()).toBe(1)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('leaves the chord inert when the global entry is off', async () => {
+    // `shortcut: off` binds nothing globally, so the scene owes the chord
+    // nothing: an off entry must not become a hardcoded back-out.
+    const harness = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'off' })
+    try {
+      harness.send(altLetter('f'))
+      await waitFor()
+      expect(harness.closed()).toBe(0)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('exits from the help layer too — the toggle is not layer-scoped', async () => {
+    const harness = await mount(sessionWithMessages(['needle body']), { query: '' })
+    try {
+      harness.send('\u001bh')
+      await waitFor()
+      // The sheet's own body, read off the cumulative stream: the host
+      // renderer's cell diff does not carry every painted row (row 1 has the
+      // same quirk in preview-wiring's help test), so the assertion names a
+      // row only the sheet renders — 'Toggle scope' is its Tab line.
+      expect(harness.all()).toMatch(/Toggle\s*scope/)
+      harness.send(altLetter('f'))
+      await waitFor()
+      expect(harness.closed()).toBe(1)
+    } finally {
+      harness.dispose()
+    }
+  })
+})

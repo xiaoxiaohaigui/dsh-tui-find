@@ -155,6 +155,15 @@ export async function mount(
     }
     /** Scene-level notifier spy — the toast-channel tests assert dispatch. */
     notify?: (text: string, tone: 'info' | 'error') => void
+    /** The `shortcut` row value (default: unset, i.e. the schema default
+     *  `alt+f`). The scene answers that combo with a close — the global
+     *  entry's toggle half — so the remap/off cases need it injected. */
+    shortcut?: string
+    /** The ACCEPTED entry combo (`FindScene`'s own prop): main.tsx hands the
+     *  scene the binding the host took, which differs from `config.shortcut`
+     *  when a reserved combo fell back to the default. Absent = the scene
+     *  falls back to the config value. */
+    entryCombo?: string
     /** Resume outcome the stubbed channel returns — the resume feedback tests
      *  drive the confirm flow's result branches (default: user-cancelled). */
     resumeTo?: () => Promise<unknown>
@@ -220,11 +229,15 @@ export async function mount(
     config: resolveConfig({
       defaultScope: 'all',
       ...(options.layout === undefined ? {} : { layout: options.layout }),
+      ...(options.shortcut === undefined ? {} : { shortcut: options.shortcut }),
       ...(options.showSubagentSessions === undefined
         ? {}
         : { showSubagentSessions: options.showSubagentSessions }),
     }),
     scanner,
+    // Explicitly undefined in the common case: the scene then reads the
+    // resolved config (see the option's contract).
+    entryCombo: options.entryCombo,
     initialQuery: () => options.query ?? 'needle',
     notify: options.notify,
   }

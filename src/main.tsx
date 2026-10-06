@@ -10,8 +10,11 @@
  * - `tuiScenes.register` — the full-screen search scene.
  * - `tuiShortcuts.register` — a configurable global entry combo (default
  *   `Alt+F`; NOT `Ctrl+Shift+F`, which mainstream terminals bind
- *   locally for their own find UI and never forward). The registry itself
- *   re-checks user remaps and refuses reserved combos with a warning.
+ *   locally for their own find UI and never forward). The combo toggles:
+ *   pressed with the scene up it closes it (this handler where the host
+ *   still dispatches mid-scene, the scene's own matcher everywhere else —
+ *   see shortcut-combo.ts). The registry itself re-checks user remaps and
+ *   refuses reserved combos with a warning.
  * - `tuiSettingsSections.register` — the plugin's settings card (mirrors
  *   the row config onto the host settings service namespace).
  * - `tuiCommandTrees.register` — suggestion-overlay metadata for the
@@ -199,6 +202,20 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   let applyPanelToggle: ((enabled: boolean) => void) | undefined
 
   /**
+   * The combo the host actually ACCEPTED for the global entry (undefined
+   * while the entry is off), maintained by `bindShortcut` below and read by
+   * the scene at render time.
+   *
+   * The scene owns the toggle's close half, and it must answer the BOUND
+   * chord rather than the raw config value: a structurally valid combo the
+   * host refuses as reserved (ctrl+v, alt+up, …) falls back to the documented
+   * default, so a scene matching the refused value would answer a chord
+   * nothing binds while the fallback is what opened it. Declared this early
+   * because the scene wrapper below closes over it.
+   */
+  let shortcutCombo: string | undefined
+
+  /**
    * Open the scene with a one-shot seed. Every entry point (the `/find`
    * command, the global shortcut and the sidebar panel) comes through here, so
    * the seed, the remount cycling and the "the scene supersedes the panel's
@@ -289,6 +306,10 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
         config={runtimeConfig}
         scanner={scanner}
         notify={notify}
+        // The toggle's close half answers the ACCEPTED binding, not
+        // `runtimeConfig.shortcut` — the two differ exactly when the host
+        // refused the configured combo and the default took over.
+        entryCombo={shortcutCombo}
         initialSeed={() => {
           // Consumed exactly once, and never falling through to a caller's
           // `initialQuery`: this wrapper speaks the seed path only, so a spent
@@ -414,7 +435,6 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   // Settings are optional at runtime; when present they become the source for
   // future scene mounts and for the replaceable global shortcut binding.
   let shortcutDispose: (() => void) | undefined
-  let shortcutCombo: string | undefined
   // `tuiShortcuts` is optional during a profile's cold boot. Keep the
   // reference mutable so the late-mount poll callback (whenSeamMounted) can
   // attach once the service is mounted instead of permanently capturing
@@ -442,11 +462,20 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
           handler: () => {
             const scenes = ctx.get('tuiScenes', false)
             if (scenes === undefined) return
-            // The shortcut toggles nothing: a second press while the scene
-            // holds the screen must not remount it (that would lose the
-            // query). Otherwise it opens through the shared entry so the
-            // panel's sweep stands down — an empty seed is the recent list.
-            if (scenes.active?.id === SCENE_ID) return
+            // The global entry TOGGLES: a second press with the scene up
+            // closes it. Never remount an open scene — that would lose the
+            // query. On a real host this branch is unreachable (Chat's
+            // useInput yields the whole keyboard to a plugin scene, so the
+            // registry never dispatches while /find holds the screen); the
+            // scene answers the same combo itself (find-input.ts). Kept as
+            // the toggle for compositions that DO dispatch mid-scene, so
+            // both paths agree instead of one of them silently no-opping.
+            if (scenes.active?.id === SCENE_ID) {
+              scenes.close()
+              return
+            }
+            // Otherwise it opens through the shared entry so the panel's
+            // sweep stands down — an empty seed is the recent list.
             openSceneWith({ query: '' })
           },
         },

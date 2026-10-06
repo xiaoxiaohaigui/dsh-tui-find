@@ -1,17 +1,20 @@
 /**
  * The scene's keyboard dispatcher as a hook: every key the scene owns while
  * open lands here — typing edits the query, Alt+X chords drive scope/time/
- * regex/title-only/preview/copy/expand/help, arrows and pages move, Esc
- * backs out one layer (query, then screen). State arrives through the
- * deps bag: refs the handler reads and keeps fresh (React batches every
- * parsed key from one stdin chunk, so the handler can run several times
- * before a re-render — the host browser's focusRef discipline), functional
+ * regex/title-only/preview/copy/expand/help, arrows and pages move, Esc backs
+ * out one layer (query, then screen), and the configured global-entry combo
+ * closes the whole scene (the toggle half of that entry — see
+ * shortcut-combo.ts). State arrives through the deps bag: refs the handler
+ * reads and keeps fresh (React batches every parsed key from one stdin chunk,
+ * so the handler can run several times before a re-render — the host
+ * browser's focusRef discipline), functional
  * setters for the position edits, and the shared callbacks. Nothing here
  * renders.
  *
  * @module dsh-tui-find/find-input
  */
 import { t } from './i18n.js'
+import { matchesShortcut } from './shortcut-combo.js'
 import type { ScannedSession } from './core/scan.js'
 import type { SearchScope } from './core/search.js'
 import {
@@ -119,6 +122,12 @@ export interface FindInputDeps {
   copyMessage: (entry: CopyEntry, hit?: { index: number; total: number }) => void
   copySelected: () => void
   close: () => void
+  /** The effective global-entry combo (`config.shortcut`), or undefined when
+   *  the global entry is off. The scene answers it with a close: that is the
+   *  toggle half of the global entry, and it has to live here because the
+   *  host's shortcut registry never dispatches while a plugin scene owns the
+   *  keyboard (see shortcut-combo.ts). */
+  toggleCombo: string | undefined
 }
 
 export function useFindInput(deps: FindInputDeps): void {
@@ -161,11 +170,22 @@ export function useFindInput(deps: FindInputDeps): void {
     copyMessage,
     copySelected,
     close,
+    toggleCombo,
   } = deps
   const { useInput } = ui
 
   useInput(
     (input: string, key: InputKey) => {
+      // The global entry TOGGLES: the combo that opened the search UI closes
+      // it again. First branch on purpose — the toggle is the way out of
+      // every layer (menu, confirm, preview, help), where Esc only backs out
+      // one. The combo is the resolved `shortcut` value, so a remap moves
+      // both halves together, and `off` (undefined) leaves the scene with no
+      // toggle at all — matching the host, where an off entry binds nothing.
+      if (toggleCombo !== undefined && matchesShortcut(toggleCombo, input, key)) {
+        close()
+        return
+      }
       // Modifier gates. The host reports Alt as key.meta (parse-keypress
       // maps the Windows ALT modifier state onto meta; classic terminals
       // report Alt via the ESC prefix the same way). Single letters must

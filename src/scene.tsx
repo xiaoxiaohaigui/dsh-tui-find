@@ -117,12 +117,22 @@ export function FindScene(props: TuiSceneProps & {
   initialQuery?: () => string
   /** The full seed, consumed exactly once before the first render. */
   initialSeed?: () => SceneSeed | undefined
+  /** The combo the host ACCEPTED for the global entry (undefined = the entry
+   *  is off) — the toggle's close half. Absent falls back to
+   *  `config.shortcut`, which is the same value except when the host refused
+   *  the configured combo as reserved and bound the default instead
+   *  (main.tsx tracks that accepted binding). */
+  entryCombo?: string | undefined
   /** Host toast surface (0.10+, structural soft-probe in notify.ts); the
    *  footer status stays the primary in-scene feedback either way. */
   notify?: Notifier
 }): React.ReactElement {
   const { React, ui, channel, close, config, scanner } = props
   const notify = props.notify ?? noopNotify
+  // The one chord the scene answers as the global entry's toggle — see the
+  // `entryCombo` prop: the host-accepted binding where the activation knows
+  // it, the resolved config otherwise.
+  const entryCombo = props.entryCombo ?? config.shortcut
   const { Box, Text, useTerminalSize } = ui
   const { useState, useEffect, useMemo, useRef, useCallback } = React
 
@@ -688,6 +698,10 @@ export function FindScene(props: TuiSceneProps & {
     copyMessage,
     copySelected,
     close,
+    // The global entry's toggle half: the scene answers the accepted combo
+    // with a close (see find-input.ts / shortcut-combo.ts). An `off` entry
+    // leaves the scene without one.
+    toggleCombo: entryCombo,
   })
 
   // Clear a transient status after a short delay.
@@ -913,8 +927,19 @@ export function FindScene(props: TuiSceneProps & {
 
   if (mode === 'help') {
     // Render-only overlay: the keyboard stays with the find-input branches
-    // (Alt+H toggles, Esc returns, everything else is swallowed).
-    return <HelpOverlay React={React} ui={ui} columns={columns} rows={rows} splitActive={splitActive} />
+    // (Alt+H toggles, Esc returns, the global entry's combo exits, everything
+    // else is swallowed). The sheet names the EFFECTIVE entry combo — a
+    // remapped `shortcut` must not be spelled Alt+F here.
+    return (
+      <HelpOverlay
+        React={React}
+        ui={ui}
+        columns={columns}
+        rows={rows}
+        splitActive={splitActive}
+        toggleCombo={entryCombo}
+      />
+    )
   }
 
   if (mode === 'confirm' && resumeTarget !== undefined) {

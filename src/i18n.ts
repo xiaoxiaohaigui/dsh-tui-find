@@ -259,8 +259,8 @@ export const dict = {
   // takes ONE string, so this one resolves through t() at registration time
   // rather than being handed over wholesale — same language as the scene copy.
   'shortcut-desc-find': {
-    zh: '在所有会话中查找（dsh-tui-find）',
-    en: 'Find in all sessions (dsh-tui-find)',
+    zh: '在所有会话中查找；再按一次退出（dsh-tui-find）',
+    en: 'Find in all sessions; press again to close (dsh-tui-find)',
   },
 
   // ── help overlay (Alt+H) ─────────────────────────────────────────────
@@ -287,7 +287,10 @@ export const dict = {
   'help-list-page': { zh: '翻页', en: 'Page up / down' },
   'help-list-esc': { zh: '清空查询 / 退出', en: 'Clear the query / exit' },
   'help-list-help': { zh: '打开 / 关闭本帮助', en: 'Toggle this help' },
-  'help-list-global': { zh: '全局打开 /find（shortcut 配置可改键）', en: 'Open /find globally (remap via shortcut config)' },
+  'help-list-global': {
+    zh: '全局打开 / 关闭 /find（shortcut 配置可改键）',
+    en: 'Toggle /find from anywhere (remap via shortcut config)',
+  },
   'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
