@@ -204,22 +204,25 @@ export const dict = {
   'resumed': { zh: '已恢复会话', en: 'Session resumed' },
   'scan-failed': { zh: '扫描失败：{{error}}', en: 'Scan failed: {{error}}' },
   // The host toast surface (0.10+) mirrors the logger's shortcut-rejection
-  // warnings, which a TUI user cannot see in the logs.
+  // warnings, which a TUI user cannot see in the logs. Every toast here names
+  // the plugin first (the host's notification frame also carries its own
+  // messages, and the user asked which component is talking — 2026-10-06);
+  // the seam toast below has always done it.
   'toast-shortcut-fallback': {
-    zh: '快捷键 {{combo}} 被宿主拒绝，已回退 {{fallback}}',
-    en: 'Shortcut {{combo}} rejected by the host; using {{fallback}}',
+    zh: 'dsh-tui-find: 快捷键 {{combo}} 被宿主拒绝，已回退 {{fallback}}',
+    en: 'dsh-tui-find: shortcut {{combo}} rejected by the host; using {{fallback}}',
   },
   'toast-shortcut-keep': {
-    zh: '快捷键 {{combo}} 被宿主拒绝，保持原绑定',
-    en: 'Shortcut {{combo}} rejected by the host; keeping the previous binding',
+    zh: 'dsh-tui-find: 快捷键 {{combo}} 被宿主拒绝，保持原绑定',
+    en: 'dsh-tui-find: shortcut {{combo}} rejected by the host; keeping the previous binding',
   },
   // R-160: the entry is a toggle and its closing half is the scene's first
   // branch, so a combo the scene ALSO answers (`alt+h` = help, `ctrl+tab` =
   // scope) keeps the entry but loses that scene key. Advisory, not an error:
   // the binding stays exactly as configured — see src/entry-shadow.ts.
   'toast-shortcut-shadow': {
-    zh: '快捷键 {{combo}} 也是场景内的「{{action}}」：场景内按它先退出，该功能被压掉',
-    en: 'Shortcut {{combo}} is also the scene\u2019s "{{action}}": inside the scene it exits first, shadowing that action',
+    zh: 'dsh-tui-find: 快捷键 {{combo}} 也是场景内的「{{action}}」：场景内按它先退出，该功能被压掉',
+    en: 'dsh-tui-find: shortcut {{combo}} is also the scene\u2019s "{{action}}": inside the scene it exits first, shadowing that action',
   },
   // The seam helpers' give-up (seam.ts, R-107): the registration is terminal
   // for the activation, and the logger line is invisible inside a TUI — the

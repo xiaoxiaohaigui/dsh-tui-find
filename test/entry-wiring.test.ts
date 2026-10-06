@@ -387,6 +387,10 @@ describe('global shortcut entry', () => {
     // the scene action that stops responding (Alt+H is the help chord).
     expect(seams.toasts[0]).toContain('Alt+H')
     expect(seams.toasts[0]).toContain(dict['help-list-help'].en)
+    // Every toast on the host's shared notification frame names the plugin: the
+    // frame also carries the host's own messages, and the user asked which
+    // component is talking (2026-10-06).
+    expect(seams.toasts[0]).toMatch(/^dsh-tui-find: /)
 
     // A free combo says nothing: the advisory is about the overlap only.
     const free = await applyPlugin({ config: { shortcut: 'alt+g' } })
@@ -395,11 +399,12 @@ describe('global shortcut entry', () => {
 
     // …and it follows the ACCEPTED binding, not the configured value: a combo
     // the host refuses falls back to the default (which is free), so the only
-    // toast is the rejection notice.
+    // toast is the rejection notice — which names the plugin too.
     const rejected = await applyPlugin({ config: { shortcut: 'ctrl+v' } })
     expect(rejected.seams.shortcuts.map(entry => entry.combo)).toEqual([DEFAULT_SHORTCUT])
     expect(rejected.seams.toasts).toHaveLength(1)
     expect(rejected.seams.toasts[0]).toContain('ctrl+v')
+    expect(rejected.seams.toasts[0]).toMatch(/^dsh-tui-find: /)
   })
 })
 
