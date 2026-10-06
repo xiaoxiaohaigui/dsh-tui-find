@@ -34,6 +34,7 @@ import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { copyToClipboard } from './clipboard.js'
 import type { ResolvedConfig } from './config.js'
+import { sceneKeyShadow } from './entry-shadow.js'
 import { t } from './i18n.js'
 import type { Notifier } from './notify.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
@@ -71,6 +72,7 @@ import {
 import { ConfirmPane, HintLine, SearchCard, composeHeaderRight, composeListHint, composeReaderHint } from './find-chrome.js'
 import { ListView } from './find-list.js'
 import { PreviewPane, ReaderPane, usePreviewModel } from './find-preview.js'
+import { formatShortcut } from './shortcut-combo.js'
 import { useFindInput } from './find-input.js'
 import { useSessionSweep } from './find-sweep.js'
 
@@ -739,7 +741,19 @@ export function FindScene(props: TuiSceneProps & {
   })
   const header = spreadRow(` ${t('scene-title')}`, headerRight, Math.max(0, columns - 1))
 
-  const listHint = composeListHint(columns, splitActive)
+  // R-160, the durable half of the advisory: when the configured global entry
+  // has taken one of the scene's own keys, the hint line names it. The toast
+  // raised at registration time is the host's fire-and-forget surface (a real
+  // 10-06 run: the binding landed from a settings write during a plugin
+  // reload, and the delivery was dropped — the user saw nothing), and with
+  // `shortcut: alt+h` the help sheet's own marked row is unreachable, because
+  // that key closes the scene. The legend is repainted with every frame.
+  const entryShadow = sceneKeyShadow(entryCombo)
+  const listHint = composeListHint(
+    columns,
+    splitActive,
+    entryShadow === undefined ? undefined : entryShadow.helpKeys ?? formatShortcut(entryCombo ?? ''),
+  )
 
   // The open menu's overlay: a full-viewport click-catcher (click/right-click
   // anywhere outside closes) plus the clamped anchored panel — as SIBLINGS,

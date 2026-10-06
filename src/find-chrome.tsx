@@ -48,10 +48,18 @@ export function HintLine(props: { React: TuiSceneProps['React']; ui: RowUi; text
  * last segments always render, middle segments drop in reverse priority
  * order when the full line would exceed the columns budget. `splitActive`
  * picks the reader segment's vocabulary (focus arrow vs. Alt+P open).
+ *
+ * `shadowedKey` names a scene key the configured global entry has taken over
+ * (R-160, see entry-shadow.ts); the advisory sits second — right behind the
+ * first segment — because it explains why one of the visible keys does
+ * something else, and a segment that got dropped for width would explain
+ * nothing. It costs the tail segments one slot, which is the right trade for
+ * a user whose remap took a scene key over.
  */
-export function composeListHint(columns: number, splitActive = false): string {
+export function composeListHint(columns: number, splitActive = false, shadowedKey?: string): string {
   const segments = [
     t('hint-seg-resume'),
+    ...(shadowedKey === undefined ? [] : [t('hint-seg-shadowed', { key: shadowedKey })]),
     t('hint-seg-scope'),
     // The reader is always on screen in split, so the pane segment names the
     // focus arrow there; classic keeps Alt+P (the only way to open it).

@@ -8,7 +8,7 @@
  * resort below even the mandatory pair.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { composeReaderHint } from '../src/find-chrome.js'
+import { composeListHint, composeReaderHint } from '../src/find-chrome.js'
 import { setLangOverride } from '../src/i18n.js'
 import { displayWidth } from '../src/width.js'
 
@@ -57,6 +57,43 @@ describe('reader hint composition', () => {
           expect(line).not.toMatch(/\n/)
           expect(displayWidth(line)).toBeLessThanOrEqual(Math.max(1, columns - 2))
         }
+      }
+    }
+  })
+})
+
+describe('list hint composition (the entry-key advisory)', () => {
+  it('says nothing about the entry while the combo is free', () => {
+    setLangOverride('zh')
+    const line = painted(composeListHint(120, false))
+    expect(line).toContain('Enter 恢复')
+    expect(line).not.toContain('入口占用')
+  })
+
+  it('names the scene key the global entry has taken (R-160)', () => {
+    setLangOverride('zh')
+    // `shortcut: alt+h` cannot be explained by the help sheet — that very key
+    // closes the scene — so the hint line carries it.
+    expect(painted(composeListHint(120, false, 'Alt+H'))).toContain('Alt+H 已被入口占用')
+    // The advisory sits second: at every width that still paints more than the
+    // first segment it is the one that survives, and only the tail drops. (A
+    // terminal narrow enough to cut it is narrow enough to cut every middle
+    // segment — the row is a prefix fill, not a per-segment priority list.)
+    for (const columns of [120, 100, 80]) {
+      setLangOverride('zh')
+      expect(painted(composeListHint(columns, false, 'Alt+R')), `${columns} columns`).toContain(
+        'Alt+R 已被入口占用',
+      )
+    }
+  })
+
+  it('keeps the advisory and the keys row on exactly one line at every width', () => {
+    for (const lang of ['zh', 'en'] as const) {
+      setLangOverride(lang)
+      for (let columns = 1; columns <= 140; columns++) {
+        const line = painted(composeListHint(columns, false, 'Alt+H'))
+        expect(line).not.toMatch(/\n/)
+        expect(displayWidth(line)).toBeLessThanOrEqual(Math.max(1, columns - 2))
       }
     }
   })

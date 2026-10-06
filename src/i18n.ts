@@ -333,6 +333,14 @@ export const dict = {
   'help-footer': { zh: '**Esc** 返回', en: '**Esc** back' },
   // New list hint segment for the main scene's hint line (Alt+H wiring).
   'hint-seg-help': { zh: '**Alt+H** 帮助', en: '**Alt+H** help' },
+  // R-160 (真机 10-06 追加): the entry combo took one of the scene's own keys.
+  // The toast raised when the binding lands is the host's fire-and-forget
+  // surface — a real run showed it can be missed outright (a settings write
+  // rebinds during a plugin reload, and the host drops sink-less deliveries) —
+  // and with `shortcut: alt+h` the help sheet's own marked row is unreachable
+  // (that very key closes the scene). The hint line is the durable channel:
+  // it is repainted with the scene and names the taken key.
+  'hint-seg-shadowed': { zh: '**{{key}}** 已被入口占用', en: '**{{key}}** taken by the entry' },
 } as const satisfies Record<string, { zh: string; en: string }>
 
 export type I18nKey = keyof typeof dict

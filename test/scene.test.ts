@@ -713,6 +713,39 @@ describe('global entry toggle (the entry combo closes the scene)', () => {
     }
   })
 
+  it('names the taken scene key on the hint line — the channel that cannot be dropped (R-160)', async () => {
+    // The registration toast is the host's fire-and-forget surface and a real
+    // 10-06 run never saw it (the binding landed from a settings write during
+    // a plugin reload); with `shortcut: alt+h` the help sheet's marked row is
+    // unreachable too, because that key closes the scene. So the hint line —
+    // repainted with every frame, inside the scene the user is looking at —
+    // carries the advisory.
+    //
+    // Whitespace-normalized: the captured frame is stripped of escapes, and
+    // ink paints the row's spans with cursor moves, so the spaces between
+    // words never reach the stream (the harness's documented diff quirk).
+    const painted = (text: string): string => text.replace(/\s+/g, '')
+
+    const shadowed = await mount(sessionWithMessages(['needle body']), { query: '', shortcut: 'alt+r' })
+    try {
+      shadowed.toggleWidth()
+      await waitFor()
+      expect(painted(shadowed.all())).toContain('Alt+Rtakenbytheentry')
+    } finally {
+      shadowed.dispose()
+    }
+
+    // A free combo says nothing anywhere: the advisory is about the overlap.
+    const free = await mount(sessionWithMessages(['needle body']), { query: '' })
+    try {
+      free.toggleWidth()
+      await waitFor()
+      expect(painted(free.all())).not.toContain('takenbytheentry')
+    } finally {
+      free.dispose()
+    }
+  })
+
   it('exits from the help layer too — the toggle is not layer-scoped', async () => {
     const harness = await mount(sessionWithMessages(['needle body']), { query: '' })
     try {
