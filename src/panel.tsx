@@ -42,6 +42,7 @@ import { wheelRows, type RowUi } from './find-types.js'
 import type { FindPanelDriver } from './panel-model.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
+import { hostStringWidth } from './vendor/host-width.js'
 import { displayWidth, tailWidth, truncateWidth } from './width.js'
 
 /** Panel id SUFFIX only: the host assigns the final id when it accepts the
@@ -54,16 +55,22 @@ export const PANEL_ID = 'search'
 /** The panel API generation this module is written against — the host rejects
  *  any other value outright (`TUI_PANEL_API_VERSION`). */
 export const PANEL_API_VERSION = 1
-/** PanelBar glyph. Display width 1 in the host's own `stringWidth`, which is
- *  what the descriptor validator measures (a 2-cell glyph is rejected). */
+/** Panel icon: display width 1 in the host's own `stringWidth` — the measurement
+ *  the descriptor validator uses (a 2-cell glyph is rejected). 0.14.0's tab bar
+ *  no longer draws it (PanelBar shows a centered title plus status dots); the
+ *  field is still carried and still rendered by the `/panel` picker and by the
+ *  settings picker's row for this panel (R-174). */
 export const PANEL_ICON = '⌕'
 /** Below this many columns the host shows its "too narrow" notice instead of
  *  mounting the component — the list's own budget assumes roughly this. */
 export const PANEL_MIN_COLUMNS = 28
-/** PanelBar order: after the builtins (todo 10 · info 15 · jobs 20 · btw 22 ·
- *  trajectory 25 · agents 30 · workspace 35 · companion 40, as of the
- *  post-0.13.0 main). New builtin panels keep landing below this, so 50 keeps
- *  the plugin's tab at the end of the bar. */
+/** Ordering for `panelStore.list()`: builtins sort by `order` and plugins follow
+ *  them, and that list is what the `/settings` panel picker draws — so 50 (past
+ *  todo 10 · info 15 · jobs 20 · btw 22 · trajectory 25 · agents 30 · workspace
+ *  35 · companion 40, as of 0.14.0) keeps this plugin below the builtins there.
+ *  It does NOT order the tab bar: tabs follow the enabled CSV, to which a
+ *  registration only ever APPENDS — the position of this tab is decided by the
+ *  user's list, not by this number (R-174). */
 export const PANEL_ORDER = 50
 /** The tab title, resolved through t() at registration (the descriptor takes
  *  a literal — plugins have no i18n-key form). */
@@ -98,6 +105,13 @@ export interface PanelKeyFlags {
   readonly ctrl?: boolean
   readonly meta?: boolean
   readonly shift?: boolean
+  /** Cmd/Win. Only ever set by a kitty-protocol (CSI-u) terminal, where the
+   *  host's `input-event.js` fills it in — and the sidebar passes it THROUGH
+   *  (`useSidePanel` hands only ctrl/meta chords back to the chat), so a
+   *  Cmd-chord really does arrive here as a plain-looking key. The scene's own
+   *  rules test it (`find-input.isPlainReturn`/`plain`), and so must these
+   *  (R-171). */
+  readonly super?: boolean
   /** Runtime-only (see above). */
   readonly backspace?: boolean
   readonly delete?: boolean
@@ -263,9 +277,9 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
           }
           if (key.return_ === true) {
             // Modifier-free only, the host's #110 rule the scene applies to
-            // its own commits (`isPlainReturn`): a shift/ctrl/alt Enter is a
-            // different intent and must not take the scene over.
-            if (key.ctrl === true || key.meta === true || key.shift === true) return
+            // its own commits (`isPlainReturn`): a shift/ctrl/alt/super Enter
+            // is a different intent and must not take the scene over.
+            if (key.ctrl === true || key.meta === true || key.shift === true || key.super === true) return
             driver.openSelected()
             event.preventDefault()
             return
@@ -292,8 +306,10 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
             return
           }
           // Ctrl/Alt chords are never delivered here (the host keeps them for
-          // its global actions); defensive only.
-          if (key.ctrl === true || key.meta === true) return
+          // its global actions), but `super` is (kitty CSI-u; see PanelKeyFlags)
+          // and a Cmd/Win chord is not query text — the scene's `plain` rule
+          // (R-171).
+          if (key.ctrl === true || key.meta === true || key.super === true) return
           if (input.length > 0) {
             driver.appendInput(input)
             event.preventDefault()
@@ -346,12 +362,19 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
     const titleWidth = Math.max(1, Math.min(48, contentWidth - 4))
     const hitWidth = Math.max(1, contentWidth - 4)
     const caret = focused ? <Text inverse>{' '}</Text> : null
-    const queryTail = tailWidth(snapshot.query, Math.max(0, contentWidth - 3))
+    // R-172: the query row is painted by the HOST's renderer, and the caret
+    // column declared to it has to be the host's own measurement — one column
+    // off is a candidate window one cell away from the caret. Both the tail's
+    // budget and the column therefore use `hostStringWidth` when it is
+    // reachable, and the repo's table (the pre-fix behaviour, correct down to
+    // grapheme-level emoji and combining marks) when it is not.
+    const measure = hostStringWidth ?? displayWidth
+    const queryTail = tailWidth(snapshot.query, Math.max(0, contentWidth - 3), measure)
     // Caret column relative to the query row's own box: `⌕ ` (2 cells) plus the
     // visible tail, which is where the row renders the caret. `active` follows
     // focus, and the host hook clears only when the parked node is ours, so
     // losing focus hands the cursor back without clobbering another declarer.
-    const caretColumn = 2 + (snapshot.query.length === 0 ? 0 : displayWidth(queryTail))
+    const caretColumn = 2 + (snapshot.query.length === 0 ? 0 : measure(queryTail))
     const declareCursor =
       useHostDeclaredCursor !== undefined
         ? useHostDeclaredCursor({ line: 0, column: caretColumn, active: focused })

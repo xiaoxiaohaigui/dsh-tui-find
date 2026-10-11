@@ -4,7 +4,7 @@
  * and the handoff into the full-screen scene. No React here — the component
  * only renders this store (panel-view.test.ts mounts it).
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveConfig, type Config } from '../src/config.js'
 import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/scan.js'
 import { t } from '../src/i18n.js'
@@ -14,6 +14,15 @@ import { SweepGate } from '../src/sweep-gate.js'
 
 // No test ever writes the real watermark journal.
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
+
+/** The file freezes `Date.now` to drive `SessionFlush`'s schedule; vitest does
+ *  not restore spies on its own, so an assertion that fails mid-test used to
+ *  leave every LATER test in this file on a frozen clock — and the flush gate
+ *  reads exactly that clock, turning one real regression into "time never
+ *  advances" for the rest of the run (R-175). */
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 interface ScanCall {
   options: ScanOptions
@@ -168,6 +177,43 @@ describe('FindPanelDriver — the sweep', () => {
     fixture.scanner.calls[1]!.resolve([stubSession('b', { modifiedAt: 400 }), stubSession('a')])
     await flush()
     expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:b', 's:a'])
+  })
+
+  it('holds the landed list across a re-sweep instead of collapsing it (R-167)', async () => {
+    // The re-sweep's first arrival is ALWAYS due (SessionFlush's clock starts at
+    // 0) and is a PREFIX of the new pass. Publishing it replaced the whole list
+    // with that one session — and the rowId anchor below then found nothing and
+    // clamped, so the user's selection was stranded on whatever arrived first.
+    const fixture = makeDriver()
+    fixture.driver.attach()
+    fixture.scanner.calls[0]!.resolve([
+      stubSession('c', { modifiedAt: 300 }),
+      stubSession('b', { modifiedAt: 200 }),
+      stubSession('a', { modifiedAt: 100 }),
+    ])
+    await flush()
+    fixture.driver.select(2)
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:c', 's:b', 's:a'])
+
+    fixture.driver.detach()
+    fixture.driver.attach()
+    const second = fixture.scanner.calls[1]!
+    second.options.onSession?.(stubSession('d', { modifiedAt: 400 }))
+    // The landed list and the selection are untouched while the pass runs…
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:c', 's:b', 's:a'])
+    expect(fixture.snapshot().selected).toBe(2)
+
+    // …and the settled pass replaces it in one step, the anchor following `a`
+    // to its new index rather than clamping to the top.
+    second.resolve([
+      stubSession('d', { modifiedAt: 400 }),
+      stubSession('c', { modifiedAt: 300 }),
+      stubSession('b', { modifiedAt: 200 }),
+      stubSession('a', { modifiedAt: 100 }),
+    ])
+    await flush()
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:d', 's:c', 's:b', 's:a'])
+    expect(fixture.snapshot().selected).toBe(3)
   })
 
   it('streams sessions in as the sweep yields them', async () => {
@@ -501,6 +547,30 @@ describe('FindPanelDriver — the scope', () => {
     expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local', 'm:local:0'])
   })
 
+  it('keeps the status row naming the scope the list was built with (R-170)', async () => {
+    // `publish` used to read the live config, so a settings edit plus a return
+    // to the tab produced "Scope: All sessions" above a list still built under
+    // `repo` — the attach publishes before any derivation. The scope now travels
+    // with the rows: only the derivation that rebuilds them may move it.
+    const fixture = await ready()
+    expect(fixture.snapshot().scope).toBe('repo')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local'])
+
+    fixture.setConfig({ defaultScope: 'all' })
+    fixture.driver.detach()
+    fixture.driver.attach()
+    expect(fixture.snapshot().scope).toBe('repo')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local'])
+
+    fixture.scanner.calls[1]!.resolve([
+      stubSession('local', { modifiedAt: 300 }),
+      stubSession('foreign', { modifiedAt: 200, cwd: 'P:\\elsewhere' }),
+    ])
+    await flush()
+    expect(fixture.snapshot().scope).toBe('all')
+    expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:local', 's:foreign'])
+  })
+
   it('seeds the resolved scope before anything publishes (R-156)', () => {
     // The store's module-level empty snapshot cannot read config, so the driver
     // seeds it in its constructor: the panel's FIRST painted frame already names
@@ -563,7 +633,6 @@ describe('FindPanelDriver — selection', () => {
     call.options.onSession?.(stubSession('z', { modifiedAt: 900 }))
     expect(fixture.snapshot().rows.map(row => row.rowId)).toEqual(['s:z', 's:a'])
     expect(fixture.snapshot().selected).toBe(1)
-    now.mockRestore()
   })
 
   it('folds a hit card from the keyboard and unfolds it again', async () => {
@@ -738,6 +807,27 @@ describe('FindPanelDriver — the scene handoff', () => {
     fixture.scanner.calls[1]!.resolve([stubSession('a')])
     await flush()
     expect(fixture.snapshot().phase).toBe('ready')
+    // …and the reason goes with the failure it described (R-169): the list has
+    // been rebuilt, so a red "scan failed: boom" over a ready panel is stale.
+    expect(fixture.snapshot().notice).toBeUndefined()
+  })
+
+  it('keeps a refused open\u2019s notice across a successful sweep (R-169)', async () => {
+    // The other side of the boundary: a refused open is a fact about the key the
+    // user pressed, not about the index — a sweep landing right after it must not
+    // wipe it (only a query edit does).
+    const fixture = makeDriver()
+    fixture.driver.attach()
+    const call = fixture.scanner.calls[0]!
+    call.options.onSession?.(stubSession('a'))
+    fixture.failNextOpen()
+    expect(fixture.driver.openSelected()).toBe(false)
+    expect(fixture.snapshot().notice?.text).toBe(t('panel-open-failed'))
+
+    call.resolve([stubSession('a')])
+    await flush()
+    expect(fixture.snapshot().phase).toBe('ready')
+    expect(fixture.snapshot().notice?.text).toBe(t('panel-open-failed'))
   })
 
   it('is a no-op on an empty list', async () => {
@@ -832,15 +922,25 @@ describe('FindPanelDriver — the single-sweep slot', () => {
     expect(gate.current()).toBeUndefined()
   })
 
-  it('starts no sweep at all when a higher-priority owner holds the slot', () => {
-    // No higher-priority owner exists today; the rule is pinned through a
-    // stub gate so a future sweeper's rank cannot silently break it.
+  it('skips a sweep the gate refuses, and asks again on the next attach (R-175)', () => {
+    // The refusal branch is DEFENSIVE: `SweepOwner` is a closed union and the
+    // panel holds the top rank, so the real SweepGate cannot refuse `'panel'`
+    // today. Pinned through a stub so a future sweeper's rank cannot slip past
+    // it — and pinned as a retry rather than a latched state: "refused once"
+    // must not leave the panel cold and silent for the rest of the activation
+    // (which is what the old shape would have baked in as expected behaviour).
+    let refuse = true
     const gate = {
-      claim: vi.fn(() => undefined),
+      claim: vi.fn(() => (refuse ? undefined : { lost: () => false, release: () => {} })),
     } as unknown as SweepGate
     const fixture = makeDriver({}, { gate })
     fixture.driver.attach()
     expect(fixture.scanner.calls).toEqual([])
     expect(fixture.snapshot().phase).toBe('cold')
+
+    refuse = false
+    fixture.driver.detach()
+    fixture.driver.attach()
+    expect(fixture.scanner.calls).toHaveLength(1)
   })
 })

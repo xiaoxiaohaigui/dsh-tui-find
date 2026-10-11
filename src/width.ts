@@ -79,16 +79,26 @@ export function truncateWidth(text: string, maxWidth: number): string {
 /**
  * Keep the END of a string within a display width, CJK-aware (`…` prefix
  * included in the budget) — what a single-line, caret-at-end editor shows.
+ *
+ * `measure` overrides the width model and defaults to this module's table.
+ * Callers whose layout the HOST also measures have to pass the host's own
+ * function (`vendor/host-width.ts`, the panel's IME cursor row): a budget cut
+ * with a different table than the renderer's leaves the row one cell wide and
+ * the caret declaration lands off the painted text (R-172).
  */
-export function tailWidth(text: string, maxWidth: number): string {
+export function tailWidth(
+  text: string,
+  maxWidth: number,
+  measure: (text: string) => number = displayWidth,
+): string {
   if (maxWidth <= 0) return ''
-  if (displayWidth(text) <= maxWidth) return text
+  if (measure(text) <= maxWidth) return text
   const characters = [...text]
   let width = 0
   let out = ''
   for (let at = characters.length - 1; at >= 0; at--) {
     const character = characters[at]!
-    const w = charWidth(character)
+    const w = measure(character)
     if (width + w > maxWidth - 1) break
     width += w
     out = character + out

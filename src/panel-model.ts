@@ -43,9 +43,10 @@ export interface PanelNotice {
   readonly tone: 'info' | 'error'
   /** Whether `text` names the current scope in its own words — `scope-switched`
    *  does ("Scope switched to …"), and the status row must not repeat it. Every
-   *  other notice is LED by the row's scope tag (R-165): the error notices stay
-   *  until the next query edit or sweep, and the scope must not leave the screen
-   *  with them (R-156's "the row always names the current one"). */
+   *  other notice is LED by the row's scope tag (R-165): a notice outlives the
+   *  next query edit (and, for `scan-failed`, the next sweep that LANDS — the
+   *  failure it names is gone by then, R-169), so the scope must not leave the
+   *  screen with it (R-156's "the row always names the current one"). */
   readonly namesScope: boolean
 }
 
@@ -54,10 +55,12 @@ export interface PanelNotice {
 export interface PanelSnapshot {
   readonly phase: 'cold' | 'indexing' | 'ready' | 'failed'
   readonly query: string
-  /** The scope the list on screen was built with — Tab's session override when
+  /** The scope the list on screen was DERIVED with — Tab's session override when
    *  there is one, the configured `defaultScope` otherwise. The status row
    *  renders it (R-156): the switch's notice dies on the next query edit, and
-   *  a panel that has been typed into must still say which scope it searched. */
+   *  a panel that has been typed into must still say which scope it searched.
+   *  It follows `rows`/`hits`, not the live config: a settings edit must not
+   *  relabel a list that was built under the previous scope (R-170). */
   readonly scope: SearchScope
   /** Live sweep progress; undefined once the sweep has landed. */
   readonly progress: ScanProgress | undefined
@@ -166,6 +169,24 @@ export class FindPanelDriver {
   private hiddenSubagents = 0
   private regexRejected: RegexRejection | undefined
   private notice: PanelNotice | undefined
+  /** The notice the LAST failed sweep left, by identity: the one notice a
+   *  successful sweep retires (R-169). A refused scene open re-installs this
+   *  same object (see `openSelected`), so the failure reason still survives the
+   *  restart it triggers — and disappears with the failure itself. */
+  private scanFailure: PanelNotice | undefined
+  /** The scope `rows`/`hits` were derived with (R-170); undefined until the
+   *  first derivation, when {@link publish} falls back to the configured one
+   *  (the constructor's seed, R-156). */
+  private derivedScope: SearchScope | undefined
+  /** Whether the running sweep may stream its partial arrivals into the list.
+   *  A COLD pass does — results appearing as logs decode is the point of the
+   *  flush schedule. A pass over a list that is already on screen must not:
+   *  `SessionFlush`'s first arrival is always "due", and that partial is a
+   *  PREFIX of the new pass, so publishing it collapses the list to the first
+   *  decoded session and the rowId anchor below then clamps — the user's
+   *  selection is stranded on whatever arrived first (R-167). The landed result
+   *  replaces the list in one step instead (`beginSweep`'s settle). */
+  private streamPartials = true
   /** The repo scope's cwd, pushed by the view from the host's read-only
    *  session snapshot (the channel cwd the scene reads). */
   private repoCwd: string | undefined
@@ -445,6 +466,10 @@ export class FindPanelDriver {
     const controller = new AbortController()
     this.controller = controller
     this.phase = 'indexing'
+    // R-167: a pass that starts on top of a landed list keeps that list until
+    // it lands. An empty accumulation is a cold index building from nothing —
+    // there it streams (see `streamPartials`).
+    this.streamPartials = this.sessions.length === 0
     this.notice = undefined
     this.publish()
     const config = this.options.config()
@@ -465,6 +490,9 @@ export class FindPanelDriver {
             if (this.superseded(controller)) return
             const flushed = flush.push(session)
             if (flushed === undefined) return
+            // A re-sweep over a landed list: the partial stays out of the store
+            // (R-167); the settle below publishes the finished pass in one go.
+            if (!this.streamPartials) return
             this.sessions = flushed
             this.derive()
           },
@@ -475,6 +503,11 @@ export class FindPanelDriver {
         this.sessions = result
         this.phase = 'ready'
         this.progress = undefined
+        // The failure this notice named is over (R-169): a scan failure must not
+        // outlive the sweep that recovered from it — the list is rebuilt and
+        // there is nothing left for the user to act on.
+        if (this.notice === this.scanFailure) this.notice = undefined
+        this.scanFailure = undefined
         this.derive()
         this.settle()
         this.announceSettled(false)
@@ -493,11 +526,12 @@ export class FindPanelDriver {
         this.claim = undefined
         this.phase = 'failed'
         this.progress = undefined
-        this.notice = {
+        this.scanFailure = {
           text: t('scan-failed', { error: error instanceof Error ? error.message : String(error) }),
           tone: 'error',
           namesScope: false,
         }
+        this.notice = this.scanFailure
         this.derive()
         this.announceSettled(true)
       })
@@ -563,6 +597,11 @@ export class FindPanelDriver {
     const config = this.options.config()
     const recentMode = this.query.trim().length === 0
     const scope: SearchScope = this.scope()
+    // R-170: the snapshot's scope is the one this derivation used. `publish`
+    // reads it back instead of the live config, so a settings edit cannot make
+    // the status row name a scope the rows on screen were not built with —
+    // only the next derivation (a flush, a settle, a keystroke) moves it.
+    this.derivedScope = scope
     const sinceMs = sinceMsFor(config.defaultTime)
     this.regexRejected =
       config.regex && !recentMode ? regexRejection(this.query.trim(), config.caseSensitive) : undefined
@@ -608,7 +647,10 @@ export class FindPanelDriver {
     this.store.set({
       phase: this.phase,
       query: this.query,
-      scope: this.scope(),
+      // Not `this.scope()`: the row and the list must agree (R-170). Before the
+      // first derivation there is nothing to agree with, so the configured
+      // default is published — the R-156 seed.
+      scope: this.derivedScope ?? this.scope(),
       progress: this.progress,
       hiddenSubagents: this.hiddenSubagents,
       hits: this.hits,

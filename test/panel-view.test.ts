@@ -357,6 +357,23 @@ describe('find panel component', () => {
     }
   })
 
+  it('leaves a Cmd/Win chord to the host, neither typing it nor opening on it (R-171)', async () => {
+    // The sidebar hands only ctrl/meta chords back to the chat, so a
+    // kitty-protocol terminal's `super` DOES reach this dispatcher — and CSI-u
+    // fills `input` with the key's NAME, so treating Cmd+N as query text would
+    // type an "n" the user never pressed. The scene's own rules test `super`
+    // (`isPlainReturn` / `plain`); the panel's must too.
+    const view = await mountPanel({ sessions: [stubSession('a'), stubSession('b')] })
+    try {
+      expect(view.send('n', { super: true })).toBe(false)
+      expect(view.driver.getSnapshot().query).toBe('')
+      expect(view.send('', { return_: true, super: true })).toBe(false)
+      expect(view.opened).toEqual([])
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('switches the search scope from Tab, keeping the fold on Shift+Tab', async () => {
     // The panel owns only two modifier keys: the sidebar hands every ctrl/alt
     // chord to the chat before a plugin panel sees it, so Tab/Shift+Tab are the
@@ -464,6 +481,11 @@ describe('find panel component', () => {
       // scope it started in.
       expect(view.driver.scope()).toBe('repo')
 
+      // Paging is exercised through a synthetic event: the 0.13.0/0.14.0 host
+      // never delivers these two keys to a panel at all (its pageUp/pageDown
+      // guard returns before the sidebar's only dispatch point — R-168), so what
+      // this pins is that the branch CONSUMES them, kept for the host release
+      // that fixes that. The README documents them as inert meanwhile.
       expect(view.send('', { pageUp: true })).toBe(true)
       expect(view.driver.getSnapshot().selected).toBe(0)
     } finally {
@@ -615,8 +637,50 @@ describe('find panel component', () => {
     }
   })
 
-  it('hands the cursor back while the panel is not focused', async () => {
+  it('measures the declared caret column with the host\u2019s own width function (R-172)', async () => {
+    // The host paints the query row and parks the terminal cursor at the column
+    // the panel declares, so the two have to share one width model. The repo's
+    // table disagrees with the host's on combining marks and emoji — measured
+    // through the host module: `⭐` is host 2 / repo 1, `a\u0301` host 1 / repo 2
+    // — and one column is the difference between a candidate window at the caret
+    // and one cell away from it.
     const calls: Array<{ declaration: unknown; node?: unknown }> = []
+    const context = loadCursorContext()
+    const view = await mountPanel({
+      wrap: element =>
+        React.createElement(
+          context.Provider,
+          {
+            value: (declaration, node) => {
+              calls.push({ declaration, node })
+            },
+          },
+          element,
+        ),
+    })
+    const declared = (): { relativeX: number; relativeY: number; node: unknown } | undefined =>
+      calls.filter(call => call.declaration !== null).at(-1)?.declaration as
+        | { relativeX: number; relativeY: number; node: unknown }
+        | undefined
+    try {
+      // Host-wide, repo-narrow: the repo table would say column 3.
+      view.send('⭐')
+      await waitUntil(() => declared()?.relativeX === 4)
+      expect(declared()?.relativeX).toBe(4)
+
+      // The other direction: `a` + a combining acute is ONE terminal cell but two
+      // in the repo table (which would say column 4).
+      view.send('', { backspace: true })
+      view.send('a')
+      view.send('\u0301')
+      await waitUntil(() => declared()?.relativeX === 3)
+      expect(declared()?.relativeX).toBe(3)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('hands the cursor back while the panel is not focused', async () => {    const calls: Array<{ declaration: unknown; node?: unknown }> = []
     const context = loadCursorContext()
     const view = await mountPanel({
       focused: false,
