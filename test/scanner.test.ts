@@ -7,7 +7,7 @@
  * append discipline) to pin incremental decode: resume proofs, torn-tail
  * completion, shrink fallback, and the journal's record-only posture.
  */
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -943,6 +943,163 @@ describe('offset watermark (incremental decode)', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+  it('re-proves a token hit committed inside its own stamp tick', async () => {
+    // The token is `bytes:mtimeMs:ctimeMs`, and a stamp is a clock reading
+    // with a finite tick (~0.5 ms steps on the Windows runner that went red,
+    // run 38241978120): a same-size rewrite stamped inside the SAME tick as
+    // the write the entry was committed under leaves all three components
+    // bit-identical, so the token alone cannot be trusted for an entry whose
+    // stamp was still fresh at commit time. Such an entry is not served
+    // blind — it goes through the resume path, whose complete-prefix byte
+    // proof confirms it (this case: nothing re-decoded) or overturns it (the
+    // case below), and the re-committed entry is served warm once the tick
+    // has closed (see the guard's negative control below).
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      const id = 'a7000000-0000-4000-8000-000000000007'
+      writeSession(
+        root,
+        id,
+        Buffer.from(
+          [headerLine(id, 'D:/work/wm-tick'), env('user/message', 1, 'written right before the sweep')].join('\n') + '\n',
+          'utf8',
+        ),
+        'session.jsonl',
+      )
+      const scanner = new SessionScanner()
+      const first = await scanner.scan({ sessionRoot: root })
+      expect(first[0]!.messages.map(m => m.text)).toEqual(['written right before the sweep'])
+
+      // Nothing was written between the two sweeps, so the token matches — but
+      // the entry was committed microseconds after its own write, i.e. inside
+      // the tick that stamped it. Premise of this case, asserted like the
+      // rewrite cases above assert theirs.
+      expect(Date.now() - statSync(first[0]!.path).ctimeMs).toBeLessThan(1000)
+
+      let resumed = -1
+      let decoded = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          resumed = progress.resumed
+          decoded = progress.decodedBytes
+        },
+      })
+      // Re-proved through the resume path: resumed counts it, and the prefix
+      // proof confirmed the fold so not one byte was decoded.
+      expect(resumed).toBe(1)
+      expect(decoded).toBe(0)
+      expect(second[0]!.messages.map(m => m.text)).toEqual(['written right before the sweep'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not serve a token hit whose bytes moved under the sweep', async () => {
+    // The other half of the tick guard: the re-proof is a CONTENT proof. A
+    // write landing after the sweep's stat but inside the same stamp tick is
+    // invisible to the token — the aliasing case above — so the sweep holds a
+    // stat that still matches the cached entry while the file already carries
+    // a same-size rewrite. The retired text is the one outcome that must
+    // never be delivered; the bytes on disk are the answer. Driven from
+    // `onSession`, which runs mid-sweep: the first session to resolve
+    // rewrites the log the sweep resolves LAST, whose stamps were captured by
+    // the enumeration that already ran.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    try {
+      // Equal byte length on purpose: the size is part of the token the sweep
+      // was handed, and a size change would be an ordinary token miss.
+      const retired = 'retired:' + 'r'.repeat(24)
+      const installed = 'aliased:' + 'a'.repeat(24)
+      expect(Buffer.byteLength(installed)).toBe(Buffer.byteLength(retired))
+      const logOf = (id: string, text: string): Buffer =>
+        Buffer.from([headerLine(id, 'D:/work/wm-alias'), env('user/message', 1, text)].join('\n') + '\n', 'utf8')
+
+      const ids = [1, 2, 3, 4].map(n => `b6000000-0000-4000-8000-00000000000${n}`)
+      for (const id of ids) writeSession(root, id, logOf(id, 'decoy body'), 'session.jsonl')
+      // The rewrite must land after the enumeration stat but before its own
+      // turn, so it targets the log the sweep resolves last.
+      const order = [...enumerateLogs(root).keys()]
+      expect(order).toEqual([...enumerateLogs(root).keys()])
+      const target = order.at(-1)!
+      const targetPath = join(root, 'ws', target, 'session.jsonl')
+      writeFileSync(targetPath, logOf(target, retired))
+
+      const scanner = new SessionScanner()
+      const first = await scanner.scan({ sessionRoot: root })
+      expect(first.find(s => s.id === target)!.messages.map(m => m.text)).toEqual([retired])
+      expect(Date.now() - statSync(targetPath).ctimeMs).toBeLessThan(1000)
+
+      const delivered: string[] = []
+      let rewrote = false
+      let decoded = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onSession: session => {
+          delivered.push(session.id)
+          if (rewrote) return
+          rewrote = true
+          writeFileSync(targetPath, logOf(target, installed))
+        },
+        onProgress: progress => {
+          decoded = progress.decodedBytes
+        },
+      })
+      // The rewrite landed after the enumeration stat the token check reads
+      // (the target's own turn came later), so the token still matched.
+      expect(rewrote).toBe(true)
+      expect(delivered[0]).not.toBe(target)
+      expect(second.find(s => s.id === target)!.messages.map(m => m.text)).toEqual([installed])
+      // The stale fold was refused and the log decoded from zero: the whole
+      // file's bytes, and nothing else in the sweep decoded anything.
+      expect(decoded).toBe(statSync(targetPath).size)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('serves a token hit with no read once the stamp tick has closed', async () => {
+    // The guard's negative control: a stamp whose tick provably closed before
+    // the content was read cannot be aliased by any later write (every write
+    // from then on is stamped strictly later), so the sweep must keep serving
+    // the frozen snapshot with zero reads — the module's core promise. The
+    // clock is placed ten minutes after the write, standing in for the
+    // ordinary case: an idle log, stat-ed long after its last write.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
+    const base = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(base + 600_000)
+    try {
+      const id = 'a8000000-0000-4000-8000-000000000008'
+      writeSession(
+        root,
+        id,
+        Buffer.from(
+          [headerLine(id, 'D:/work/wm-settled'), env('user/message', 1, 'a settled log')].join('\n') + '\n',
+          'utf8',
+        ),
+        'session.jsonl',
+      )
+      const scanner = new SessionScanner()
+      const first = await scanner.scan({ sessionRoot: root })
+      let resumed = -1
+      let decoded = -1
+      const second = await scanner.scan({
+        sessionRoot: root,
+        onProgress: progress => {
+          resumed = progress.resumed
+          decoded = progress.decodedBytes
+        },
+      })
+      expect(resumed).toBe(0)
+      expect(decoded).toBe(0)
+      // The very snapshot, not a rebuilt equivalent.
+      expect(second[0]).toBe(first[0])
+    } finally {
+      now.mockRestore()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('mirrors watermarks into the journal; a cold scanner still decodes fully', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-'))
     const journalDir = mkdtempSync(join(tmpdir(), 'dsh-tui-find-wm-j-'))

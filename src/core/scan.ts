@@ -1,8 +1,8 @@
 /**
  * The read-only session scanner: enumerate every stored dsh session under
  * the resolved roots, decode each log tolerantly into an in-memory index,
- * and keep that index warm behind a per-file `bytes:mtime` cache so a warm
- * search costs zero log reads.
+ * and keep that index warm behind a per-file `bytes:mtimeMs:ctimeMs` cache so
+ * a warm search costs zero log reads.
  *
  * Discipline, inherited from the host's own reader:
  *
@@ -32,6 +32,16 @@
  * those rewrites; the cost is zero reads (the sweep already stats every
  * candidate). The resume path below never depended on the token: it proves
  * the prefix it folds into with a digest of the actual bytes.
+ *
+ * A stamp is a clock reading with a finite tick, so the token has one more
+ * aliasing case: a rewrite stamped inside the SAME tick as the write the
+ * entry was committed under leaves all three components bit-identical. An
+ * entry whose stamp was still fresh when it was committed is therefore never
+ * served blind — it goes through the resume path, whose byte digest either
+ * confirms the token or overturns it into a full decode, and is committed
+ * clean once its tick has provably closed (see {@link STAMP_TICK_GUARD_MS}).
+ * The price is one re-proof read for a log a sweep caught inside its own
+ * stamp tick; every settled log still costs a warm sweep zero reads.
  *
  * v0.2 offset watermark: each cache entry records `decodedTo`, the byte
  * offset just past the last complete frame (or newline-terminated plain
@@ -161,6 +171,10 @@ interface LogFacts {
   readonly bytes: number
   readonly mtimeMs: number
   readonly ctimeMs: number
+  /** Wall clock the stats above were read under — the tick guard's input
+   *  (see {@link STAMP_TICK_GUARD_MS}), read before the stat so the guard
+   *  can only err towards re-proving. */
+  readonly observedAtMs: number
 }
 
 interface CacheEntry {
@@ -168,6 +182,10 @@ interface CacheEntry {
   readonly mtimeMs: number
   /** Inode change time; see {@link LogFacts}. */
   readonly ctimeMs: number
+  /** Wall clock this entry's stamps were observed under. The entry is served
+   *  from cache only once that observation is a whole tick past
+   *  {@link ctimeMs} — see {@link STAMP_TICK_GUARD_MS}. */
+  readonly observedAtMs: number
   /** Signature of the extraction options the content was built with — a
    *  switch flip (indexTools/indexThinking/char cap) must invalidate. */
   readonly optionsKey: string
@@ -213,6 +231,38 @@ const MAX_LOG_BYTES = 128 * 1024 * 1024
  *  boundaries, and without a yield a near-`MAX_LOG_BYTES` log would block
  *  the loop (and with it the abort check and the UI) for seconds. */
 const PLAIN_YIELD_EVERY_LINES = 2048
+
+/**
+ * How far a file stamp must be in the past before the cache entry committed
+ * under it may be served without a content re-proof.
+ *
+ * A stamp is a clock reading, not a sequence number: the writer's last write
+ * and a later same-size in-place rewrite land on the very same `mtimeMs`,
+ * `ctimeMs` and `bytes` whenever both are stamped inside one clock tick, and
+ * the hit path reads nothing — so the retired text would be served forever
+ * (the hazard this constant closes; CI run `38241978120` went red on exactly
+ * that alias). The tick that stamped a write is provably over once the clock
+ * has left it, and any write from then on is stamped strictly later, so a
+ * stamp older than the tick cannot be aliased any more.
+ *
+ * The guard must cover the coarsest tick a session store can sit on: stamps
+ * moved in ~0.5 ms steps on a fast Windows CI runner (2026-10-12) and NTFS's
+ * classic system clock is ~15.6 ms, so one second is 64x the worst mainline
+ * tick and exactly sufficient even for a 1 s (HFS+) one. A filesystem
+ * coarser than that (FAT's 2 s write time) is the documented remainder; the
+ * store's roots live under a user profile, where such a volume is not a real
+ * case. Erring large is safe — the only cost is the re-proof read below, for
+ * a log a sweep happened to catch inside its own tick.
+ *
+ * A refused entry stays refused until a re-proof re-commits it — the stored
+ * observation never ages, so the window cannot silently lapse into a blind
+ * hit later; the log is re-proved on every sweep until one succeeds. What
+ * the window does cost is the row itself when that read fails (a transient
+ * lock, or a size race with a live writer): the log resolves to nothing and
+ * the session is missing from that sweep's list, then comes back on the next
+ * one (REVIEW R-177, accepted risk).
+ */
+const STAMP_TICK_GUARD_MS = 1000
 
 /**
  * Session ids reach `path.join()`; a safe single segment (UUID or
@@ -278,10 +328,11 @@ function logCandidates(dir: string, entries: readonly string[]): LogCandidate[] 
  * most one syscall per candidate encoding.
  */
 function statFile(path: string): LogFacts | undefined {
+  const observedAtMs = Date.now()
   try {
     const stats = statSync(path)
     if (!stats.isFile()) return undefined
-    return { path, bytes: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs }
+    return { path, bytes: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, observedAtMs }
   } catch {
     return undefined
   }
@@ -544,7 +595,10 @@ export class SessionScanner {
     }
   }
 
-  /** Cached sessions whose log still matches the cache token. */
+  /** Cached sessions whose log still matches the cache token AND whose token
+   *  is past the stamp-tick ambiguity window — an entry committed inside its
+   *  own stamp tick is refused here so the caller re-proves it from the
+   *  bytes instead of serving it blind. */
   private cached(facts: LogFacts, optionsKey: string): ScannedSession | undefined {
     const entry = this.cache.get(facts.path)
     if (entry === undefined) return undefined
@@ -552,6 +606,13 @@ export class SessionScanner {
       return undefined
     }
     if (entry.optionsKey !== optionsKey) return undefined
+    // A matching token is not yet a proof: a rewrite stamped inside the same
+    // clock tick as the write this entry was committed under leaves all three
+    // components identical (see STAMP_TICK_GUARD_MS). Refusing the hit sends
+    // the log through the resume path, whose complete prefix digest is the
+    // content proof no stamp can fake; the re-committed entry carries this
+    // sweep's observation, so a settled log costs the next sweep zero reads.
+    if (entry.observedAtMs - entry.ctimeMs < STAMP_TICK_GUARD_MS) return undefined
     return entry.session
   }
 
@@ -682,8 +743,10 @@ export class SessionScanner {
    * Sweep every root and resolve each session to its searchable content.
    *
    * Cache hits are verified against the live stat (one per session per
-   * sweep) and returned without any log read. A log that grew (or was
-   * touched) since its cached version resumes from the entry's offset
+   * sweep) and returned without any log read — unless the entry was committed
+   * inside its own stamp tick, in which case the resume path re-proves it
+   * from the bytes first (see {@link STAMP_TICK_GUARD_MS}). A log that grew
+   * (or was touched) since its cached version resumes from the entry's offset
    * watermark and decodes only the new frames or lines — see decodeLog —
    * and anything that cannot prove the append-only prefix falls back to a
    * full decode. Cold entries are decoded one file at a time with the event
@@ -741,6 +804,7 @@ export class SessionScanner {
             bytes: decoded.bytes,
             mtimeMs: facts.mtimeMs,
             ctimeMs: facts.ctimeMs,
+            observedAtMs: facts.observedAtMs,
             optionsKey,
             decodedTo: decoded.decodedTo,
             prefixDigest: decoded.prefixDigest,
