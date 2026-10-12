@@ -59,6 +59,35 @@ export function stripAnsi(value: string): string {  return value
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
 }
 
+/** The last painted frame, ANSI intact — the `latest()` anchor. The host writes
+ *  each frame as one buffer headed by the DEC 2026 begin marker, or (alt-screen
+ *  frames, when the terminal env claims no synchronized-output support) by the
+ *  bare SGR-reset + OSC-8-close head; the LATER head of the two is the frame's.
+ *
+ *  A frame can also carry no text at all: the panel's IME cursor declaration
+ *  paints an empty frame (hide-cursor + head + cursor moves + end) once the real
+ *  frame is on screen, and anchoring there reads `''` for a component that
+ *  painted. That is exactly what CI did to the stand-down test's cold frame —
+ *  it sat 132 stripped bytes behind such a block, while no local run produced
+ *  one (measured by the run 38241257734 diagnostic: `panel.outputLen` 132,
+ *  `latest()` `''`). A head whose block carries nothing but escapes is
+ *  therefore skipped in favour of the previous one. */
+export function frameTail(output: string): string {
+  const head = (before: number): number =>
+    Math.max(
+      output.lastIndexOf('\u001b[?2026h', before),
+      output.lastIndexOf('\u001b[0m\u001b]8;;', before),
+    )
+  let start = head(output.length - 1)
+  if (start < 0) return output
+  for (;;) {
+    const previous = head(start - 1)
+    if (previous < 0 || stripAnsi(output.slice(start)).trim() !== '') break
+    start = previous
+  }
+  return output.slice(start)
+}
+
 export function waitFor(ms = 100): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -261,18 +290,8 @@ export async function mount(
   const sgrMouse = (button: number, col: number, row: number, final: 'M' | 'm'): string =>
     `\u001b[<${button};${col};${row}${final}`
 
-  /** The last painted frame, ANSI intact. Frame anchor: the host writes each
-   *  frame as one buffer headed by the DEC 2026 begin marker — or, on
-   *  alt-screen frames when the terminal env claims no synchronized-output
-   *  support, by the bare SGR-reset + OSC-8-close frame head. Taking the
-   *  later of the two keeps `latest()` meaning "the last painted frame" in
-   *  both modes. */
-  const frameTail = (): string => {
-    const syncStart = output.lastIndexOf('\u001b[?2026h')
-    const headStart = output.lastIndexOf('\u001b[0m\u001b]8;;')
-    const start = Math.max(syncStart, headStart)
-    return start < 0 ? output : output.slice(start)
-  }
+  /** The last painted frame, ANSI intact — see {@link frameTail} for the frame
+   *  heads and the textless trailing block both mounts have to skip. */
 
   return {
     send(input: string) {
@@ -292,13 +311,13 @@ export async function mount(
       return stripAnsi(output)
     },
     latest() {
-      return stripAnsi(frameTail())
+      return stripAnsi(frameTail(output))
     },
     raw() {
       return output
     },
     rawLatest() {
-      return frameTail()
+      return frameTail(output)
     },
     closed() {
       return closeCount
@@ -349,7 +368,7 @@ export function panelKit(width: number, height: number): unknown {
 export async function mountKitComponent(
   element: React.ReactElement,
   options: { columns?: number; rows?: number; settle?: boolean } = {},
-): Promise<{ output(): string; latest(): string; raw(): string; wholeFrame(pattern: RegExp): Promise<string>; unmount(): void }> {
+): Promise<{ output(): string; latest(): string; wholeFrame(pattern: RegExp): Promise<string>; unmount(): void }> {
   const columns = options.columns ?? 40
   const rows = options.rows ?? 16
   const stdin = new PassThrough() as PassThrough & {
@@ -383,27 +402,16 @@ export async function mountKitComponent(
   // `settle: false` returns right after the commit — for tests that must act
   // while the component's own first effect is still in flight.
   if (options.settle !== false) await waitFor()
-  const frameTail = (): string => {
-    const start = output.lastIndexOf('\u001b[?2026h')
-    return start < 0 ? output : output.slice(start)
-  }
   return {
     output: () => stripAnsi(output),
-    latest: () => stripAnsi(frameTail()),
-    /** The cumulative stream with its ANSI intact — the frame-tail question
-     *  ("did anything reach this stream at all, and does a DEC 2026 sync block
-     *  hide the frame from `latest()`?") cannot be asked of the stripped
-     *  readings. The `mount` Harness carries the same accessor. */
-    raw: () => output,
+    latest: () => stripAnsi(frameTail(output)),
     /** One WHOLE frame matching `pattern` — panel-view's read, for the callers
      *  that mount a panel here. A resize repaints the frame from scratch, while
      *  a plain update is a CELL DIFF (and an update issued after the queue
      *  drained writes nothing at all); the read is arrival-driven because a
-     *  fixed sleep is not a guarantee. (Measured: the stand-down test's single
-     *  `latest()` read after 720 ms came back empty on CI — run 38233243481 —
-     *  on a panel that had painted, so the missed frame is the sleep's, not the
-     *  renderer's.) A deadline miss returns whatever the last repaint produced,
-     *  so the caller's own `expect` surfaces as a normal assertion diff. */
+     *  fixed sleep is not a guarantee. A deadline miss returns whatever the
+     *  last repaint produced, so the caller's own `expect` surfaces as a normal
+     *  assertion diff. */
     async wholeFrame(pattern: RegExp): Promise<string> {
       const deadline = Date.now() + 4_000
       let frame = ''
@@ -411,7 +419,7 @@ export async function mountKitComponent(
         stdout.columns = stdout.columns === columns ? columns + 1 : columns
         stdout.emit('resize')
         await waitFor(60)
-        frame = stripAnsi(frameTail())
+        frame = stripAnsi(frameTail(output))
         if (pattern.test(frame) || Date.now() >= deadline) return frame
       }
     },
