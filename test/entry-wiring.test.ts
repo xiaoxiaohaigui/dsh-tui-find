@@ -578,8 +578,14 @@ describe('sidebar panel wiring', () => {
         expect(view.latest()).not.toMatch(/1\s*sessions?/)
         await waitFor(60)
       }
-      expect(view.latest()).toMatch(/0\s*sessions?/)
-      expect(view.latest()).toMatch(/Reading\s*sessions/)
+      // The cold frame itself is read the way the panel suite reads frames —
+      // WHOLE and on arrival (harness's wholeFrame): the sampling above only
+      // ever proves ABSENCES, and one `latest()` read after a fixed sleep came
+      // back empty on CI (run 38233243481) on a panel that had painted, which
+      // is the missed frame of a sleep rather than a missing paint.
+      const cold = await view.wholeFrame(/0\s*sessions?/)
+      expect(cold).toMatch(/0\s*sessions?/)
+      expect(cold).toMatch(/Reading\s*sessions/)
     } finally {
       view.unmount()
     }

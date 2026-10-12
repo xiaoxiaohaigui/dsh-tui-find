@@ -349,7 +349,7 @@ export function panelKit(width: number, height: number): unknown {
 export async function mountKitComponent(
   element: React.ReactElement,
   options: { columns?: number; rows?: number; settle?: boolean } = {},
-): Promise<{ output(): string; latest(): string; unmount(): void }> {
+): Promise<{ output(): string; latest(): string; wholeFrame(pattern: RegExp): Promise<string>; unmount(): void }> {
   const columns = options.columns ?? 40
   const rows = options.rows ?? 16
   const stdin = new PassThrough() as PassThrough & {
@@ -390,6 +390,26 @@ export async function mountKitComponent(
   return {
     output: () => stripAnsi(output),
     latest: () => stripAnsi(frameTail()),
+    /** One WHOLE frame matching `pattern` — panel-view's read, for the callers
+     *  that mount a panel here. A resize repaints the frame from scratch, while
+     *  a plain update is a CELL DIFF (and an update issued after the queue
+     *  drained writes nothing at all); the read is arrival-driven because a
+     *  fixed sleep is not a guarantee. (Measured: the stand-down test's single
+     *  `latest()` read after 720 ms came back empty on CI — run 38233243481 —
+     *  on a panel that had painted, so the missed frame is the sleep's, not the
+     *  renderer's.) A deadline miss returns whatever the last repaint produced,
+     *  so the caller's own `expect` surfaces as a normal assertion diff. */
+    async wholeFrame(pattern: RegExp): Promise<string> {
+      const deadline = Date.now() + 4_000
+      let frame = ''
+      for (;;) {
+        stdout.columns = stdout.columns === columns ? columns + 1 : columns
+        stdout.emit('resize')
+        await waitFor(60)
+        frame = stripAnsi(frameTail())
+        if (pattern.test(frame) || Date.now() >= deadline) return frame
+      }
+    },
     unmount: () => {
       stdout.isTTY = false
       instance.unmount()
