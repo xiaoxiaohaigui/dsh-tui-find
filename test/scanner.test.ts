@@ -923,7 +923,20 @@ describe('offset watermark (incremental decode)', () => {
       const changed = `${prefix.slice(0, 4_096)}${'y'.repeat(prefix.length - 8_192)}${prefix.slice(-4_096)}`
       const rewritten = rawFrame(`${headerLine(id, 'D:/work/wm-large')}\n${env('user/message', 1, changed)}\n`)
       expect(rewritten.length).toBe(first.length)
+      const before = statSync(path)
+      // The sleep keeps the ctime tick apart, and the assertion below is this
+      // test's premise: the change token is `bytes:mtimeMs:ctimeMs`, so a
+      // rewrite stamped inside the SAME tick is a legitimate CACHE HIT and the
+      // proof path never runs — which is how this case went red on a fast
+      // Windows CI runner while it passed in every local run. Measured there
+      // (2026-10-12): file stamps move in ~0.5 ms steps and 8 of 25 back-to-back
+      // rewrites shared a `ctimeMs`. See the untimed-rewrite case above, whose
+      // negative control has to be able to go red for the same reason.
+      await new Promise(resolve => setTimeout(resolve, 50))
       writeFileSync(path, rewritten)
+      const after = statSync(path)
+      expect(after.size).toBe(before.size)
+      expect(after.ctimeMs).not.toBe(before.ctimeMs)
       const result = await scanner.scan({ sessionRoot: root, maxMessageChars: 20_000 })
       expect(result[0]!.messages[0]!.text).toBe(changed)
     } finally {
