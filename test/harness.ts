@@ -349,7 +349,7 @@ export function panelKit(width: number, height: number): unknown {
 export async function mountKitComponent(
   element: React.ReactElement,
   options: { columns?: number; rows?: number; settle?: boolean } = {},
-): Promise<{ output(): string; latest(): string; wholeFrame(pattern: RegExp): Promise<string>; unmount(): void }> {
+): Promise<{ output(): string; latest(): string; raw(): string; wholeFrame(pattern: RegExp): Promise<string>; unmount(): void }> {
   const columns = options.columns ?? 40
   const rows = options.rows ?? 16
   const stdin = new PassThrough() as PassThrough & {
@@ -390,6 +390,11 @@ export async function mountKitComponent(
   return {
     output: () => stripAnsi(output),
     latest: () => stripAnsi(frameTail()),
+    /** The cumulative stream with its ANSI intact — the frame-tail question
+     *  ("did anything reach this stream at all, and does a DEC 2026 sync block
+     *  hide the frame from `latest()`?") cannot be asked of the stripped
+     *  readings. The `mount` Harness carries the same accessor. */
+    raw: () => output,
     /** One WHOLE frame matching `pattern` — panel-view's read, for the callers
      *  that mount a panel here. A resize repaints the frame from scratch, while
      *  a plain update is a CELL DIFF (and an update issued after the queue

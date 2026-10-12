@@ -583,6 +583,45 @@ describe('sidebar panel wiring', () => {
       // ever proves ABSENCES, and one `latest()` read after a fixed sleep came
       // back empty on CI (run 38233243481) on a panel that had painted, which
       // is the missed frame of a sleep rather than a missing paint.
+      // TEMPORARY DIAGNOSTIC (CI-only stand-down failure; runs 38233243481 and
+      // 38238112133). On CI the captured stream yields no readable frame for
+      // this panel while a local run paints it in the mount frame; a canary
+      // mount on the SAME renderer splits the two remaining readings — "this
+      // stream never receives bytes here" vs "the panel component renders
+      // nothing here". The panel's own readings are taken FIRST: anything that
+      // makes the shared store sweep (a second panel mount does) repaints this
+      // instance into the settled list and loses the cold frame. Remove once
+      // the CI log has answered it.
+      const panelReadings = {
+        outputLen: view.output().length,
+        rawLen: view.raw().length,
+        hasSyncBlock: view.raw().includes('\u001b[?2026h'),
+        rawTail: JSON.stringify(view.raw().slice(-240)),
+      }
+      const kit = panelKit(40, 16) as { Text: React.ComponentType<{ children?: string }> }
+      const Canary = (): ReactElement => React.createElement(kit.Text, null, 'canary-row')
+      const canary = await mountKitComponent(React.createElement(Canary), { columns: 40, rows: 16 })
+      await waitFor(200)
+      console.log(`STAND-DOWN DIAG ${JSON.stringify({
+        env: {
+          TERM: process.env.TERM ?? null,
+          TERM_PROGRAM: process.env.TERM_PROGRAM ?? null,
+          WT_SESSION: process.env.WT_SESSION !== undefined,
+          TMUX: process.env.TMUX !== undefined,
+          VTE_VERSION: process.env.VTE_VERSION ?? null,
+          KITTY_WINDOW_ID: process.env.KITTY_WINDOW_ID !== undefined,
+          ZED_TERM: process.env.ZED_TERM !== undefined,
+          CI: process.env.CI ?? null,
+        },
+        panel: panelReadings,
+        canary: {
+          outputLen: canary.output().length,
+          latestLen: canary.latest().length,
+          rawTail: JSON.stringify(canary.raw().slice(-240)),
+        },
+      })}`)
+      canary.unmount()
+
       const cold = await view.wholeFrame(/0\s*sessions?/)
       expect(cold).toMatch(/0\s*sessions?/)
       expect(cold).toMatch(/Reading\s*sessions/)
