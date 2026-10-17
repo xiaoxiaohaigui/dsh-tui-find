@@ -47,10 +47,13 @@ import { displayWidth, tailWidth, truncateWidth } from './width.js'
 
 /** Panel id SUFFIX only: the host assigns the final id when it accepts the
  *  registration (the descriptor's id is never the wiring key), and the panel
- *  is addressed through {@link resolvePanelId} — `<pluginId>:search` when the
- *  activation carries a verified component identity, `act<N>:search` on the
- *  direct-activation path this plugin rides. Neither form is something a user
- *  types into the host's enable list. */
+ *  is addressed through {@link resolvePanelId}. The prefix is the caller's
+ *  verified component identity first, then the owning loader entry id (hosts
+ *  with dsh-TUI #1474 peel its `include:` composition marker), and only
+ *  otherwise a synthesized `act<N>`. This plugin rides the C-070
+ *  direct-activation path, so on hosts before #1474 it lands on
+ *  `act<N>:search` and the number can change across restarts. No form is
+ *  something a user types into the host's enable list. */
 export const PANEL_ID = 'search'
 /** The panel API generation this module is written against — the host rejects
  *  any other value outright (`TUI_PANEL_API_VERSION`). */
@@ -180,12 +183,14 @@ interface PanelServiceSurface {
 
 /**
  * The host-assigned final id of this plugin's panel, read back from `list()`
- * (the descriptor's own id is only the suffix). Register namespaces the id
- * with the caller's component identity when the activation carries a verified
- * one, and with a synthesized `act<N>` otherwise — this plugin rides the
- * documented C-070 direct-activation path, so the `<pluginId>:` form in the
- * seam docs is NOT what lands here. Read-only call, wrapped: a liveness-gate
- * rejection just means no badge.
+ * (the descriptor's own id is only the suffix). The host namespaces the id
+ * with the caller's verified component identity first, then with the owning
+ * loader entry id (hosts with #1474 peel its `include:` composition marker
+ * before using it), and synthesizes `act<N>` only when neither exists — this
+ * plugin rides the documented C-070 direct-activation path, so the prefix
+ * depends on the host generation: `act<N>:` before #1474, `<entry id>:`
+ * after it. Read-only call, wrapped: a liveness-gate rejection just means
+ * no badge.
  */
 function resolvePanelId(panels: PanelServiceSurface): string | undefined {
   try {

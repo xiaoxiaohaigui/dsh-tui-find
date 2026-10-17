@@ -243,10 +243,11 @@ export class FindPanelDriver {
 
   /**
    * Give the driver a way to badge its own panel. The id is HOST-ASSIGNED
-   * (`panels.register` auto-prefixes it — with a component identity when the
-   * activation has one, otherwise a synthesized `act<N>:<id>`), so the
-   * registration resolves it through `list()` and hands the callback down;
-   * without that resolution there is nothing to address `badge()` with.
+   * (`panels.register` auto-prefixes it — verified component identity first,
+   * then the owning loader entry id, and only otherwise a synthesized
+   * `act<N>:<id>`), so the registration resolves it through `list()` and hands
+   * the callback down; without that resolution there is nothing to address
+   * `badge()` with.
    */
   bindBadge(
     setBadge: (badge: { readonly level: 'info' | 'warning' | 'error'; readonly unread: number } | null) => void,
