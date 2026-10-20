@@ -12,7 +12,13 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, ut
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
-import { SessionScanner, compareSessionRecency, enumerateLogs, isSubagentSession } from '../src/core/scan.js'
+import {
+  SessionScanner,
+  STAMP_TICK_GUARD_MS,
+  compareSessionRecency,
+  enumerateLogs,
+  isSubagentSession,
+} from '../src/core/scan.js'
 import {
   compileRegex,
   isRegexAllowed,
@@ -24,6 +30,46 @@ import {
 import type { ScanProgress, ScannedSession } from '../src/core/scan.js'
 
 const FIXTURE_ROOT = join(import.meta.dirname, 'fixtures', 'generated')
+
+/**
+ * Settle the generated fixture tree past the scanner's stamp-tick guard before
+ * the first sweep.
+ *
+ * `SessionScanner.cached()` refuses a cache hit while the entry's own stamp is
+ * younger than {@link STAMP_TICK_GUARD_MS} (a rewrite stamped inside the same
+ * clock tick would leave `bytes:mtimeMs:ctimeMs` bit-identical). A refused
+ * entry rides the resume path, which re-reads whatever sits past the watermark:
+ * for the plain corruption fixture that is a torn line it cannot fold, so the
+ * next sweep counts those bytes as decoded and "a warm sweep decodes nothing"
+ * stops being true. Pretest regenerates the tree right before vitest starts, so
+ * on a fast runner the first sweep lands inside the window and the zero-decode
+ * cases below go red — CI run 38847133699 did exactly that (node 24 leg, four
+ * cases, `expected 33 to be +0`).
+ *
+ * The window is a property of the fixture's clock, not of the scanner's logic:
+ * once every log's stamp is a whole tick in the past, the token provably cannot
+ * alias and every case below starts from the settled state it means to pin.
+ * Waiting the remainder out costs at most one guard window per run; the guard's
+ * own cases in the offset-watermark suite build their stamps on purpose and do
+ * not depend on this.
+ */
+beforeAll(async () => {
+  let newest = 0
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(path)
+        continue
+      }
+      const stats = statSync(path)
+      newest = Math.max(newest, stats.ctimeMs, stats.mtimeMs)
+    }
+  }
+  walk(FIXTURE_ROOT)
+  const settle = STAMP_TICK_GUARD_MS + 250 - (Date.now() - newest)
+  if (settle > 0) await new Promise(resolve => setTimeout(resolve, settle))
+})
 
 describe('enumerateLogs', () => {
   it('finds compressed and plain logs under the fixture root', () => {

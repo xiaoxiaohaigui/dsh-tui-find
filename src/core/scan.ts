@@ -262,7 +262,7 @@ const PLAIN_YIELD_EVERY_LINES = 2048
  * the session is missing from that sweep's list, then comes back on the next
  * one (REVIEW R-177, accepted risk).
  */
-const STAMP_TICK_GUARD_MS = 1000
+export const STAMP_TICK_GUARD_MS = 1000
 
 /**
  * Session ids reach `path.join()`; a safe single segment (UUID or
