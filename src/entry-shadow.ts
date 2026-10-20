@@ -7,7 +7,8 @@
  * ctrl or alt, and the scene's own vocabulary is modifier-free typing plus a
  * handful of chords. But the `shortcut` row accepts combos the scene ALSO
  * answers (`alt+h` is the help chord, `alt+c` the copy chord, `ctrl+tab` the
- * scope switch, and `alt+backspace` a branch with no modifier gate at all),
+ * workspace-column toggle (the classic range switch), and `alt+backspace` a
+ * branch with no modifier gate at all),
  * and the host's registry reserves none of THOSE (`alt+r` is the exception —
  * it is the host's own Continue action, so a remap onto it is refused before
  * this table ever matters): the entry keeps working and the scene's own action
@@ -71,7 +72,9 @@ const ALT_CHORD_SHADOWS = new Map<string, SceneKeyShadow>([
 /** The named keys the dispatcher answers without a modifier gate. `↑`/`↓`
  *  share one sheet row, and `←`/`→` are the split layout's focus pair. */
 const NAMED_KEY_SHADOWS = new Map<ShortcutNamedKey, SceneKeyShadow>([
-  ['tab', { helpKeys: 'Tab', actionKey: 'help-list-scope' }],
+  // Tab's action is layout-dependent (workspace column in split, range in
+  // classic), so the toast uses the neutral key that names both.
+  ['tab', { helpKeys: 'Tab', actionKey: 'scene-key-tab' }],
   ['upArrow', { helpKeys: '↑↓', actionKey: 'help-list-select' }],
   ['downArrow', { helpKeys: '↑↓', actionKey: 'help-list-select' }],
   ['leftArrow', { helpKeys: '←', actionKey: 'help-preview-focus' }],

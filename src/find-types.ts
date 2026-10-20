@@ -31,12 +31,14 @@ export type InputKey = Parameters<Parameters<Ui['useInput']>[0]>[1]
 export type TextColor = NonNullable<React.ComponentProps<Ui['Text']>['color']>
 
 /**
- * The installed dsh-tui 0.9.3 declarations predate `onWheel`, although its
- * runtime dispatcher already routes wheel events to handler props. Keep the
- * widening local to the find scene instead of weakening the injected ui surface.
+ * The dev/type baseline (dsh-tui 0.9.3 — the last published tarball npm can
+ * install, see docs/decisions/2026-10-20-host-baseline-0-13.md) predates
+ * `onWheel`, although its runtime dispatcher already routes wheel events to
+ * handler props. Keep the widening local to the find scene instead of
+ * weakening the injected ui surface.
  *
- * 0.10+ThemedBox 官方类型已含 onWheel/onContextMenu，本交叉类型对 0.10.1 冗余
- * 但无害（0.9.3 基线必需）；待 peer 下限提升到 >=0.10.0 时退役。
+ * 0.10+ ThemedBox 官方类型已含 onWheel/onContextMenu：本交叉类型对支持面
+ * （peer `>=0.13.0`）冗余但无害——它随 dev 锁存在，dev 锁一抬即可退役。
  */
 export type WheelEventLike = { readonly deltaY: number; readonly deltaX?: number }
 export type WheelBoxProps = React.ComponentProps<Ui['Box']> & {
@@ -72,7 +74,7 @@ export type ContextBoxProps = React.ComponentProps<Ui['Box']> & {
  */
 export type ClickEventLike = { stopImmediatePropagation(): void }
 
-export type Mode = 'list' | 'preview' | 'confirm' | 'help'
+export type Mode = 'list' | 'preview' | 'workspace' | 'confirm' | 'help'
 
 /** The time window the list and search filter sessions by — the same
  *  vocabulary as the `defaultTime` config knob (its initial value). */
@@ -171,6 +173,44 @@ export function splitLayout(columns: number): { split: boolean; listWidth: numbe
   const paneWidth = Math.min(56, Math.floor(columns * 0.42))
   return { split: true, listWidth: Math.max(0, columns - paneWidth), paneWidth }
 }
+/** The workspace column's width budget in the three-column layout: a
+ *  percentage of the viewport, clamped so the path labels stay readable
+ *  without starving the session list. */
+export const WORKSPACE_MIN_WIDTH = 20
+export const WORKSPACE_MAX_WIDTH = 30
+export const WORKSPACE_WIDTH_RATIO = 0.2
+
+/** Geometry of the whole content row for either split shape. `listWidth` is
+ *  the SESSION list's width; `workspaceWidth` is 0 unless the workspace
+ *  column is open (and the terminal is at or above the split gate). */
+export interface SceneGeometry {
+  readonly split: boolean
+  readonly workspaceWidth: number
+  readonly listWidth: number
+  readonly paneWidth: number
+}
+
+/**
+ * Geometry of the split content row, optionally with the workspace column.
+ * The two-column numbers are exactly {@link splitLayout}'s (the workspace
+ * budget is carved out of the list's share, never out of the reader's): the
+ * workspace column expands the left side instead of shrinking the preview.
+ */
+export function splitGeometry(columns: number, workspaces = false): SceneGeometry {
+  const base = splitLayout(columns)
+  if (!base.split || !workspaces) return { ...base, workspaceWidth: 0 }
+  const workspaceWidth = Math.min(
+    WORKSPACE_MAX_WIDTH,
+    Math.max(WORKSPACE_MIN_WIDTH, Math.floor(columns * WORKSPACE_WIDTH_RATIO)),
+  )
+  return {
+    split: true,
+    workspaceWidth,
+    listWidth: Math.max(0, base.listWidth - workspaceWidth),
+    paneWidth: base.paneWidth,
+  }
+}
+
 /** First gap between progressive-sweep list flushes, doubling per flush up
  *  to {@link PARTIAL_FLUSH_MAX_MS} — see useSessionSweep for why the gap
  *  grows instead of staying fixed. */

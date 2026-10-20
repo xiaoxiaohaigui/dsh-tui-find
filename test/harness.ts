@@ -172,6 +172,9 @@ export async function mount(
     /** Scene layout override — the split-layout tests pin both forms and
      *  the width fallback (default resolved layout is 'split'). */
     layout?: 'split' | 'classic'
+    /** Initial range override (default: 'all', the shared baseline). The
+     *  workspace-column tests pin the seed from both configured values. */
+    defaultScope?: 'repo' | 'all'
     /** Sub-agent posture override (default: the resolved default, off) — the
      *  sweep-options test reads what the scene asked the scanner for. */
     showSubagentSessions?: boolean
@@ -256,7 +259,7 @@ export async function mount(
       closeCount += 1
     },
     config: resolveConfig({
-      defaultScope: 'all',
+      defaultScope: options.defaultScope ?? 'all',
       ...(options.layout === undefined ? {} : { layout: options.layout }),
       ...(options.shortcut === undefined ? {} : { shortcut: options.shortcut }),
       ...(options.showSubagentSessions === undefined

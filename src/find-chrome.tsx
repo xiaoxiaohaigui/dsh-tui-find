@@ -12,7 +12,6 @@ import type React from 'react'
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { t } from './i18n.js'
 import type { ScanProgress, ScannedSession } from './core/scan.js'
-import type { SearchScope } from './core/search.js'
 import { displayWidth, tailWidth, truncateWidth } from './width.js'
 import { useHostDeclaredCursor } from './vendor/host-cursor.js'
 import { displayTitle, type RowUi, type TextColor, type Ui } from './find-types.js'
@@ -62,6 +61,8 @@ export type EntryAdvisory =
  * labels, per-language lengths), so the line is composed here: the first and
  * last segments always render, middle segments drop in reverse priority
  * order when the full line would exceed the columns budget. `splitActive`
+ * swaps the range segment for the workspace column's Tab segment (and, with
+ * `workspaceOpen`, says whether Tab expands or collapses that column), and
  * picks the reader segment's vocabulary (focus arrow vs. Alt+P open).
  *
  * `advisory` names either a scene key the accepted global entry has taken
@@ -71,7 +72,12 @@ export type EntryAdvisory =
  * would explain nothing. It costs the tail segments one slot, which is the
  * right trade for a user whose remap changed what the keys do.
  */
-export function composeListHint(columns: number, splitActive = false, advisory?: EntryAdvisory): string {
+export function composeListHint(
+  columns: number,
+  splitActive = false,
+  advisory?: EntryAdvisory,
+  workspaceOpen = false,
+): string {
   const segments = [
     t('hint-seg-resume'),
     ...(advisory === undefined
@@ -81,7 +87,14 @@ export function composeListHint(columns: number, splitActive = false, advisory?:
             ? t('hint-seg-shadowed', { key: advisory.key })
             : t('hint-seg-refused', { combo: advisory.combo, effective: advisory.effective }),
         ]),
-    t('hint-seg-scope'),
+    // Split's Tab expands/collapses the workspace column; classic has no such
+    // column, so its Tab keeps the scope switch.
+    splitActive
+      ? workspaceOpen
+        ? t('hint-seg-workspace-close')
+        : t('hint-seg-workspace')
+      : t('hint-seg-scope'),
+    ...(splitActive && workspaceOpen ? [t('hint-seg-workspace-focus')] : []),
     // The reader is always on screen in split, so the pane segment names the
     // focus arrow there; classic keeps Alt+P (the only way to open it).
     splitActive ? t('hint-seg-read') : t('hint-seg-preview'),
@@ -199,10 +212,13 @@ export function fitHintLine(segments: readonly HintSegment[], columns: number): 
  * Hits, resume and copy drop (rightmost first) as the terminal narrows, so
  * the keys that must be shown always are; the row is one line at any width.
  */
-export function composeReaderHint(columns: number, splitActive: boolean): string {
+export function composeReaderHint(columns: number, splitActive: boolean, workspaceOpen = false): string {
   const segments: HintSegment[] = splitActive
     ? [
         { text: t('hint-seg-reader-focus'), mandatory: true },
+        // Tab still owns the workspace column while the reader holds the
+        // keyboard; the segment sits left of the droppable tail.
+        ...(workspaceOpen ? [{ text: t('hint-seg-workspace-toggle') }] : []),
         { text: t('hint-seg-reader-scroll'), mandatory: true },
         { text: t('hint-seg-reader-hits') },
         { text: t('hint-seg-resume') },
@@ -216,6 +232,24 @@ export function composeReaderHint(columns: number, splitActive: boolean): string
         { text: t('hint-seg-reader-back'), mandatory: true },
       ]
   return fitHintLine(segments, columns)
+}
+
+/**
+ * The workspace column's hint line while it holds the keyboard. ↑↓ changes the
+ * range immediately, so the keys that must survive are "move" and "leave";
+ * Enter/→ apply (return to the list) and Tab hides the column, both droppable
+ * as the terminal narrows.
+ */
+export function composeWorkspaceHint(columns: number): string {
+  return fitHintLine(
+    [
+      { text: t('hint-seg-workspace-select'), mandatory: true },
+      { text: t('hint-seg-workspace-apply') },
+      { text: t('hint-seg-workspace-close') },
+      { text: t('hint-seg-workspace-back') },
+    ],
+    columns,
+  )
 }
 
 /**
@@ -233,16 +267,17 @@ export function SearchCard(props: {
   React: TuiSceneProps['React']
   ui: Ui
   query: string
-  scope: SearchScope
+  /** The effective range as words: the all-sessions row's label or the
+   *  selected workspace's (shortened) path. The card itself does not know how
+   *  a workspace is spelled. */
+  scopeLabel: string
   /** Active non-default filters, precomposed ('近 7 天 · 正则'); '' when none. */
   filters: string
   columns: number
 }): React.ReactElement {
-  const { React: R, ui, query, scope, filters, columns } = props
+  const { React: R, ui, query, scopeLabel, filters, columns } = props
   const { Box, Text } = ui
-  const placeholder = t('search-placeholder', {
-    scope: scope === 'repo' ? t('scope-repo') : t('scope-all'),
-  })
+  const placeholder = t('search-placeholder', { scope: scopeLabel })
   const contentWidth = Math.max(1, columns - 4)
   const empty = query.length === 0
   const filterWidth =

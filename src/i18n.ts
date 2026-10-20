@@ -79,6 +79,11 @@ export const dict = {
   'scope-repo': { zh: '本仓库', en: 'This repo' },
   'scope-all': { zh: '全部会话', en: 'All sessions' },
   'scope-switched': { zh: '范围已切换为「{{scope}}」', en: 'Scope switched to "{{scope}}"' },
+  // The workspace column (three-column split): the title row, the switch
+  // notice, and the two empty-list hints. "All sessions" is the first row and
+  // reuses 'scope-all' — the same words the scope used before it became a list.
+  'workspace-title': { zh: '工作区', en: 'Workspaces' },
+  'workspace-switched': { zh: '范围：{{workspace}}', en: 'Scope: {{workspace}}' },
   'time-all': { zh: '全部时间', en: 'All time' },
   'time-7d': { zh: '近 7 天', en: 'Last 7 days' },
   'time-30d': { zh: '近 30 天', en: 'Last 30 days' },
@@ -111,6 +116,16 @@ export const dict = {
     zh: ' 当前范围是「{{scope}}」——按 Tab 切换范围试试',
     en: ' Scope is "{{scope}}" — press Tab to try all sessions',
   },
+  // Split layout: Tab expands/collapses the workspace column instead of
+  // toggling the scope, so the hint depends on whether that column is open.
+  'no-results-workspace-open-hint': {
+    zh: ' 当前范围是「{{scope}}」——在左侧工作区列表中选择其他工作区',
+    en: ' Scope is "{{scope}}" — pick another workspace in the left column',
+  },
+  'no-results-workspace-closed-hint': {
+    zh: ' 当前范围是「{{scope}}」——按 Tab 展开工作区列表切换范围',
+    en: ' Scope is "{{scope}}" — press Tab to open the workspace list',
+  },
   'no-sessions': { zh: ' 没有可搜索的会话内容', en: ' No searchable session content' },
 
   // ── relative time (mirrors the host's session-when-* strings) ───────
@@ -139,6 +154,17 @@ export const dict = {
   // viewport is too narrow for the full line.
   'hint-seg-resume': { zh: '**Enter** 恢复', en: '**Enter** resume' },
   'hint-seg-scope': { zh: 'Tab 范围', en: 'Tab scope' },
+  // Split's Tab owns the workspace column, not the scope: the list hint names
+  // the column's state (open vs. closed) and, while it is open, how to focus it.
+  'hint-seg-workspace': { zh: 'Tab 工作区', en: 'Tab workspaces' },
+  'hint-seg-workspace-close': { zh: 'Tab 收起', en: 'Tab hide' },
+  'hint-seg-workspace-focus': { zh: '← 工作区', en: '← workspaces' },
+  // The workspace column's own hint line while it holds the keyboard.
+  'hint-seg-workspace-select': { zh: '**↑↓** 选择工作区', en: '**↑↓** workspace' },
+  'hint-seg-workspace-apply': { zh: '**Enter** 应用', en: '**Enter** apply' },
+  'hint-seg-workspace-back': { zh: '**Esc** 返回列表', en: '**Esc** back to list' },
+  // Appended to the reader's hint line while the workspace column is open.
+  'hint-seg-workspace-toggle': { zh: '**Tab** 收起工作区', en: '**Tab** hide workspaces' },
   'hint-seg-preview': { zh: 'Alt+P 预览', en: 'Alt+P preview' },
   // Split replaces the Alt+P open with a focus handoff (the pane is always
   // on screen), so its hint segment names the arrow instead.
@@ -283,6 +309,14 @@ export const dict = {
   'help-section-mouse': { zh: '鼠标', en: 'Mouse' },
   'help-list-type': { zh: '输入查询（任意字符）', en: 'Type to search (any character)' },
   'help-list-scope': { zh: '切换范围（本仓库 / 全部会话）', en: 'Toggle scope (this repo / all sessions)' },
+  // Split's Tab row (same key, different job): expand/collapse the workspace
+  // column. The workspace section below documents that column's own keys.
+  'help-list-workspace': { zh: '展开 / 收起工作区列表', en: 'Expand / hide the workspace list' },
+  'help-section-workspace': { zh: '工作区', en: 'Workspaces' },
+  'help-workspace-select': { zh: '选择工作区（立即生效）', en: 'Select a workspace (applies immediately)' },
+  'help-workspace-apply': { zh: '应用并回到会话列表', en: 'Apply and return to the session list' },
+  'help-workspace-hide': { zh: '收起工作区列表', en: 'Hide the workspace list' },
+  'help-workspace-back': { zh: '返回会话列表（保持选择）', en: 'Back to the session list (keep the selection)' },
   'help-list-regex': { zh: '切换正则匹配', en: 'Toggle regex matching' },
   'help-list-time': { zh: '切换时间范围', en: 'Cycle the time window' },
   'help-list-title-only': { zh: '切换标题限定（仅搜索会话标题）', en: 'Toggle title-only search (session titles only)' },
@@ -316,6 +350,9 @@ export const dict = {
   // Delete branch (the sheet has no row for it, so this copy only ever reaches
   // the toast).
   'scene-key-backspace': { zh: '删除查询末尾字符', en: 'Delete the last query character' },
+  // The shadow table's name for Tab: classic toggles the scope, split
+  // expands/collapses the workspace column — one neutral phrase for both.
+  'scene-key-tab': { zh: '切换范围 / 展开工作区列表', en: 'Switch scope / show the workspace list' },
   'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
@@ -330,8 +367,11 @@ export const dict = {
   'help-mouse-click': { zh: '选中并打开确认', en: 'Select and open the confirm' },
   'help-mouse-fold': { zh: '折叠 / 展开该会话命中（▸ (+N) 徽标）', en: 'Fold / unfold the session\u2019s hits (the \u25b8 (+N) badge)' },
   'help-mouse-hover': { zh: '移动选择', en: 'Move the selection' },
-  'help-mouse-wheel': { zh: '按档移动（列表按条目、阅读窗按行）', en: 'Move by notch (selection in the list, lines in the reader)' },
-  'help-mouse-context': { zh: '打开上下文菜单（0.10+ 宿主）', en: 'Open the context menu (0.10+ hosts)' },
+  'help-mouse-wheel': {
+    zh: '按档移动（列表 / 工作区按条目、阅读窗按行）',
+    en: 'Move by notch (rows in the list and the workspace column, lines in the reader)',
+  },
+  'help-mouse-context': { zh: '打开上下文菜单', en: 'Open the context menu' },
   // The overlay's own footer hint (HintLine `**key**` vocabulary).
   'help-footer': { zh: '**Esc** 返回', en: '**Esc** back' },
   // New list hint segment for the main scene's hint line (Alt+H wiring).

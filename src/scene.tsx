@@ -14,13 +14,15 @@
  * This module is the orchestrator: it owns the scene state and the search
  * derivations, and delegates to the find-* siblings — find-input.ts (the
  * keyboard dispatcher: typing always edits the query; Enter opens the
- * resume confirm, Tab toggles the scope, Alt+R regex, Alt+T time window,
+ * resume confirm, Tab expands/collapses the workspace column (three-column
+ * split) or toggles the scope (classic), Alt+R regex, Alt+T time window,
  * Alt+N title-only, ↑↓/PgUp/PgDn move, Esc backs out one layer; Alt+P opens
  * the scrollable conversation reader, Alt+C copies, Alt+E expands; Alt+H
  * help), find-sweep.ts (the progressive scan hook that streams sessions in),
  * find-menu.ts (the right-click menu's pure model), find-preview.tsx (the
  * reader pane and its model), find-list.tsx (the two-line-per-session
- * list), find-chrome.tsx (search card, hints, confirm pane), find-types.ts
+ * list), find-workspaces.tsx (the workspace column and its grouping model),
+ * find-chrome.tsx (search card, hints, confirm pane), find-types.ts
  * (shared vocabulary).
  *
  * All React usage goes through the HOST-injected `React` and `ui` kit —
@@ -40,8 +42,16 @@ import type { Notifier } from './notify.js'
 import type { ScanProgress, ScannedSession, SessionScanner } from './core/scan.js'
 import { regexRejection, searchSessions, type SearchScope } from './core/search.js'
 import { buildRows, buildSearchOptions, rowSession, sinceMsFor } from './find-rows.js'
+import {
+  buildWorkspaces,
+  WORKSPACE_CHROME_LINES,
+  WorkspaceList,
+  workspaceDisplayLabel,
+  workspaceKeyOf,
+  type WorkspaceEntry,
+} from './find-workspaces.js'
 import { messageAtLine } from './preview.js'
-import { displayWidth, spreadRow, truncateWidth } from './width.js'
+import { displayWidth, spreadRow, tailWidth, truncateWidth } from './width.js'
 import { HelpOverlay } from './help.js'
 import {
   CHROME_LINES,
@@ -50,7 +60,7 @@ import {
   formatWhen,
   hasTerminalImageHooks,
   isoWhen,
-  splitLayout,
+  splitGeometry,
   wheelRows,
   type ContextBoxProps,
   type ContextMenuEventLike,
@@ -69,7 +79,7 @@ import {
   type ContextMenuState,
   type MenuItem,
 } from './find-menu.js'
-import { ConfirmPane, HintLine, SearchCard, composeHeaderRight, composeListHint, composeReaderHint, type EntryAdvisory } from './find-chrome.js'
+import { ConfirmPane, HintLine, SearchCard, composeHeaderRight, composeListHint, composeReaderHint, composeWorkspaceHint, type EntryAdvisory } from './find-chrome.js'
 import { ListView } from './find-list.js'
 import { PreviewPane, ReaderPane, usePreviewModel } from './find-preview.js'
 import { formatShortcut } from './shortcut-combo.js'
@@ -102,11 +112,13 @@ export interface SceneSeed {
    *  hit (`m:<sid>:6`) would never be built here and `rowId` could never land
    *  (R-136). */
   readonly expanded?: readonly string[]
-  /** The scope the caller was searching with (the panel's Tab switch). Absent
-   *  = the configured default, which is what `/find <words>` and every other
-   *  caller mean. Same reason `expanded` travels: this scene must rebuild the
-   *  list the caller showed, or the handed-over `rowId` can be missing from it
-   *  (a Tab-switched panel lists sessions the repo scope excludes). */
+  /** The range the caller was searching with (the panel's Tab switch), which
+   *  seeds the workspace column's initial selection: `all` selects the
+   *  all-sessions row, `repo` the live cwd's row. Absent = the configured
+   *  default, which is what `/find <words>` and every other caller mean. Same
+   *  reason `expanded` travels: this scene must rebuild the list the caller
+   *  showed, or the handed-over `rowId` can be missing from it (a switched
+   *  panel lists sessions the repo scope excludes). */
   readonly scope?: SearchScope
 }
 
@@ -139,8 +151,21 @@ export function FindScene(props: TuiSceneProps & {
   const { useState, useEffect, useMemo, useRef, useCallback } = React
 
   const [seed] = useState<SceneSeed>(() => props.initialSeed?.() ?? { query: props.initialQuery?.() ?? '' })
+  // The live channel cwd is the workspace the configured `repo` scope points
+  // at; an empty cwd leaves "this repo" undefined, so the all-sessions row is
+  // the only honest starting point there.
+  const currentWorkspace = channel.cwd.trim() === '' ? undefined : channel.cwd
   const [query, setQuery] = useState(seed.query)
-  const [scope, setScope] = useState<SearchScope>(seed.scope ?? config.defaultScope)
+  /** The selected workspace row: a path (the repo scope runs against it), or
+   *  undefined for the all-sessions row. Seeded from the configured default
+   *  scope — the user's own statement of what /find should search — unless the
+   *  caller's handoff carried an explicit one (the panel's Tab switch). */
+  const [workspace, setWorkspace] = useState<string | undefined>(() =>
+    (seed.scope ?? config.defaultScope) === 'all' ? undefined : currentWorkspace,
+  )
+  /** Whether the workspace column is expanded. The two-column layout is the
+   *  default; Tab expands the column, Tab again collapses it back. */
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(config.defaultTime)
   const [useRegex, setUseRegex] = useState(config.regex)
   const [titleOnly, setTitleOnly] = useState(config.titleOnly)
@@ -168,8 +193,13 @@ export function FindScene(props: TuiSceneProps & {
   modeRef.current = mode
   const queryRef = useRef(query)
   queryRef.current = query
-  const scopeRef = useRef(scope)
-  scopeRef.current = scope
+  // The workspace selection and column visibility, in mirror form: callbacks
+  // write these before setState so the next key of the same stdin chunk reads
+  // what this one chose (the mode/query mirrors' discipline).
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+  const workspaceOpenRef = useRef(workspaceOpen)
+  workspaceOpenRef.current = workspaceOpen
   const timeFilterRef = useRef(timeFilter)
   timeFilterRef.current = timeFilter
   const useRegexRef = useRef(useRegex)
@@ -216,14 +246,36 @@ export function FindScene(props: TuiSceneProps & {
   // stable across direction-key steps, toasts and progress ticks instead of
   // re-searching on every render.
   const sinceMs = sinceMsFor(timeFilter)
+  // The workspace row IS the range: the all-sessions row searches everything,
+  // a workspace row runs the repo scope against that path (the search core's
+  // own same-workspace semantics, unchanged).
+  const scope: SearchScope = workspace === undefined ? 'all' : 'repo'
   const hits = useMemo(
     () =>
       searchSessions(
         sessions,
         query,
-        buildSearchOptions(config, { scope, repoCwd: channel.cwd, useRegex, titleOnly, sinceMs }),
+        buildSearchOptions(config, {
+          scope,
+          repoCwd: workspace ?? currentWorkspace,
+          useRegex,
+          titleOnly,
+          sinceMs,
+        }),
       ),
-    [sessions, query, scope, channel, config.caseSensitive, config.pinyin, useRegex, titleOnly, sinceMs],
+    [
+      sessions,
+      query,
+      scope,
+      workspace,
+      currentWorkspace,
+      channel,
+      config.caseSensitive,
+      config.pinyin,
+      useRegex,
+      titleOnly,
+      sinceMs,
+    ],
   )
   // The scene mirrors the core's own regex screening so a pattern that is not
   // usable mid-typing can be explained instead of silently showing "no
@@ -240,11 +292,19 @@ export function FindScene(props: TuiSceneProps & {
   // Flatten to rows (see find-rows.ts — the sidebar panel builds the same
   // list from the same function, so a panel handoff cannot land on a row this
   // surface never rendered).
-  const recentScopeCwd = channel.cwd
   const flat = useMemo<FlatRow[]>(
-    () => buildRows({ sessions, hits, recentMode, scope, repoCwd: recentScopeCwd, sinceMs, expanded }),
-    [recentMode, sessions, hits, expanded, sinceMs, scope, recentScopeCwd],
+    () => buildRows({ sessions, hits, recentMode, scope, repoCwd: workspace, sinceMs, expanded }),
+    [recentMode, sessions, hits, expanded, sinceMs, scope, workspace],
   )
+
+  /** The workspace column's rows: every scanned session grouped by cwd, plus
+   *  the live cwd and the current selection so both keep a row of their own
+   *  while a sweep is still streaming (see buildWorkspaces). */
+  const workspaceEntries = useMemo(
+    () => buildWorkspaces(sessions, [currentWorkspace, workspace]),
+    [sessions, currentWorkspace, workspace],
+  )
+  const selectedWorkspaceKey = workspaceKeyOf(workspace)
 
   // Every row is selectable: cards answer Enter (resume) and Alt+P (preview
   // from the top), hit rows answer the full hit vocabulary. The selection is
@@ -267,6 +327,92 @@ export function FindScene(props: TuiSceneProps & {
   const resolveSelectedRow = useCallback((): FlatRow | undefined => {
     return rowsRef.current[selectedRef.current]
   }, [])
+
+  /** Set the workspace range, in mirror-first order. The workspace column
+   *  commits on selection — there is no separate apply step, so the middle
+   *  column updates under the moving highlight. */
+  const chooseWorkspace = useCallback((cwd: string | undefined) => {
+    if (workspaceRef.current === cwd) return
+    workspaceRef.current = cwd
+    setWorkspace(cwd)
+    setStatus({ text: t('workspace-switched', { workspace: workspaceDisplayLabel(cwd) }), tone: 'info' })
+  }, [])
+
+  /** A workspace row's click: select it and hand the keyboard back to the
+   *  session list (the scope change is the whole action). */
+  const selectWorkspace = useCallback(
+    (entry: WorkspaceEntry) => {
+      chooseWorkspace(entry.cwd)
+      modeRef.current = 'list'
+      setMode('list')
+    },
+    [chooseWorkspace],
+  )
+
+  /** Move the workspace selection by `delta` rows, clamping at both ends.
+   *  The current row is resolved by its stable key, not a stale index: the
+   *  list re-sorts as a sweep streams in. */
+  const moveWorkspace = useCallback(
+    (delta: number) => {
+      if (workspaceEntries.length === 0) return
+      const currentKey = workspaceKeyOf(workspaceRef.current)
+      let index = workspaceEntries.findIndex(entry => entry.key === currentKey)
+      if (index === -1) index = 0
+      const next = workspaceEntries[Math.min(Math.max(0, index + delta), workspaceEntries.length - 1)]
+      if (next !== undefined) chooseWorkspace(next.cwd)
+    },
+    [workspaceEntries, chooseWorkspace],
+  )
+
+  /** A wheel notch over the workspace column. The gesture is the list's own
+   *  (see stepRows): AREA-LOCAL — it needs no keyboard focus, because the
+   *  pointer already names the surface — and one notch travels the host's own
+   *  row count (±3), not a single row, so a pointer-only user walks the
+   *  workspaces at the same pace as the session list. The landed row applies,
+   *  because selecting IS applying in this column (decision §2.6), and
+   *  moveWorkspace clamps at both ends exactly like ↑↓. */
+  const stepWorkspaces = useCallback(
+    (event: WheelEventLike) => {
+      if (actionPendingRef.current || workspaceEntries.length === 0) return
+      const by = wheelRows(event.deltaY, event.deltaX)
+      if (by === 0) return
+      moveWorkspace(by)
+    },
+    [moveWorkspace, workspaceEntries.length],
+  )
+
+  /** Tab in split: expand the workspace column, or collapse it and return the
+   *  keyboard to the session list (a focused pane cannot outlive its column). */
+  const toggleWorkspacePane = useCallback(() => {
+    const next = !workspaceOpenRef.current
+    workspaceOpenRef.current = next
+    setWorkspaceOpen(next)
+    if (!next && modeRef.current === 'workspace') {
+      modeRef.current = 'list'
+      setMode('list')
+    }
+  }, [])
+
+  /** ← from the session list. A collapsed column makes this a no-op, so the
+   *  key stays inert until the user expands it with Tab. */
+  const focusWorkspace = useCallback(() => {
+    if (!workspaceOpenRef.current) return
+    modeRef.current = 'workspace'
+    setMode('workspace')
+  }, [])
+
+  /** Classic layout only: Tab still flips the range there, because there is no
+   *  workspace column to expand. The notice keeps the two-state vocabulary. */
+  const toggleScope = useCallback(() => {
+    const next = workspaceRef.current === undefined ? currentWorkspace : undefined
+    if (next === workspaceRef.current) return
+    workspaceRef.current = next
+    setWorkspace(next)
+    setStatus({
+      text: t('scope-switched', { scope: next === undefined ? t('scope-all') : t('scope-repo') }),
+      tone: 'info',
+    })
+  }, [currentWorkspace])
 
   // Re-anchor the selection DURING this render, not in an effect: the flushes
   // that reorder the list commit their own frame, and a passive effect would
@@ -327,9 +473,16 @@ export function FindScene(props: TuiSceneProps & {
   // classic rendering with no notice and no state), and both shapes budget
   // the reader's wrap width and scroll viewport off their own surface.
   const listHeight = Math.max(2, rows - CHROME_LINES)
-  const layout = splitLayout(columns)
+  // Geometry is per-shape: the workspace column only exists in split, and
+  // opening it carves its width out of the SESSION list's share (the reader
+  // keeps the width the two-column layout gave it, so a Tab press never
+  // reflows the conversation being read).
+  const layout = splitGeometry(columns, workspaceOpen)
   const splitActive = config.layout !== 'classic' && layout.split
-  const readerActive = splitActive ? mode === 'list' || mode === 'preview' : mode === 'preview'
+  const workspacePaneActive = splitActive && workspaceOpen && layout.workspaceWidth > 0
+  const readerActive = splitActive
+    ? mode === 'list' || mode === 'preview' || mode === 'workspace'
+    : mode === 'preview'
   const readerActiveRef = useRef(readerActive)
   readerActiveRef.current = readerActive
   // Split body budget: the bordered pane's interior is paneWidth - 4; the
@@ -366,7 +519,8 @@ export function FindScene(props: TuiSceneProps & {
     viewportHeight: readerViewport,
   })
 
-  // Reset selection when the query, scope, time window or match mode changes shape.
+  // Reset selection when the query, range (workspace), time window or match
+  // mode changes shape.
   const firstResetRun = useRef(true)
   useEffect(() => {
     const firstRun = firstResetRun.current
@@ -381,7 +535,7 @@ export function FindScene(props: TuiSceneProps & {
     // stops waiting, so subsequent edits reset the highlight normally.
     handoffRowId.current = undefined
     selectTo(0)
-  }, [query, scope, timeFilter, useRegex, titleOnly, selectTo])
+  }, [query, workspace, timeFilter, useRegex, titleOnly, selectTo])
 
   /** The session a resume would target, whatever kind of row is selected. The
    *  render-time view of the mirror; the dispatcher resolves its own (see
@@ -580,14 +734,18 @@ export function FindScene(props: TuiSceneProps & {
   }, [])
 
   /** Whether the rendered list column answers the pointer right now: list
-   *  focus in both layouts, plus the split reader focus — the list stays
-   *  visible there and already answers the wheel (stepRows), so hover,
-   *  click and the row menu answer it too (REVIEW R-056). The classic
-   *  preview and the confirm/help screens render no list at all, so the
-   *  mode gate is defense-in-depth there. */
+   *  focus in both layouts, the split reader focus, and the workspace column
+   *  focus — the session list stays visible in all three and already answers
+   *  the wheel (stepRows), so hover, click and the row menu answer it too
+   *  (REVIEW R-056). The classic preview and the confirm/help screens render
+   *  no list at all, so the mode gate is defense-in-depth there. */
   const listPointerLive = useCallback(() => {
     if (actionPendingRef.current) return false
-    return modeRef.current === 'list' || (splitActive && modeRef.current === 'preview')
+    return (
+      modeRef.current === 'list' ||
+      modeRef.current === 'workspace' ||
+      (splitActive && modeRef.current === 'preview')
+    )
   }, [splitActive])
 
   /** Right-click on a list row: the row selects (mirroring hover), and the
@@ -660,14 +818,20 @@ export function FindScene(props: TuiSceneProps & {
     ui,
     modeRef,
     queryRef,
-    scopeRef,
     timeFilterRef,
     useRegexRef,
     titleOnlyRef,
     actionPendingRef,
     menuRef,
     setQuery,
-    setScope,
+    toggleWorkspacePane,
+    toggleScope,
+    focusWorkspace,
+    moveWorkspace,
+    // A page in the workspace column is its OWN viewport (the bordered
+    // column's interior), not the session list's height: jumping by the
+    // latter overshoots by the column's chrome rows (R-182).
+    workspacePageJump: Math.max(1, listHeight - WORKSPACE_CHROME_LINES),
     setTimeFilter,
     setUseRegex,
     setTitleOnly,
@@ -713,11 +877,14 @@ export function FindScene(props: TuiSceneProps & {
     return () => clearTimeout(timer)
   }, [status])
 
-  // Left-column width parameters: derived from the list column (the whole
-  // viewport in classic), keeping every row's content inside its surface
-  // even when the viewport is narrower than the desktop prefix budget.
-  const titleWidth = Math.max(1, Math.min(48, (splitActive ? layout.listWidth : columns) - 4))
-  const hitWidth = Math.max(1, (splitActive ? layout.listWidth : columns) - 4)
+  // Left-column width parameters: derived from the SESSION list's column
+  // (the whole viewport in classic), keeping every row's content inside its
+  // surface even when the viewport is narrower than the desktop prefix
+  // budget. In three-column mode this is layout.listWidth, i.e. already
+  // minus the workspace column.
+  const listWidth = splitActive ? layout.listWidth : columns
+  const titleWidth = Math.max(1, Math.min(48, listWidth - 4))
+  const hitWidth = Math.max(1, listWidth - 4)
   const totalHits = hits.reduce((sum, hit) => sum + hit.total, 0)
   // Active non-default filters, shown in the search card (placeholder row
   // when the query is empty, right-aligned badges otherwise).
@@ -763,7 +930,13 @@ export function FindScene(props: TuiSceneProps & {
       : entryShadow === undefined
         ? undefined
         : { kind: 'shadowed', key: entryShadow.helpKeys ?? formatShortcut(entryCombo ?? '') }
-  const listHint = composeListHint(columns, splitActive, entryAdvisory)
+  // The live range, spelled the same way on both surfaces that carry it: the
+  // search card's placeholder and the empty-list hint. A workspace path can be
+  // long; the TAIL is what names it (the last segment), while the prefix is
+  // what every workspace of one tree shares — so the cut keeps the end and
+  // drops the head (R-183).
+  const scopeLabel = tailWidth(workspaceDisplayLabel(workspace), Math.max(8, columns - 34))
+  const listHint = composeListHint(columns, splitActive, entryAdvisory, workspacePaneActive)
 
   // The open menu's overlay: a full-viewport click-catcher (click/right-click
   // anywhere outside closes) plus the clamped anchored panel — as SIBLINGS,
@@ -900,7 +1073,13 @@ export function FindScene(props: TuiSceneProps & {
             </Text>
           ) : (
             <Text dimColor italic>
-              {t('no-results-scope-hint', { scope: scope === 'repo' ? t('scope-repo') : t('scope-all') })}
+              {splitActive
+                ? workspacePaneActive
+                  ? t('no-results-workspace-open-hint', { scope: scopeLabel })
+                  : t('no-results-workspace-closed-hint', { scope: scopeLabel })
+                : t('no-results-scope-hint', {
+                    scope: scope === 'repo' ? t('scope-repo') : t('scope-all'),
+                  })}
             </Text>
           )}
         </Box>
@@ -914,7 +1093,7 @@ export function FindScene(props: TuiSceneProps & {
         height={listHeight}
         titleWidth={titleWidth}
         hitWidth={hitWidth}
-        width={splitActive ? layout.listWidth : columns}
+        width={listWidth}
         onRowClick={clickRow}
         onRowHover={selectRow}
         onRowFold={toggleFold}
@@ -994,11 +1173,12 @@ export function FindScene(props: TuiSceneProps & {
   }
 
   if (splitActive) {
-    // The split root: header + search card + the content row — left list
-    // column and bordered reader pane side by side, the pane's own round
-    // frame separating the two (no gap column) — then the shared footer.
-    // The reader is visible in BOTH focus states: mode only says which side
-    // owns the keyboard, so the hint line switches vocabulary with it.
+    // The split root: header + search card + the content row — the optional
+    // workspace column, then the session list, then the bordered reader pane
+    // — then the shared footer. No gap columns: the panes' own frames are the
+    // separators. Every pane is visible in every focus state; mode only says
+    // which one owns the keyboard, so the hint line switches vocabulary with
+    // it (workspace pane: Tab to expand/collapse it).
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         <Box flexShrink={0}>
@@ -1010,8 +1190,21 @@ export function FindScene(props: TuiSceneProps & {
             {header.right}
           </Text>
         </Box>
-        <SearchCard React={React} ui={ui} query={query} scope={scope} filters={activeFilters} columns={columns} />
+        <SearchCard React={React} ui={ui} query={query} scopeLabel={scopeLabel} filters={activeFilters} columns={columns} />
         <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+          {workspacePaneActive && (
+            <WorkspaceList
+              React={React}
+              ui={ui}
+              entries={workspaceEntries}
+              selectedKey={selectedWorkspaceKey}
+              focused={mode === 'workspace'}
+              width={layout.workspaceWidth}
+              height={listHeight}
+              onSelect={selectWorkspace}
+              onWheel={stepWorkspaces}
+            />
+          )}
           <Box flexDirection="column" width={layout.listWidth} flexShrink={0}>
             {listBody}
           </Box>
@@ -1036,7 +1229,13 @@ export function FindScene(props: TuiSceneProps & {
         </Box>
         {noticeRow}
         {dividerRow}
-        {hintRow(mode === 'preview' ? composeReaderHint(columns, true) : listHint)}
+        {hintRow(
+          mode === 'workspace'
+            ? composeWorkspaceHint(columns)
+            : mode === 'preview'
+              ? composeReaderHint(columns, true, workspacePaneActive)
+              : listHint,
+        )}
         {menuOverlay}
       </Box>
     )
@@ -1060,7 +1259,7 @@ export function FindScene(props: TuiSceneProps & {
           {header.right}
         </Text>
       </Box>
-      <SearchCard React={React} ui={ui} query={query} scope={scope} filters={activeFilters} columns={columns} />
+      <SearchCard React={React} ui={ui} query={query} scopeLabel={scopeLabel} filters={activeFilters} columns={columns} />
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         {listBody}
       </Box>

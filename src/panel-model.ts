@@ -304,8 +304,10 @@ export class FindPanelDriver {
   }
 
   /**
-   * Tab: flip the scope (`repo` ⇄ `all`) — the scene's key, its vocabulary and
-   * its list-shape rule. A scope switch changes which sessions are in the list
+   * Tab: flip the scope (`repo` ⇄ `all`) — the panel's key, the same vocabulary
+   * and list-shape rule the scene keeps in CLASSIC (split gives the scene's Tab
+   * to the workspace column; the panel has no third column). A scope switch
+   * changes which sessions are in the list
    * at all, so the selection goes back to the top like a query edit: an old
    * highlight (or a handoff anchor) must not survive into a different result
    * set. The notice is what the status row shows until the next query edit,

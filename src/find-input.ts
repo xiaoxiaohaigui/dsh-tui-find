@@ -1,11 +1,13 @@
 /**
  * The scene's keyboard dispatcher as a hook: every key the scene owns while
- * open lands here — typing edits the query, Alt+X chords drive scope/time/
- * regex/title-only/preview/copy/expand/help, arrows and pages move, Esc backs
- * out one layer (query, then screen), and the configured global-entry combo
- * closes the whole scene (the toggle half of that entry — see
- * shortcut-combo.ts). State arrives through the deps bag: refs the handler
- * reads and keeps fresh (React batches every parsed key from one stdin chunk,
+ * open lands here — typing edits the query, Alt+X chords drive time/regex/
+ * title-only/preview/copy/expand/help, Tab expands or collapses the workspace
+ * column in split (and keeps the classic range switch), the workspace column
+ * takes ↑↓/PgUp/PgDn while focused, arrows and pages move, Esc backs out one
+ * layer (query, then screen), and the configured global-entry combo closes
+ * the whole scene (the toggle half of that entry — see shortcut-combo.ts).
+ * State arrives through the deps bag: refs the handler reads and keeps fresh
+ * (React batches every parsed key from one stdin chunk,
  * so the handler can run several times before a re-render — the host
  * browser's focusRef discipline), functional
  * setters for the position edits, and the shared callbacks. Nothing here
@@ -16,7 +18,6 @@
 import { t } from './i18n.js'
 import { matchesShortcut } from './shortcut-combo.js'
 import type { ScannedSession } from './core/scan.js'
-import type { SearchScope } from './core/search.js'
 import {
   currentHitMessage,
   hitLanding,
@@ -54,7 +55,6 @@ export interface FindInputDeps {
   ui: Ui
   modeRef: { current: Mode }
   queryRef: { current: string }
-  scopeRef: { current: SearchScope }
   timeFilterRef: { current: TimeFilter }
   useRegexRef: { current: boolean }
   titleOnlyRef: { current: boolean }
@@ -69,7 +69,18 @@ export interface FindInputDeps {
   moveMenuHighlight: (delta: number) => void
   activateMenu: () => void
   setQuery: (next: string | ((current: string) => string)) => void
-  setScope: (next: SearchScope | ((current: SearchScope) => SearchScope)) => void
+  /** Split only: expand/collapse the workspace column (Tab). */
+  toggleWorkspacePane: () => void
+  /** Classic only: Tab still flips the range there (split gives Tab to the
+   *  workspace column). */
+  toggleScope: () => void
+  /** Hand the keyboard to the workspace column; a no-op while it is collapsed. */
+  focusWorkspace: () => void
+  /** Move the workspace selection by `delta` rows — the range follows
+   *  immediately (the pane commits on selection, no separate apply key). */
+  moveWorkspace: (delta: number) => void
+  /** Rows one PgUp/PgDn moves in the workspace column. */
+  workspacePageJump: number
   setTimeFilter: (next: TimeFilter | ((current: TimeFilter) => TimeFilter)) => void
   setUseRegex: (next: boolean | ((current: boolean) => boolean)) => void
   setTitleOnly: (next: boolean | ((current: boolean) => boolean)) => void
@@ -96,9 +107,10 @@ export interface FindInputDeps {
   setStatus: (next: StatusNote | undefined | ((current: StatusNote | undefined) => StatusNote | undefined)) => void
   rows: number
   /** True while the split layout is live (config layout=split AND the
-   *  terminal is wide enough): ←/→ move the keyboard focus between the list
-   *  and the always-mounted reader pane instead of Alt+P opening the
-   *  full-screen preview. */
+   *  terminal is wide enough): ←/→ move the keyboard focus between the
+   *  workspace column / list / always-mounted reader pane instead of Alt+P
+   *  opening the full-screen preview, and Tab owns the workspace column
+   *  rather than the range switch. */
   splitActive: boolean
   /** The reader's scroll viewport in rows — PgUp/PgDn inside the reader page
    *  by it, and it is the height every window clamp uses (the classic pane
@@ -135,7 +147,6 @@ export function useFindInput(deps: FindInputDeps): void {
     ui,
     modeRef,
     queryRef,
-    scopeRef,
     timeFilterRef,
     useRegexRef,
     titleOnlyRef,
@@ -145,7 +156,11 @@ export function useFindInput(deps: FindInputDeps): void {
     moveMenuHighlight,
     activateMenu,
     setQuery,
-    setScope,
+    toggleWorkspacePane,
+    toggleScope,
+    focusWorkspace,
+    moveWorkspace,
+    workspacePageJump,
     setTimeFilter,
     setUseRegex,
     setTitleOnly,
@@ -242,6 +257,41 @@ export function useFindInput(deps: FindInputDeps): void {
         }
         return
       }
+      // Tab's job follows the layout: in split it expands/collapses the
+      // workspace column (the old range switch lives in that column now); in
+      // classic there is no such column, so Tab keeps flipping the range —
+      // but ONLY from the list. The classic full-screen preview is read-only
+      // and swallows every key but its own vocabulary (see the preview branch
+      // below): a range flip there would swap the conversation being read out
+      // from under the user, while the hint line names no such key (R-180).
+      if (key.tab) {
+        if (splitActive) toggleWorkspacePane()
+        else if (modeRef.current === 'workspace') {
+          // A resize across the width gate can strand the split's workspace
+          // mode in the classic rendering; the first Tab retires it without
+          // also flipping the range.
+          modeRef.current = 'list'
+          setMode('list')
+        } else if (modeRef.current === 'list') {
+          toggleScope()
+        }
+        return
+      }
+      // The workspace column owns its own cursor while it holds the keyboard:
+      // ↑↓ moves the selection (the range follows immediately — selecting IS
+      // applying), Enter/→ hands the keyboard back to the session list. Esc is
+      // the shared branch above, so it backs out one layer too.
+      if (modeRef.current === 'workspace' && splitActive) {
+        if (key.upArrow) moveWorkspace(-1)
+        else if (key.downArrow) moveWorkspace(1)
+        else if (key.pageUp || key.pageDown) {
+          moveWorkspace(key.pageUp ? -workspacePageJump : workspacePageJump)
+        } else if (isPlainReturn(key) || key.rightArrow) {
+          modeRef.current = 'list'
+          setMode('list')
+        }
+        return
+      }
       if (modeRef.current === 'preview') {
         // The reader has no cursor: its whole position is the window's top
         // line, and every navigation key moves that window directly. The
@@ -327,16 +377,6 @@ export function useFindInput(deps: FindInputDeps): void {
         return
       }
       // list mode
-      if (key.tab) {
-        const next: SearchScope = scopeRef.current === 'repo' ? 'all' : 'repo'
-        scopeRef.current = next
-        setScope(next)
-        setStatus({
-          text: t('scope-switched', { scope: next === 'repo' ? t('scope-repo') : t('scope-all') }),
-          tone: 'info',
-        })
-        return
-      }
       if (altOnly && lower === 't') {
         // Cycle the time window: 全部 → 近 7 天 → 近 30 天 → 全部.
         const current = timeFilterRef.current
@@ -410,6 +450,13 @@ export function useFindInput(deps: FindInputDeps): void {
       if (altOnly && lower === 'h') {
         modeRef.current = 'help'
         setMode('help')
+        return
+      }
+      if (key.leftArrow && splitActive) {
+        // Split: ← hands the keyboard to the workspace column. A collapsed
+        // column makes the callback a no-op, so the key stays inert then;
+        // from the reader, ← reaches the list first (the preview branch).
+        focusWorkspace()
         return
       }
       if (key.rightArrow && splitActive) {

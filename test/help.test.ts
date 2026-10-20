@@ -152,7 +152,7 @@ describe('helpSections', () => {
     expect(fold?.action).toMatch(/fold|unfold/i)
   })
 
-  it('teaches the focus arrows in split and the Alt+P open in classic', () => {
+  it('teaches the split focus arrows and workspace section, and the classic Alt+P open', () => {
     setLangOverride('en')
     // The list section's reader entry is layout-specific: classic opens the
     // full-screen preview with Alt+P, split focuses the always-on pane with
@@ -167,11 +167,20 @@ describe('helpSections', () => {
     expect(split).toContain('→')
     expect(split).toContain('←')
     expect(split).not.toContain('Alt+P')
-    // Same row counts either way: the vocabulary swaps, the sheet's shape
-    // does not.
-    expect(helpSections(100, true).map(section => section.rows.length)).toEqual(
-      helpSections(100, false).map(section => section.rows.length),
-    )
+    // Split adds the workspace column's own section (↑↓ / Enter/→ / Tab /
+    // Esc); classic has no such column and keeps its original three sections.
+    expect(helpSections(100, true).map(section => section.rows.length)).toEqual([14, 4, 7, 5])
+    expect(helpSections(100, false).map(section => section.rows.length)).toEqual([14, 7, 5])
+    // The workspace section carries the selection vocabulary, and the list
+    // section's Tab row describes the column toggle instead of the old scope
+    // switch there.
+    // list + workspace + preview each carry an ↑↓ row in split.
+    expect(split.filter(key => key === '↑↓')).toHaveLength(3)
+    expect(split).toContain('Enter/→')
+    const splitTab = helpSections(100, true)[0]!.rows.find(row => row.keys === 'Tab')
+    expect(splitTab?.action).toBe(t('help-list-workspace'))
+    const classicTab = helpSections(100, false)[0]!.rows.find(row => row.keys === 'Tab')
+    expect(classicTab?.action).toBe(t('help-list-scope'))
   })
 
   it('fills every cell at a comfortable width', () => {

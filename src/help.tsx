@@ -101,7 +101,10 @@ export function helpSections(
       title: t('help-section-list'),
       rows: [
         { keys: '<char>', action: t('help-list-type') },
-        { keys: 'Tab', action: t('help-list-scope') },
+        // Tab's job follows the layout: classic flips the range, split
+        // expands/collapses the workspace column (whose own keys get a
+        // section below).
+        { keys: 'Tab', action: splitActive ? t('help-list-workspace') : t('help-list-scope') },
         { keys: 'Alt+R', action: t('help-list-regex') },
         { keys: 'Alt+T', action: t('help-list-time') },
         { keys: 'Alt+N', action: t('help-list-title-only') },
@@ -127,6 +130,22 @@ export function helpSections(
         { keys: 'layout', action: t('help-list-layout') },
       ],
     },
+    // The workspace column only exists in the three-column split layout; its
+    // keys are listed there and nowhere else, so classic stays exactly as it
+    // was.
+    ...(splitActive
+      ? [
+          {
+            title: t('help-section-workspace'),
+            rows: [
+              { keys: '↑↓', action: t('help-workspace-select') },
+              { keys: 'Enter/→', action: t('help-workspace-apply') },
+              { keys: 'Tab', action: t('help-workspace-hide') },
+              { keys: 'Esc', action: t('help-workspace-back') },
+            ],
+          },
+        ]
+      : []),
     {
       title: t('help-section-preview'),
       rows: [
