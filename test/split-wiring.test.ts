@@ -101,7 +101,8 @@ const withoutDim = (style: string): string => style.replaceAll('\u001b[2m', '')
 // kit's Box swallows onWheel into its style bag (its own wheel surfaces
 // bypass Box with raw ink-box elements), so wheel routing to plugin
 // handlers only exists on 0.10+ — the context-menu dispatch is likewise
-// 0.10-only. Both skip on 0.9.3 and run on the 0.10.x verify:hosts leg.
+// 0.10-only. Both skip on the local 0.9.3 dev host and run on the
+// 0.13.0/0.16.1 host-matrix legs.
 const generation10 = hasTerminalImageHooks(hostUi)
 
 describe('split rendering and anchoring', () => {

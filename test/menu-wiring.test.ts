@@ -30,8 +30,8 @@ afterAll(() => setLangOverride(undefined))
 
 // The same structural generation probe the scene gates its handler
 // attachment on: 0.9 hosts dispatch no context-menu events, so the
-// host-dispatch cases run only where they can (the 0.10 leg of the
-// host matrix), and 0.9 pins its own inertness in the gate test below.
+// host-dispatch cases run only where they can (the 0.13.0/0.16.1 legs of
+// the host matrix), and the legacy gate test below pins the inert path.
 const menuCapable = hasTerminalImageHooks(hostUi)
 
 const menuHarness = (notify?: (text: string, tone: 'info' | 'error') => void) =>
