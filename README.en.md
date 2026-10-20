@@ -15,8 +15,8 @@
 
 - **Instant**: fzf-style in-memory filtering with results streaming in as the scan runs; multi-term AND, JS regex, pinyin (full readings / initials), title-only mode, time windows.
 - **Readable & copyable**: the split layout (list on the left, conversation reader on the right, styled after /resume) or a full-screen preview — anchored on the hit with highlighting, one-key copy of the text or the log path.
-- **Resumable**: `↵` resumes the session with double confirmation; context menu on right-click (0.10+ hosts only).
-- **Always in the sidebar** (dsh-TUI 0.13.0+): the same single-column list also lives in a right-column panel — search straight from the sidebar and click a row to continue reading in the full-screen scene.
+- **Resumable**: `↵` resumes the session with double confirmation; context menu on right-click.
+- **Always in the sidebar**: the same single-column list also lives in a right-column panel — search straight from the sidebar and click a row to continue reading in the full-screen scene.
 
 ![The full-screen search scene: results grouped per session on the left, the read-only reader on the right, hits highlighted](./assets/dsh-tui-find-scene.png)
 
@@ -50,22 +50,40 @@ Keys inside the scene:
 |---|---|
 | any character | Instant filtering; an empty query lists recent sessions |
 | `↑↓` / `PgUp` `PgDn` | Move between entries / page |
-| `Tab` / `Alt+T` | Scope (this repo ⇄ all) / time window (all ⇄ last 7 days ⇄ last 30 days) |
+| `Tab` | Split layout: expand / hide the workspace column (the scope follows its selected row — see below); classic layout: scope (this repo ⇄ all) |
+| `Alt+T` | Time window (all ⇄ last 7 days ⇄ last 30 days) |
 | `Alt+R` / `Alt+N` | Regex matching / title-only search |
-| `→` / `←` | Split layout: → focuses the reader pane, ← returns to the list |
+| `→` / `←` | Split layout: `→` focuses the reader pane, `←` returns to the list and one more `←` enters the workspace column |
 | `Alt+P` | Classic layout: open the full-screen preview (anchored on the hit, highlighted) |
 | `Alt+C` / `Alt+E` | Copy the hit's text / fold, unfold this session's hits (the row-end `▸ (+N)` badge's own action) |
 | `Alt+H` | Keyboard-help panel |
 | `↵` / `Esc` | Resume session (double confirmation) / clear the query, go back, exit |
 
-Mouse: left-click selects, hover highlights, the wheel moves the selection by the host's own notch size (about 3 rows per notch; inside the reader it scrolls the reader). A session with more than three hits carries a `▸ (+N)` badge at the right end of its last visible hit row — click it to reveal the session's remaining hits (it turns into `▴ less` in place); it is the one control whose click does not follow the row, which selects and opens the resume confirmation. Right-click opens a context menu (0.10+ hosts only): copy message text / copy session log path / resume this session.
+Mouse: left-click selects, hover highlights, the wheel moves the selection by the host's own notch size (about 3 rows per notch; inside the reader it scrolls the reader, over the workspace column it walks the workspaces). A session with more than three hits carries a `▸ (+N)` badge at the right end of its last visible hit row — click it to reveal the session's remaining hits (it turns into `▴ less` in place); it is the one control whose click does not follow the row, which selects and opens the resume confirmation. Right-click opens a context menu: copy message text / copy session log path / resume this session.
 
 A few behaviors worth knowing:
 
-- **Layout** is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split); narrower terminals fall back to the single column automatically. `classic` keeps the single-column list with the full-screen `Alt+P` preview.
+- **Layout** is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split); narrower terminals fall back to the single column automatically. `Tab` expands the workspace column on the left, turning the row into "workspaces + list + reader" (see below). `classic` keeps the single-column list with the full-screen `Alt+P` preview, where `Tab` still toggles the scope.
 - **The reader has no cursor**: `↑↓` scroll it line by line, `PgUp`/`PgDn` and the wheel move it by page / notch, and `n`/`N` jump to the next / previous hit outside the window (wrapping). `Alt+C` copies the current hit (the one n/N is parked on, or the nearest hit above the viewport after free scrolling; the top message when the session has no hits). When a hit sits too deep in its message for the viewport, the reader opens windowed onto the hit's own line instead of parking on a message head that hides it.
 - **Results** are grouped per session, the first 3 hits show per session (`(+N)` hint), most-recent-first; the scan starts the moment the scene opens and results stream in, with live progress in the header.
-- **Warm-up**: about 10 seconds after startup the plugin pre-builds the index in the background (disable via the `warmup` config), so the first `/find` opens instantly; 0.10+ hosts show an "indexing n/m" row above the prompt — click it to cancel. The warm-up only moves the cold decode into idle time; it does not reduce total decoding.
+- **Warm-up**: about 10 seconds after startup the plugin pre-builds the index in the background (disable via the `warmup` config), so the first `/find` opens instantly; while the background index runs, an "indexing n/m" row sits above the prompt — click it to cancel. The warm-up only moves the cold decode into idle time; it does not reduce total decoding.
+
+### The workspace column (split layout)
+
+The third column `Tab` opens is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets a row (most-recently-used first). The number at the row's end is **how many sessions the list shows once that row is picked** — the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse).
+
+| Key / action | Effect |
+|---|---|
+| `←` (from the session list) | Enter the workspace column; press `Tab` first while it is hidden |
+| `↑↓` / `PgUp` `PgDn` | Move the selection / page it by one viewport — **selecting IS applying**: the middle column and the reader follow immediately |
+| `↵` / `→` | Hand the keyboard back to the session list |
+| `Esc` | Back out one layer (workspace column → list) |
+| hover / click | Tint only / select and hand the keyboard back (hover never switches the scope — a pointer passing over the column must not change it) |
+| wheel | Move the selection (one notch = the host's ±3 rows, the same step the session list uses) — no keyboard focus needed, and selecting applies |
+
+- **The scope IS the selected workspace**: "All sessions" means no scope at all; a workspace row matches that path (its own cwd, its subdirectories, and sessions resumed into a subdirectory) — the same semantics the old "this repo" scope had, as a list instead of a two-state toggle.
+- **Both prompts follow the scope**: the search card's placeholder and the empty-list hint spell the current range, and a deep path keeps its **tail** (the last segment is what tells one workspace from another).
+- **The opening row** still comes from `defaultScope` (`all` → all sessions, `repo` → the live workspace); a scope handed over by the sidebar panel wins over it.
 
 ### Global shortcut
 
@@ -76,9 +94,9 @@ The default is `Alt+F`, not `Ctrl+Shift+F`: mainstream terminals reserve that ch
 - The other way round, **some combos belong to the host itself and a remap onto them never takes effect**: `alt+r` (the host's Continue), `alt+s`/`alt+v`/`alt+z`, and `ctrl+b`/`ctrl+e`/`ctrl+g`/`ctrl+k`/`ctrl+l`/`ctrl+o`/`ctrl+p`/`ctrl+q`/`ctrl+r`/`ctrl+t`/`ctrl+v`/`ctrl+z` and friends (the full set follows the host's own action bindings). The registration is refused and **the plugin keeps the previous binding** (still `alt+f` by default); the scene's hint line then reads "refused — the entry is `Alt+F`". The settings card keeps showing the value you typed, so trust the hint line.
 - The toasts on these paths all start with `dsh-tui-find: `, so the host's shared notification frame says who is talking.
 
-### Sidebar panel (dsh-TUI 0.13.0+)
+### Sidebar panel
 
-dsh-TUI 0.13.0 introduced the right column; the plugin registers a "Search" panel there (`⌕` tab) that carries the same single-column list — search straight from the sidebar instead of opening the full-screen scene first.
+The right column arrived in dsh-TUI 0.13.0 — the plugin's supported floor; the plugin registers a "Search" panel there (`⌕` tab) that carries the same single-column list — search straight from the sidebar instead of opening the full-screen scene first.
 
 | Key / action | Effect |
 |---|---|
@@ -154,15 +172,16 @@ Session root is probed in order (first hit wins): the `sessionRoot` config (excl
 npm install          # dev dependencies
 npm run build        # tsc → dist/
 npm test             # pretest builds and generates fixtures, then runs the full vitest suite
-npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each on 0.9.3, 0.10.1, 0.12.0, 0.13.0, 0.16.1
+npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each on 0.13.0 (supported floor) and 0.16.1 (release line)
 ```
 
 The suite covers frame-chain parsing, the scanner (change tokens and the stamp-tick guard, offset-watermark incremental decode, generation enumeration, sub-agent filtering), search (multi-term AND / regex / pinyin / title-only / time window / scope), the regex backtracking cost screen, the preview reader and the scene wiring (against the real host renderer, with mouse injection), the shared list model, host-generation dispatch and the settings card, and the entry combo's grammar and shadow table — see the cases under `test/` for the itemized list.
 
 ## Requirements
 
-- dsh-TUI v0.9+ (v0.15 community-draft plugin system); capabilities newer than the 0.9.3 baseline soft-probe and degrade gracefully — no forced host upgrade
-- The sidebar panel needs dsh-TUI ≥ 0.13.0 (`ctx.tuiPanels`); older hosts get zero registration, zero warnings and unchanged behavior
+- dsh-TUI **≥ 0.13.0** (v0.15 community-draft plugin system): 0.13.0 is the line that introduced the right column and `ctx.tuiPanels`, and it is this plugin's minimum supported host (`peerDependencies` says the same). Pre-0.13 hosts are unsupported and have no sidebar panel
+- The sidebar panel ships with that baseline (0.13.0+ always has `ctx.tuiPanels`); a host build whose seam is missing still gets the soft fallback — zero registration, zero warnings
+- Version policy and verification scope: `docs/decisions/2026-10-20-host-baseline-0-13.md`
 - Node `^22.19 || >=24`; Windows / macOS / Linux
 
 ## License
