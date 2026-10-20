@@ -52,13 +52,16 @@ import process from 'node:process'
 
 const PACKAGE = '@deepseek-harness-tui/dsh-tui'
 /** The compatibility matrix: the 0.9.3 build baseline, the 0.10.x line that
- *  introduced the 0.10-only seams, the 0.12.0 line the live host ran, and the
+ *  introduced the 0.10-only seams, the 0.12.0 line the live host ran, the
  *  0.13.0 line that introduced the sidebar + `ctx.tuiPanels` (added 2026-10-04
  *  with the panel feature: this leg is the one that compiles and runs the
  *  plugin against the seam's real declarations, while 0.9.3 – 0.12.0 prove the
- *  soft probe's no-op path). 0.11.x is covered by 0.12.0 for every seam this
- *  plugin uses, so it is not pinned. */
-const DEFAULT_HOSTS = ['0.9.3', '0.10.1', '0.12.0', '0.13.0']
+ *  soft probe's no-op path), and 0.16.1 — the release line running on the dev
+ *  machine since 2026-10-20, which carries the panel-entry ownership rework
+ *  (upstream #1441) and the paging guard that now yields to a focused panel.
+ *  0.11.x is covered by 0.12.0 and 0.14.x/0.15.x by 0.16.1 for every seam this
+ *  plugin uses, so neither is pinned. */
+const DEFAULT_HOSTS = ['0.9.3', '0.10.1', '0.12.0', '0.13.0', '0.16.1']
 
 function parseArgs(argv) {
   const hosts = []
