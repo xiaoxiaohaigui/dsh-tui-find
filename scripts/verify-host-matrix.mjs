@@ -27,7 +27,7 @@
  *
  * Usage:
  *   node scripts/verify-host-matrix.mjs                 # every pinned host
- *   node scripts/verify-host-matrix.mjs --host 0.11.2   # one extra host
+ *   node scripts/verify-host-matrix.mjs --host 0.11.2   # replace the default legs
  *   node scripts/verify-host-matrix.mjs --keep          # keep the copies
  *
  * Exit code is non-zero if any host fails (pack, build or test); each
@@ -58,7 +58,8 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *  plugin against the seam's real declarations, while 0.9.3 – 0.12.0 prove the
  *  soft probe's no-op path), and 0.16.1 — the release line running on the dev
  *  machine since 2026-10-20, which carries the panel-entry ownership rework
- *  (upstream #1441) and the paging guard that now yields to a focused panel.
+ *  (upstream #1441) and the paging guard that returns when the right column is
+ *  focused -- the key is still dropped there, not forwarded to the panel.
  *  0.11.x is covered by 0.12.0 and 0.14.x/0.15.x by 0.16.1 for every seam this
  *  plugin uses, so neither is pinned. */
 const DEFAULT_HOSTS = ['0.9.3', '0.10.1', '0.12.0', '0.13.0', '0.16.1']

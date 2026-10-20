@@ -67,8 +67,9 @@ jobs:
       - name: Test
         run: npm test
 
-  # The three-leg host compatibility matrix (0.9.3 build baseline + 0.10.1
-  # seams generation + 0.12.0 live line) is this repo's release gate; see
+  # The five-leg host compatibility matrix (0.9.3 build baseline + 0.10.1
+  # seams generation + 0.12.0 live line + 0.13.0 sidebar/`ctx.tuiPanels` +
+  # 0.16.1 current release line) is this repo's release gate; see
   # docs/decisions/2026-09-12-dual-version-compat-strategy.md. It copies the
   # installed tree, swaps in each published host tarball and runs build + test
   # against it. Compatibility-affecting changes must be green on every leg
@@ -89,7 +90,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --include=dev
-      - name: Host matrix (0.9.3 + 0.10.1 + 0.12.0)
+      - name: Host matrix (0.9.3 + 0.10.1 + 0.12.0 + 0.13.0 + 0.16.1)
         run: npm run verify:hosts
 
   # The published tarball must never carry workspace docs, scripts or tests.
