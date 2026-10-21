@@ -207,13 +207,13 @@ function section(ns: string): TuiSettingsSection {
         path: ['layout'],
         label: 'Layout',
         descriptions: zh('界面布局'),
-        hint: 'Split panes (list + reader side by side, needs >= 100 columns; the workspace column is shown by default) or classic (single list + full-screen preview); default split',
+        hint: 'Split panes (list + reader side by side, needs >= 100 columns) or classic (single list + full-screen preview); default split',
         hintDescriptions: zh(
-          '分栏（左列表 · 右内容，需终端 ≥ 100 列，不足自动回退；工作区栏默认展开）或经典（单栏列表 + 全屏预览）；默认分栏',
+          '分栏（左列表 · 右内容，需终端 ≥ 100 列，不足自动回退）或经典（单栏列表 + 全屏预览）；默认分栏',
         ),
         kind: 'select',
         options: [
-          { value: 'split', label: 'Split panes', descriptions: zh('分栏（列表 · 阅读窗，工作区栏默认展开）') },
+          { value: 'split', label: 'Split panes', descriptions: zh('分栏（列表 · 预览）') },
           { value: 'classic', label: 'Classic', descriptions: zh('经典（单栏列表 + 全屏预览）') },
         ],
       },
