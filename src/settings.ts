@@ -132,9 +132,10 @@ const zh = (text: string): { zh: string } => ({ zh: text })
 
 /**
  * The card's subpages, in display order. The root page keeps what a user
- * retunes while reading a result (scope, time window, layout, the global
- * entry), and each group here is a cohesive domain: how a query matches, what
- * enters the index, and the one knob that overrides the session root.
+ * retunes while reading a result (scope, time window, layout, the workspace
+ * column's initial state, the global entry), and each group here is a
+ * cohesive domain: how a query matches, what enters the index, and the one
+ * knob that overrides the session root.
  *
  * `as const` is load-bearing: it makes the ids a literal union, so a field
  * referring to a group that is not declared here fails `tsc` instead of
@@ -206,15 +207,23 @@ function section(ns: string): TuiSettingsSection {
         path: ['layout'],
         label: 'Layout',
         descriptions: zh('界面布局'),
-        hint: 'Split panes (list + reader side by side, needs >= 100 columns) or classic (single list + full-screen preview); default split',
+        hint: 'Split panes (list + reader side by side, needs >= 100 columns; the workspace column is shown by default) or classic (single list + full-screen preview); default split',
         hintDescriptions: zh(
-          '分栏（左列表 · 右内容，需终端 ≥ 100 列，不足自动回退）或经典（单栏列表 + 全屏预览）；默认分栏',
+          '分栏（左列表 · 右内容，需终端 ≥ 100 列，不足自动回退；工作区栏默认展开）或经典（单栏列表 + 全屏预览）；默认分栏',
         ),
         kind: 'select',
         options: [
-          { value: 'split', label: 'Split panes', descriptions: zh('分栏（左列表 · 右内容）') },
+          { value: 'split', label: 'Split panes', descriptions: zh('分栏（列表 · 阅读窗，工作区栏默认展开）') },
           { value: 'classic', label: 'Classic', descriptions: zh('经典（单栏列表 + 全屏预览）') },
         ],
+      },
+      {
+        path: ['workspacePane'],
+        label: 'Show workspace by default',
+        descriptions: zh('默认展示工作区'),
+        hint: 'Open /find with the workspace column already expanded (split layout only; Tab still collapses/expands it in the scene); default on',
+        hintDescriptions: zh('打开 /find 时默认展示工作区栏（仅分栏布局；场景内 Tab 仍可收起/展开）；默认开启'),
+        kind: 'boolean',
       },
       {
         path: ['panel'],
@@ -439,6 +448,7 @@ function registerNamespaceScope(
       defaultScope: z.union(['repo', 'all']).default(resolved.defaultScope),
       defaultTime: z.union(['all', '7d', '30d']).default(resolved.defaultTime),
       layout: z.union(['split', 'classic']).default(resolved.layout),
+      workspacePane: z.boolean().default(resolved.workspacePane),
       // The panel row's own switch: on this generation the namespace IS the
       // value source, so a key missing here would let a stored `false` resolve
       // back to the default (on) and re-register the panel on every boot —
@@ -542,6 +552,7 @@ type ConfigValue = {
   defaultScope?: 'repo' | 'all'
   defaultTime?: 'all' | '7d' | '30d'
   layout?: 'split' | 'classic'
+  workspacePane?: boolean
   panel?: boolean
   caseSensitive?: boolean
   regex?: boolean

@@ -95,7 +95,10 @@ const foreignDir = 'P:\\elsewhere'
 const local = at(localDir, 'local', 'Local', 1_000)
 const foreign = at(foreignDir, 'foreign', 'Foreign', 2_000)
 
-const wide = { columns: 120, rows: 20 }
+// Most cases below walk the pre-change start (two columns) and press Tab to
+// open the workspace column, so they pin `workspacePane: false`. The setting's
+// default-on path has its own case at the top of the scene suite.
+const wide = { columns: 120, rows: 20, workspacePane: false }
 
 // Pointer delivery rides the host generation, as the split tests note: the
 // 0.9.3 kit's Box swallows onWheel into its style bag (its own wheel surfaces
@@ -282,6 +285,42 @@ describe('the workspace row layout and highlight', () => {
 })
 
 describe('the workspace column in the scene', () => {
+  it('opens with the workspace column expanded by default (workspacePane)', async () => {
+    // The setting defaults ON: split opens three columns with no key press,
+    // and Tab collapses the column for the rest of the mount.
+    const harness = await mount(local, {
+      columns: 120,
+      rows: 20,
+      query: '',
+      defaultScope: 'all',
+      scanner: { scan: async () => [local, foreign] },
+    })
+    try {
+      await waitForMatch(() => harness.all(), /Foreign/)
+      await waitForMatch(() => harness.all(), /Workspaces/)
+      harness.resize(121, 20)
+      await waitFor()
+      const pane = workspaceColumn(harness.latest())
+      expect(pane).toMatch(/Workspaces/)
+      expect(pane).toMatch(/❯\s*All\s*sessions/)
+      // The range is the visible carrier itself: every workspace has a row.
+      expect(pane).toMatch(new RegExp(escapeRegExp(localBase)))
+      expect(pane).toMatch(/P:\/elsewhere/)
+      // The session list still shows every session.
+      expect(harness.latest()).toMatch(/Local/)
+      expect(harness.latest()).toMatch(/Foreign/)
+
+      // Tab still collapses it (the in-scene toggle is unchanged).
+      harness.send('\t')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(workspaceColumn(harness.latest())).not.toMatch(/Workspaces/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('expands with Tab and starts on all sessions when defaultScope is all', async () => {
     const harness = await mount(local, {
       ...wide,
@@ -666,6 +705,7 @@ describe('the three-column layout regressions', () => {
     const harness = await mount(deep, {
       columns: 100,
       rows: 20,
+      workspacePane: false,
       query: '',
       defaultScope: 'all',
       scanner: { scan: async () => [deep] },
@@ -717,6 +757,7 @@ describe('the three-column layout regressions', () => {
     const harness = await mount(deep, {
       columns: 120,
       rows: 20,
+      workspacePane: false,
       query: 'zzz-nothing',
       defaultScope: 'all',
       scanner: { scan: async () => [deep] },

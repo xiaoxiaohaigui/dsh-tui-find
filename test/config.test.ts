@@ -61,6 +61,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       defaultScope: 'repo',
       defaultTime: 'all',
       layout: 'split',
+      workspacePane: true,
       panel: true,
       caseSensitive: false,
       regex: false,
@@ -75,6 +76,16 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       lang: 'auto',
       shortcut: 'alt+f',
     })
+  })
+
+  it('workspacePane defaults on and only an explicit false disables it', () => {
+    // The 2026-10-21 user decision: split opens with the workspace column
+    // showing. A junk value must keep that default, like `panel` below.
+    expect(resolveConfig({}).workspacePane).toBe(true)
+    expect(resolveConfig({ workspacePane: true }).workspacePane).toBe(true)
+    expect(resolveConfig({ workspacePane: false }).workspacePane).toBe(false)
+    expect(resolveConfig({ workspacePane: 'no' as never }).workspacePane).toBe(true)
+    expect(LIVE_CONFIG_KEYS).toContain('workspacePane')
   })
 
   it('warmup defaults on and only an explicit false disables it', () => {

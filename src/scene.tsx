@@ -165,9 +165,11 @@ export function FindScene(props: TuiSceneProps & {
   const [workspace, setWorkspace] = useState<string | undefined>(() =>
     (seed.scope ?? config.defaultScope) === 'all' ? undefined : currentWorkspace,
   )
-  /** Whether the workspace column is expanded. The two-column layout is the
-   *  default; Tab expands the column, Tab again collapses it back. */
-  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  /** Whether the workspace column is expanded. Seeded from the
+   *  `workspacePane` config (default ON, so split opens three columns); Tab
+   *  toggles it for the rest of this mount. Read once at mount — a settings
+   *  edit applies to the next opening, not to the scene already on screen. */
+  const [workspaceOpen, setWorkspaceOpen] = useState(config.workspacePane)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(config.defaultTime)
   const [useRegex, setUseRegex] = useState(config.regex)
   const [titleOnly, setTitleOnly] = useState(config.titleOnly)

@@ -172,6 +172,10 @@ export async function mount(
     /** Scene layout override — the split-layout tests pin both forms and
      *  the width fallback (default resolved layout is 'split'). */
     layout?: 'split' | 'classic'
+    /** Split's initial workspace-column state (default: the resolved setting,
+     *  ON). The cases that walk the two-column start pass `false`; the
+     *  default-on cases leave it unset. */
+    workspacePane?: boolean
     /** Initial range override (default: 'all', the shared baseline). The
      *  workspace-column tests pin the seed from both configured values. */
     defaultScope?: 'repo' | 'all'
@@ -261,6 +265,7 @@ export async function mount(
     config: resolveConfig({
       defaultScope: options.defaultScope ?? 'all',
       ...(options.layout === undefined ? {} : { layout: options.layout }),
+      ...(options.workspacePane === undefined ? {} : { workspacePane: options.workspacePane }),
       ...(options.shortcut === undefined ? {} : { shortcut: options.shortcut }),
       ...(options.showSubagentSessions === undefined
         ? {}

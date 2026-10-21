@@ -77,6 +77,11 @@ export type Config = {
    *  automatically); `classic` always renders the single-column list with
    *  the full-screen Alt+P preview. */
   layout?: 'split' | 'classic'
+  /** Split layout: open /find with the workspace column already expanded.
+   *  Default ON (split therefore opens three columns); Tab still expands /
+   *  collapses the column for the rest of the mount. Ignored by classic,
+   *  which has no such column. */
+  workspacePane?: boolean
   /** Register the sidebar search panel (dsh-TUI 0.13.0+). Default ON. OFF
    *  means the panel is never registered at all — the host appends a plugin
    *  panel's id to its own enable list on every registration, so this row is
@@ -137,6 +142,7 @@ export const LIVE_CONFIG_KEYS = [
   'defaultScope',
   'defaultTime',
   'layout',
+  'workspacePane',
   'panel',
   'caseSensitive',
   'regex',
@@ -247,6 +253,11 @@ const configFields = {
   defaultScope: z.union(['repo', 'all']).default('repo'),
   defaultTime: z.union(['all', '7d', '30d']).default('all'),
   layout: z.union(['split', 'classic']).default('split'),
+  // Split's third column starts expanded (2026-10-21 user decision): the
+  // workspace list is the scope's visible home, so /find opens on it. Tab
+  // still collapses it for the rest of the mount. Not live on the scene:
+  // the state is seeded at mount, so an edit applies to the next opening.
+  workspacePane: z.boolean().default(true),
   // The sidebar panel (dsh-TUI 0.13.0+). Off = the panel is never registered:
   // the host's own enable list re-appends a plugin id on every registration,
   // so this switch is the only DURABLE opt-out (see the decision file §5).
@@ -297,6 +308,8 @@ export interface ResolvedConfig {
   readonly defaultScope: 'repo' | 'all'
   readonly defaultTime: 'all' | '7d' | '30d'
   readonly layout: 'split' | 'classic'
+  /** Split layout: the workspace column starts expanded (default true). */
+  readonly workspacePane: boolean
   /** Register the sidebar panel (dsh-TUI 0.13.0+); false = never register. */
   readonly panel: boolean
   readonly caseSensitive: boolean
@@ -326,6 +339,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
     // Defensive: any unknown value lands on the split default (the schema
     // validates real rows; this layer also feeds tests and drift).
     layout: value.layout === 'classic' ? 'classic' : 'split',
+    workspacePane: value.workspacePane !== false,
     panel: value.panel !== false,
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,

@@ -50,7 +50,7 @@ Keys inside the scene:
 |---|---|
 | any character | Instant filtering; an empty query lists recent sessions |
 | `↑↓` / `PgUp` `PgDn` | Move between entries / page |
-| `Tab` | Split layout: expand / hide the workspace column (the scope follows its selected row — see below); classic layout: scope (this repo ⇄ all) |
+| `Tab` | Split layout: expand / hide the workspace column (shown by default — see `workspacePane`; the scope follows its selected row — see below); classic layout: scope (this repo ⇄ all) |
 | `Alt+T` | Time window (all ⇄ last 7 days ⇄ last 30 days) |
 | `Alt+R` / `Alt+N` | Regex matching / title-only search |
 | `→` / `←` | Split layout: `→` focuses the reader pane, `←` returns to the list and one more `←` enters the workspace column |
@@ -63,14 +63,14 @@ Mouse: left-click selects, hover highlights, the wheel moves the selection by th
 
 A few behaviors worth knowing:
 
-- **Layout** is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split); narrower terminals fall back to the single column automatically. `Tab` expands the workspace column on the left, turning the row into "workspaces + list + reader" (see below). `classic` keeps the single-column list with the full-screen `Alt+P` preview, where `Tab` still toggles the scope.
+- **Layout** is picked by the `layout` config: `split` (default) shows the list and a conversation reader side by side on terminals ≥ 100 columns (styled after the /resume browser) — the selection anchors the reader, the pane scrolls / copies / right-clicks on its own, and `→` focuses the pane while `←` returns to the list (`Alt+P` is not used in split); narrower terminals fall back to the single column automatically. Split opens with the workspace column already on the left, so `/find` starts on "workspaces + list + reader" (set `workspacePane: false` to start two-column; `Tab` still hides / expands the column in the scene — see below). `classic` keeps the single-column list with the full-screen `Alt+P` preview, where `Tab` still toggles the scope.
 - **The reader has no cursor**: `↑↓` scroll it line by line, `PgUp`/`PgDn` and the wheel move it by page / notch, and `n`/`N` jump to the next / previous hit outside the window (wrapping). `Alt+C` copies the current hit (the one n/N is parked on, or the nearest hit above the viewport after free scrolling; the top message when the session has no hits). When a hit sits too deep in its message for the viewport, the reader opens windowed onto the hit's own line instead of parking on a message head that hides it.
 - **Results** are grouped per session, the first 3 hits show per session (`(+N)` hint), most-recent-first; the scan starts the moment the scene opens and results stream in, with live progress in the header.
 - **Warm-up**: about 10 seconds after startup the plugin pre-builds the index in the background (disable via the `warmup` config), so the first `/find` opens instantly; while the background index runs, an "indexing n/m" row sits above the prompt — click it to cancel. The warm-up only moves the cold decode into idle time; it does not reduce total decoding.
 
 ### The workspace column (split layout)
 
-The third column `Tab` opens is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets **two lines** (most-recently-used first) — the first carries the workspace name (the path's last segment) and the **session count** at the row's end, the second carries its full path (`~` for home, tail-kept when the column is narrow). The count follows the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse; containers such as home, drive roots and UNC roots match exactly). The time window (`Alt+T`) and the query filter the middle column further, so the number can exceed what the list shows at that moment.
+The third column — shown by default in split, and opened with `Tab` when `workspacePane` is off — is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets **two lines** (most-recently-used first) — the first carries the workspace name (the path's last segment) and the **session count** at the row's end, the second carries its full path (`~` for home, tail-kept when the column is narrow). The count follows the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse; containers such as home, drive roots and UNC roots match exactly). The time window (`Alt+T`) and the query filter the middle column further, so the number can exceed what the list shows at that moment.
 
 | Key / action | Effect |
 |---|---|
@@ -138,6 +138,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       defaultScope: 'all'        # initial scope: repo (default) | all
       defaultTime: 'all'         # initial time window: all (default) | 7d | 30d
       layout: 'split'            # scene layout: split (default, list + reader, needs >= 100 columns) | classic (single column + full-screen preview)
+      workspacePane: true        # show the workspace column when /find opens (default on; Tab still toggles it, split only)
       panel: true                # sidebar search panel switch (default on)
       caseSensitive: false       # case-sensitive matching (default off)
       regex: false               # start with regex matching on (default off; Alt+R toggles it live)
@@ -153,7 +154,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       shortcut: 'alt+f'          # global entry combo: opens the scene, pressed again inside it closes it (ctrl or alt required; 'off' disables)
 ```
 
-Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. The card is two-level: its page keeps the everyday knobs (default scope, time window, layout, global shortcut) and three subpages — Matching, Indexing and Advanced — hold the rest (Enter opens one, Esc goes back). Booleans/selects save on the spot, text drafts confirm with Enter; the card copy follows the TUI language. Where a save lands depends on the host's settings generation: the `settings.yaml` user layer on `@deepseek-ai/dsh-settings` ≤0.1.6, the active profile's patch (`cordis.patch.yml`) on ≥0.1.7.
+Every option except `lang` can also be edited in the TUI: `/settings` → the **dsh-tui-find (session search)** card. The card is two-level: its page keeps the everyday knobs (default scope, time window, layout, workspace column visibility, global shortcut) and three subpages — Matching, Indexing and Advanced — hold the rest (Enter opens one, Esc goes back). Booleans/selects save on the spot, text drafts confirm with Enter; the card copy follows the TUI language. Where a save lands depends on the host's settings generation: the `settings.yaml` user layer on `@deepseek-ai/dsh-settings` ≤0.1.6, the active profile's patch (`cordis.patch.yml`) on ≥0.1.7.
 
 `lang: auto` follows the dsh-TUI language chain: `DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → OS locale → zh; a `/lang` switch applies immediately.
 

@@ -63,8 +63,11 @@ const splitSession = (): ScannedSession =>
 
 // Geometry at 120x20: listWidth 70 / paneWidth 50; the content row spans
 // terminal rows 5-17, the pane's border/title/meta take rows 5-7 and its
-// scroll region is rows 8-16 (body localRow 0 = terminal row 8).
-const wide = { columns: 120, rows: 20 }
+// scroll region is rows 8-16 (body localRow 0 = terminal row 8). The matrix
+// pins this TWO-column form explicitly: since 2026-10-21 split opens with the
+// workspace column by default (config `workspacePane`), and those
+// three-column cases live in workspace-wiring.test.ts.
+const wide = { columns: 120, rows: 20, workspacePane: false }
 /** One SGR wheel report; button 64 = wheel up, 65 = wheel down. */
 const wheelAt = (col: number, row: number, button: number): string => `\u001b[<${button};${col};${row}M`
 

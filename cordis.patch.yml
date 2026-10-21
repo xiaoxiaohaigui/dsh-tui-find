@@ -14,6 +14,9 @@
       # defaultScope: 'repo' | 'all'   — initial search scope (repo)
       # defaultTime: 'all' | '7d' | '30d' — initial time window (all)
       # layout: 'split' | 'classic'    — scene layout (split; >= 100 columns)
+      # workspacePane: boolean         — show the workspace column when the
+      #                                  scene opens; Tab still collapses /
+      #                                  expands it (true; split layout only)
       # panel: boolean                 — sidebar search panel (true; false =
       #                                  never register; the sidebar arrived in
       #                                  dsh-TUI 0.13.0, the plugin's floor)
