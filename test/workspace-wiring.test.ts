@@ -36,7 +36,7 @@ import {
 } from '../src/find-workspaces.js'
 import { sessionCwdMatches } from '../src/core/search.js'
 import { setLangOverride } from '../src/i18n.js'
-import { hasBackground, mount, mountKitComponent, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
+import { glyphStyle, hasBackground, mount, mountKitComponent, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
 
 setLangOverride('en')
 afterAll(() => setLangOverride(undefined))
@@ -545,6 +545,43 @@ describe('the three-column layout regressions', () => {
     }
   })
 
+  it('keeps the classic list fill after a narrow crossing strands the workspace mode (R-191)', async () => {
+    // Split hands the keyboard to the workspace column (←), and a resize across
+    // the 100-column gate then renders classic with `mode === 'workspace'`
+    // left behind (the strand R-180 accepts). Classic has no workspace surface:
+    // the list is the only operable pane and still takes ↑↓, so it must paint
+    // its selection fill instead of leaving a screen with no focus cue at all.
+    const harness = await mount(local, {
+      ...wide,
+      query: '',
+      defaultScope: 'all',
+      scanner: { scan: async () => [local, foreign] },
+    })
+    try {
+      await waitForMatch(() => harness.all(), /Local/)
+      harness.send('\t')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(workspaceColumn(harness.latest())).toMatch(/Workspaces/)
+      harness.send('\u001b[D')
+      await waitFor()
+      // Cross the gate: the workspace column disappears, the list stays.
+      harness.resize(80, 20)
+      await waitFor()
+      harness.resize(81, 20)
+      await waitFor()
+      const frame = harness.rawLatest()
+      // The selected card's marker carries the fill (the styling is only in
+      // the raw stream); asserting the run is non-empty keeps this honest.
+      const marker = glyphStyle(frame, '❯')
+      expect(marker).not.toBe('')
+      expect(hasBackground(marker)).toBe(true)
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('pages the workspace column by its own viewport, not the list height', async () => {
     // 20 rows: the session list gets 13, while the bordered column can show 10
     // (two border rows plus the title). A page that borrowed the list's 13
@@ -578,6 +615,43 @@ describe('the three-column layout regressions', () => {
       // page from there lands on proj09.
       expect(pane).toMatch(/❯\s*.*proj09/)
       expect(pane).not.toMatch(/❯\s*.*proj04/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('keeps the selected workspace row inside the viewport, path line included (R-192)', async () => {
+    // The column's scroll window is fitted in PHYSICAL LINES: every workspace
+    // spends two (name + path). Ten entries down from "All sessions" leaves
+    // the selection on proj04, and both of its lines must stay inside the
+    // ten-line viewport — fitting on one line per entry scrolls an entry short
+    // and cuts the selected row in half, leaving the current range invisible.
+    const dirs = Array.from({ length: 14 }, (_, index) => `D:\\proj${String(index).padStart(2, '0')}`)
+    const sessions = dirs.map((cwd, index) => at(cwd, `s${index}`, `S${index}`, 1_000 + index))
+    const harness = await mount(sessions[0]!, {
+      ...wide,
+      query: '',
+      defaultScope: 'all',
+      scanner: { scan: async () => sessions },
+    })
+    try {
+      await waitFor(300)
+      harness.send('\t')
+      await waitForMatch(() => harness.all(), /proj13/, 2_000)
+      harness.send('\u001b[D')
+      await waitFor()
+      for (let step = 0; step < 10; step++) {
+        harness.send('\u001b[B')
+        await waitFor()
+      }
+      harness.resize(121, 20)
+      await waitFor()
+      const lines = workspaceColumn(harness.latest()).split(/\r\n|\r|\n/)
+      const nameAt = lines.findIndex(line => /❯\s*.*proj04/.test(line))
+      expect(nameAt).toBeGreaterThanOrEqual(0)
+      // The path line sits directly beneath the name line and must be on
+      // screen too, not clipped at the viewport's bottom edge.
+      expect(lines[nameAt + 1]).toMatch(/^\s*D:\/proj04/)
     } finally {
       harness.dispose()
     }

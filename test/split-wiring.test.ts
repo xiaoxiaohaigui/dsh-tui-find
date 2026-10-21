@@ -114,16 +114,30 @@ const paneCornerForeground = (frame: string): string => {
   return last
 }
 
-/** The LIST column's cells on the frame line carrying `text` — the first
- *  `│`-separated segment that holds the text and is not the reader pane's
- *  own title. Used to ask whether the selected row's fill is painted without
+/** The LIST column's cells on the frame line matching `text` — the first
+ *  `│`-separated segment that matches too and is not the reader pane's own
+ *  title. Used to ask whether the selected row's fill is painted without
  *  catching the other pane's frame or the reader's text. */
-const listRowSegment = (frame: string, text: string): string => {
+const listRowSegment = (frame: string, text: string | RegExp): string => {
+  const hits = (value: string): boolean => (typeof text === 'string' ? value.includes(text) : text.test(value))
   for (const line of frame.split(/\r\n|\r|\n/)) {
-    if (!line.includes(text)) continue
+    if (!hits(line)) continue
     for (const segment of line.split('│')) {
-      if (segment.includes(text) && !segment.includes('Read-only')) return segment
+      if (hits(segment) && !segment.includes('Read-only')) return segment
     }
+  }
+  return ''
+}
+
+/** The WORKSPACE column's own cells on the frame line matching `text` — the
+ *  first `│` pair. The search card spans the viewport and is skipped, so its
+ *  own range label cannot stand in for the column's row. */
+const workspaceRowSegment = (frame: string, text: string | RegExp): string => {
+  const hits = (value: string): boolean => (typeof text === 'string' ? value.includes(text) : text.test(value))
+  for (const line of frame.split(/\r\n|\r|\n/)) {
+    if (!hits(line) || line.includes('⌕')) continue
+    const parts = line.split('│')
+    if (parts.length >= 3 && hits(parts[1] ?? '')) return parts[1]!
   }
   return ''
 }
@@ -359,6 +373,50 @@ describe('split rendering and anchoring', () => {
       harness.dispose()
     }
   }, 20_000)
+
+  it('moves the workspace fill with the keyboard, one lit row per screen (R-193)', async () => {
+    // The list's own fill is asserted above; the workspace column's fill was
+    // only exercised by the presenter's direct unit test, which bypassed this
+    // wiring. Tab opens the column with the keyboard still on the list, ←
+    // lights the column's selected row and drops the list's fill, and Enter
+    // swaps them back — never two lit rows, never zero.
+    const harness = await mount(splitSession(), wide)
+    try {
+      await waitForMatch(() => harness.all(), /Preview\s*wiring/)
+      await waitFor(300)
+      harness.send('\t')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      // Cells skipped by the host's diff can take their spaces with them (see
+      // the capture note in the header): the column's selection is located by
+      // its own marker, the list's by the single-word title.
+      const workspaceRow = /❯/
+      const listRow = /Preview/
+      const opened = harness.rawLatest()
+      expect(workspaceRowSegment(opened, workspaceRow)).not.toBe('')
+      expect(hasBackground(workspaceRowSegment(opened, workspaceRow))).toBe(false)
+      expect(hasBackground(listRowSegment(opened, listRow))).toBe(true)
+
+      harness.send('\u001b[D')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const columnFocus = harness.rawLatest()
+      expect(hasBackground(workspaceRowSegment(columnFocus, workspaceRow))).toBe(true)
+      expect(hasBackground(listRowSegment(columnFocus, listRow))).toBe(false)
+
+      harness.send('\r')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      const back = harness.rawLatest()
+      expect(hasBackground(workspaceRowSegment(back, workspaceRow))).toBe(false)
+      expect(hasBackground(listRowSegment(back, listRow))).toBe(true)
+    } finally {
+      harness.dispose()
+    }
+  })
 
   it('scrolls a hit that sits below its own message head into view', async () => {
     // The reader's own budget at 120x20 is 9 rows at 41 columns, so a hit

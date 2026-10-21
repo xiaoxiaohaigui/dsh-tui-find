@@ -1108,9 +1108,11 @@ export function FindScene(props: TuiSceneProps & {
         hitWidth={hitWidth}
         width={listWidth}
         // The selection fill is the list's focus cue: it paints only while the
-        // list owns the keyboard (split hands focus to the workspace column
-        // or the reader; classic only ever renders the list here).
-        focused={mode === 'list'}
+        // list owns the keyboard. Split hands focus to the workspace column or
+        // the reader; classic renders nothing else here, so a `workspace` mode
+        // stranded by a width crossing (R-180) must not blank the fill — the
+        // list is the only operable surface and still takes the keys (R-191).
+        focused={!splitActive || mode === 'list'}
         onRowClick={clickRow}
         onRowHover={selectRow}
         onRowFold={toggleFold}
