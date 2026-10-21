@@ -76,10 +76,11 @@ export interface FindInputDeps {
   toggleScope: () => void
   /** Hand the keyboard to the workspace column; a no-op while it is collapsed. */
   focusWorkspace: () => void
-  /** Move the workspace selection by `delta` rows — the range follows
+  /** Move the workspace selection by `delta` entries — the range follows
    *  immediately (the pane commits on selection, no separate apply key). */
   moveWorkspace: (delta: number) => void
-  /** Rows one PgUp/PgDn moves in the workspace column. */
+  /** Entries one PgUp/PgDn moves in the workspace column (the scene derives
+   *  it from the column's line budget; a workspace row is two lines tall). */
   workspacePageJump: number
   setTimeFilter: (next: TimeFilter | ((current: TimeFilter) => TimeFilter)) => void
   setUseRegex: (next: boolean | ((current: boolean) => boolean)) => void

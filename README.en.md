@@ -70,7 +70,7 @@ A few behaviors worth knowing:
 
 ### The workspace column (split layout)
 
-The third column `Tab` opens is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets a row (most-recently-used first). The number at the row's end is **how many sessions the sweep found in that scope** — the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse; containers such as home, drive roots and UNC roots match exactly). The time window (`Alt+T`) and the query filter the middle column further, so the number can exceed what the list shows at that moment.
+The third column `Tab` opens is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets **two lines** (most-recently-used first) — the first carries the workspace name (the path's last segment) and the **session count** at the row's end, the second carries its full path (`~` for home, tail-kept when the column is narrow). The count follows the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse; containers such as home, drive roots and UNC roots match exactly). The time window (`Alt+T`) and the query filter the middle column further, so the number can exceed what the list shows at that moment.
 
 | Key / action | Effect |
 |---|---|
@@ -82,6 +82,7 @@ The third column `Tab` opens is the visible form of the search scope: "All sessi
 | wheel | Move the selection (one notch = the host's ±3 rows, the same step the session list uses) — no keyboard focus needed, and selecting applies |
 
 - **The scope IS the selected workspace**: "All sessions" means no scope at all; a workspace row matches that path (its own cwd, its subdirectories, and sessions resumed into a subdirectory) — the same semantics the old "this repo" scope had, as a list instead of a two-state toggle.
+- **The full-width selection fill follows the keyboard**: the selected workspace only fills while the workspace column holds the focus, and the selected session row only fills while the list does. With the focus in the other pane (the reader included), both keep their text highlight (`❯`, the bold / highlighted title) and drop the fill — one filled focus per screen.
 - **Both prompts follow the scope**: the search card's placeholder and the empty-list hint spell the current range, and a deep path keeps its **tail** (the last segment is what tells one workspace from another).
 - **The opening row** still comes from `defaultScope` (`all` → all sessions, `repo` → the live workspace); a scope handed over by the sidebar panel wins over it.
 

@@ -448,6 +448,10 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
             titleWidth={titleWidth}
             hitWidth={hitWidth}
             width={contentWidth}
+            // The selection fill is the list's focus cue; the panel is mounted
+            // only while it is the active tab, but the host still tells the
+            // component whether the keyboard is here (chat focus clears it).
+            focused={focused}
             // Click selects; a click on the row that is already selected opens
             // it — the panel's only pointer path into the scene (Enter is the
             // keyboard one). Hover moves the selection, as in the scene.

@@ -62,10 +62,34 @@ export interface WorkspaceEntry {
 export const ALL_WORKSPACES_KEY = ''
 
 /** Fixed chrome rows of the workspace column: top + bottom border (2) and the
- *  title row (1). The list viewport gets the content row's height minus these,
- *  and PgUp/PgDn page by the same amount — a page is what the column can show
- *  (R-182). */
+ *  title row (1). The list viewport gets the content row's height minus these;
+ *  PgUp/PgDn derive their entry step from the same viewport budget through
+ *  {@link workspacePageEntries} (R-182, and the two-line rows). */
 export const WORKSPACE_CHROME_LINES = 3
+
+/** Physical lines one WORKSPACE row spends: a workspace gets the name line
+ *  (the segment that names it, plus the row's count on the right) and the path
+ *  line beneath it. The all-sessions row has no path of its own and stays a
+ *  single line. The scroll window is fitted in these units, so the path line
+ *  can never push the selected row out of the viewport (the list's own
+ *  card/hit-row discipline, see fitScrollWindow). */
+export const WORKSPACE_ROW_LINES = 2
+
+/** Physical lines one workspace entry spends — see {@link WORKSPACE_ROW_LINES}. */
+function workspaceRowLines(entry: WorkspaceEntry): number {
+  return entry.cwd === undefined ? 1 : WORKSPACE_ROW_LINES
+}
+
+/**
+ * Entries one PgUp/PgDn moves in the workspace column. The column's viewport
+ * is measured in LINES, while the scene's workspace selection is an entry
+ * index: a page of bodyHeight lines is about half that many two-line rows.
+ * The one-line all-sessions row can make this an entry off at the top, and
+ * moveWorkspace clamps at both ends anyway.
+ */
+export function workspacePageEntries(bodyHeight: number): number {
+  return Math.max(1, Math.floor(bodyHeight / WORKSPACE_ROW_LINES))
+}
 
 /**
  * Normalize a workspace path to the vocabulary the rows share: forward
@@ -214,6 +238,25 @@ export function buildWorkspaces(
 }
 
 /**
+ * The background a workspace row paints. Selection alone does not fill the
+ * row: only the column that holds the keyboard shows the selection block, so
+ * the screen never carries two "focus" blocks at once (the session list's own
+ * selected row is the other one — the 10-21 real-machine report). An
+ * unfocused selection keeps its TEXT highlight instead (marker, bold
+ * suggestion-coloured name). Hover is a transient pointer affordance and
+ * never moves the selection, so it tints even a selected row while the column
+ * is unfocused.
+ */
+export function workspaceRowBackground(
+  selected: boolean,
+  focused: boolean,
+  hovered: boolean,
+): 'selectionBg' | 'userMessageBackgroundHover' | undefined {
+  if (selected && focused) return 'selectionBg'
+  return hovered ? 'userMessageBackgroundHover' : undefined
+}
+
+/**
  * The workspace column. Pure display: `selectedKey` and `focused` come from
  * the scene, hover/scroll are local (the FoldBadge precedent — a flag that
  * dies with the row it belongs to). A click selects immediately; the scene
@@ -221,6 +264,11 @@ export function buildWorkspaces(
  * session list. The wheel rides the same root box as the wheel of the session
  * list and the reader pane, so one notch anywhere over the column moves the
  * selection the way ↑↓ would.
+ *
+ * Rows follow the /resume browser's two-line shape: the first line answers
+ * "which workspace" (its own short name, the focus marker and the session
+ * count), the second answers "where is it" (the full path, dim, tail-kept).
+ * The all-sessions row has no path and stays one line.
  */
 export function WorkspaceList(props: {
   React: TuiSceneProps['React']
@@ -228,7 +276,8 @@ export function WorkspaceList(props: {
   entries: readonly WorkspaceEntry[]
   /** {@link ALL_WORKSPACES_KEY} or a normalized workspace path. */
   selectedKey: string
-  /** Whether this pane holds the keyboard (the frame's only cue). */
+  /** Whether this pane holds the keyboard: the frame undims and the selected
+   *  row is allowed its fill (see {@link workspaceRowBackground}). */
   focused: boolean
   /** Total column width, border included. */
   width: number
@@ -252,7 +301,7 @@ export function WorkspaceList(props: {
     const found = entries.findIndex(entry => entry.key === selectedKey)
     return found === -1 ? 0 : found
   }, [entries, selectedKey])
-  const weights = useMemo(() => entries.map(() => 1), [entries])
+  const weights = useMemo(() => entries.map(workspaceRowLines), [entries])
   // Border and title rows; what is left is the list viewport.
   const bodyHeight = Math.max(1, height - WORKSPACE_CHROME_LINES)
   const view = useMemo(
@@ -283,26 +332,24 @@ export function WorkspaceList(props: {
         {entries.slice(view.start, view.end).map(entry => {
           const selected = entry.key === selectedKey
           const hoveredRow = hovered === entry.key
+          const background = workspaceRowBackground(selected, focused, hoveredRow)
           const countText = String(entry.count)
           const countWidth = displayWidth(countText)
-          const label = workspaceDisplayLabel(entry.cwd)
-          // marker (2) + count + one gap cell; the path keeps the rest and
-          // loses its HEAD (the tail names the workspace).
-          const labelBudget = Math.max(1, interior - 2 - countWidth - 1)
-          const clipped =
-            entry.cwd === undefined ? truncateWidth(label, labelBudget) : tailWidth(label, labelBudget)
+          // Name line: marker (2) + count + one gap cell; the name keeps the
+          // rest. Path line: the marker's two cells are the indent, and the
+          // path loses its HEAD — its tail is what tells two workspaces apart.
+          const nameBudget = Math.max(1, interior - 2 - countWidth - 1)
+          const pathBudget = Math.max(1, interior - 2)
+          const name = workspaceShortLabel(entry.cwd)
+          const path = entry.cwd === undefined ? undefined : workspaceDisplayLabel(entry.cwd)
           return (
             <Box
               key={entry.key === ALL_WORKSPACES_KEY ? '__all__' : entry.key}
-              flexDirection="row"
+              flexDirection="column"
               flexShrink={0}
               width={interior}
-              justifyContent="space-between"
-              {...(selected
-                ? { backgroundColor: 'selectionBg' as const }
-                : hoveredRow
-                  ? { backgroundColor: 'userMessageBackgroundHover' as const }
-                  : {})}
+              overflow="hidden"
+              {...(background === undefined ? {} : { backgroundColor: background })}
               onClick={(event: ClickEventLike) => {
                 event.stopImmediatePropagation()
                 onSelect(entry)
@@ -310,13 +357,20 @@ export function WorkspaceList(props: {
               onMouseEnter={() => setHovered(entry.key)}
               onMouseLeave={() => setHovered(undefined)}
             >
-              <Box flexDirection="row" flexShrink={1}>
-                <Text color={selected ? 'suggestion' : 'subtle'}>{selectionMarker(selected)}</Text>
-                <Text color={selected ? 'suggestion' : 'text'} bold={selected}>
-                  {clipped}
-                </Text>
+              <Box flexDirection="row" flexShrink={0} width={interior} justifyContent="space-between">
+                <Box flexDirection="row" flexShrink={1} overflow="hidden">
+                  <Text color={selected ? 'suggestion' : 'subtle'}>{selectionMarker(selected)}</Text>
+                  <Text color={selected ? 'suggestion' : 'text'} bold={selected}>
+                    {truncateWidth(name, nameBudget)}
+                  </Text>
+                </Box>
+                <Text dimColor={!selected}>{countText}</Text>
               </Box>
-              <Text dimColor={!selected}>{countText}</Text>
+              {path !== undefined && (
+                <Box flexDirection="row" flexShrink={0} width={interior} overflow="hidden">
+                  <Text dimColor>{`  ${tailWidth(path, pathBudget)}`}</Text>
+                </Box>
+              )}
             </Box>
           )
         })}

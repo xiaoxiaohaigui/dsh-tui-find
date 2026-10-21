@@ -27,7 +27,7 @@ import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types
 import type { ScannedSession } from '../src/core/scan.js'
 import { hasTerminalImageHooks, splitLayout } from '../src/find-types.js'
 import { setLangOverride } from '../src/i18n.js'
-import { mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
+import { hasBackground, mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
 
 setLangOverride('en')
 afterAll(() => setLangOverride(undefined))
@@ -92,9 +92,41 @@ const paneCornerStyle = (frame: string): string => {
   return /((?:\u001b\[[0-9;]*m)+)$/.exec(frame.slice(0, at))?.[1] ?? ''
 }
 
-/** The corner's escape run without its dim attribute — the colour identity
- *  the two focus states must share. */
-const withoutDim = (style: string): string => style.replaceAll('\u001b[2m', '')
+/** The LAST foreground colour set on the corner's own terminal line, before
+ *  the corner itself. The two focus states must paint the frame in the same
+ *  colour; only the dim attribute may move. Read from the line rather than
+ *  the corner's immediate escape run because a filled list row above it adds
+ *  a background reset (\u001b[49m) to that run, and the reader-focus frame —
+ *  with no row fill — does not. */
+const paneCornerForeground = (frame: string): string => {
+  const at = frame.lastIndexOf('╭')
+  if (at < 0) return ''
+  const before = frame.slice(0, at)
+  const lineStart = Math.max(before.lastIndexOf('\r'), before.lastIndexOf('\n')) + 1
+  let last = ''
+  for (const match of before.slice(lineStart).matchAll(/\u001b\[([0-9;]*)m/g)) {
+    const setsForeground = (match[1] ?? '').split(';').some(part => {
+      const value = Number(part)
+      return (value >= 30 && value <= 38) || (value >= 90 && value <= 97)
+    })
+    if (setsForeground) last = match[0]
+  }
+  return last
+}
+
+/** The LIST column's cells on the frame line carrying `text` — the first
+ *  `│`-separated segment that holds the text and is not the reader pane's
+ *  own title. Used to ask whether the selected row's fill is painted without
+ *  catching the other pane's frame or the reader's text. */
+const listRowSegment = (frame: string, text: string): string => {
+  for (const line of frame.split(/\r\n|\r|\n/)) {
+    if (!line.includes(text)) continue
+    for (const segment of line.split('│')) {
+      if (segment.includes(text) && !segment.includes('Read-only')) return segment
+    }
+  }
+  return ''
+}
 
 // Pointer-event delivery differences ride the 0.10 kit generation probe,
 // as the list menu does (menu-wiring.test.ts): on the 0.9.3 baseline the
@@ -252,23 +284,81 @@ describe('split rendering and anchoring', () => {
       await waitFor()
       // The pane's top-left corner is painted (it carries a colour) and dim
       // while the list owns the keyboard...
-      const listCorner = paneCornerStyle(harness.rawLatest())
+      const listFrame = harness.rawLatest()
+      const listCorner = paneCornerStyle(listFrame)
       expect(listCorner).toContain('\u001b[2m')
-      expect(withoutDim(listCorner).length).toBeGreaterThan(0)
+      const listForeground = paneCornerForeground(listFrame)
+      expect(listForeground).not.toBe('')
 
       harness.send('\u001b[C')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      // ...and the handoff changes EXACTLY the dim: the same colour escape
-      // run paints the frame, so the pane is lit rather than recoloured.
-      const readerCorner = paneCornerStyle(harness.rawLatest())
-      expect(readerCorner).not.toContain('\u001b[2m')
-      expect(withoutDim(readerCorner)).toBe(withoutDim(listCorner))
+      // ...and the handoff changes EXACTLY the dim: the frame keeps the same
+      // foreground colour, so the pane is lit rather than recoloured. The
+      // list's selection fill is gone in this frame, so the corner's
+      // immediate run no longer carries the row's background reset.
+      const readerFrame = harness.rawLatest()
+      expect(paneCornerStyle(readerFrame)).not.toContain('\u001b[2m')
+      expect(paneCornerForeground(readerFrame)).toBe(listForeground)
     } finally {
       harness.dispose()
     }
   })
+
+  it('keeps the selected list row filled only while the list owns the keyboard', async () => {
+    // The list's selection fill is a focus cue, not a permanent treatment:
+    // handing the keyboard to the workspace column or the reader must drop
+    // it, leaving the text highlight (marker + suggestion title) as the
+    // selection's only cue. The opposite direction restores it. Asserted on
+    // the raw ANSI stream because the fill is a style; the list column is
+    // isolated by its own `│` segment so the workspace pane's own fill (or
+    // the reader's frame) cannot satisfy the assertion.
+    const harness = await mount(splitSession(), wide)
+    try {
+      await waitForMatch(() => harness.all(), /Preview\s*wiring/)
+      harness.resize(121, 20)
+      await waitFor()
+      expect(hasBackground(listRowSegment(harness.rawLatest(), 'Preview wiring'))).toBe(true)
+
+      // Tab opens the workspace column but leaves the keyboard on the list.
+      harness.send('\t')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(hasBackground(listRowSegment(harness.rawLatest(), 'Preview wiring'))).toBe(true)
+
+      // ← hands the keyboard to the workspace column.
+      harness.send('\u001b[D')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(hasBackground(listRowSegment(harness.rawLatest(), 'Preview wiring'))).toBe(false)
+
+      // Enter hands it back to the list.
+      harness.send('\r')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(hasBackground(listRowSegment(harness.rawLatest(), 'Preview wiring'))).toBe(true)
+
+      // → hands it to the reader; the list drops the fill again.
+      harness.send('\u001b[C')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      expect(hasBackground(listRowSegment(harness.rawLatest(), 'Preview wiring'))).toBe(false)
+
+      // ← returns to the list, which lights its selection again.
+      harness.send('\u001b[D')
+      await waitFor()
+      harness.resize(120, 20)
+      await waitFor()
+      expect(hasBackground(listRowSegment(harness.rawLatest(), 'Preview wiring'))).toBe(true)
+    } finally {
+      harness.dispose()
+    }
+  }, 20_000)
 
   it('scrolls a hit that sits below its own message head into view', async () => {
     // The reader's own budget at 120x20 is 9 rows at 41 columns, so a hit

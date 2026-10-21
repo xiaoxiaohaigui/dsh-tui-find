@@ -79,11 +79,13 @@ export const dict = {
   'scope-repo': { zh: '本仓库', en: 'This repo' },
   'scope-all': { zh: '全部会话', en: 'All sessions' },
   'scope-switched': { zh: '范围已切换为「{{scope}}」', en: 'Scope switched to "{{scope}}"' },
-  // The workspace column (three-column split): the title row, the switch
-  // notice, and the two empty-list hints. "All sessions" is the first row and
-  // reuses 'scope-all' — the same words the scope used before it became a list.
+  // The workspace column (three-column split): the title row and the two
+  // empty-list hints. "All sessions" is the first row and reuses 'scope-all' —
+  // the same words the scope used before it became a list. A switch has no
+  // toast of its own: the column's selection, the search card and the middle
+  // list all repaint, so a transient "scope: <path>" line was pure noise
+  // (10-21 real-machine feedback).
   'workspace-title': { zh: '工作区', en: 'Workspaces' },
-  'workspace-switched': { zh: '范围：{{workspace}}', en: 'Scope: {{workspace}}' },
   'time-all': { zh: '全部时间', en: 'All time' },
   'time-7d': { zh: '近 7 天', en: 'Last 7 days' },
   'time-30d': { zh: '近 30 天', en: 'Last 30 days' },

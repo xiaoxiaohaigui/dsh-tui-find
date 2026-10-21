@@ -10,20 +10,33 @@
  * tests: Ink's differential updates only paint changed cells, so a plain
  * update can be a cell diff rather than a whole frame.
  */
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+
+// The focused/unfocused selection block is a STYLE, and chalk strips escapes
+// off-TTY: the presenter case below needs coloured output. vi.hoisted runs
+// before chalk resolves FORCE_COLOR at module load, and every other assertion
+// reads ANSI-stripped frames, so the extra escapes change nothing for them.
+vi.hoisted(() => {
+  process.env['FORCE_COLOR'] = '1'
+})
+
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
+import React from 'react'
 import type { ScannedSession } from '../src/core/scan.js'
 import { hasTerminalImageHooks, splitGeometry } from '../src/find-types.js'
 import {
   ALL_WORKSPACES_KEY,
   buildWorkspaces,
+  WorkspaceList,
   workspaceDisplayLabel,
   workspaceKeyOf,
+  workspacePageEntries,
+  workspaceRowBackground,
   workspaceShortLabel,
 } from '../src/find-workspaces.js'
 import { sessionCwdMatches } from '../src/core/search.js'
 import { setLangOverride } from '../src/i18n.js'
-import { mount, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
+import { hasBackground, mount, mountKitComponent, sessionWithMessages, waitFor, waitForMatch } from './harness.js'
 
 setLangOverride('en')
 afterAll(() => setLangOverride(undefined))
@@ -56,6 +69,16 @@ const listColumn = (frame: string): string =>
       return parts.length >= 3 ? (parts[2] ?? '') : ''
     })
     .join('\n')
+
+/** The SGR run in front of the FIRST occurrence of `glyph` in a raw frame.
+ *  The harness's own glyphStyle reads the LAST one; the workspace name is
+ *  repeated in its path line (the tail), so the first occurrence is the one
+ *  on the name line. */
+const firstGlyphStyle = (frame: string, glyph: string): string => {
+  const at = frame.indexOf(glyph)
+  if (at < 0) return ''
+  return /((?:\u001b\[[0-9;]*m)+)[^\S\r\n]*$/.exec(frame.slice(0, at))?.[1] ?? ''
+}
 
 const at = (cwd: string | undefined, id: string, title: string, modifiedAt: number): ScannedSession => ({
   ...sessionWithMessages([`needle ${id}`]),
@@ -198,6 +221,66 @@ describe('buildWorkspaces', () => {
   })
 })
 
+describe('the workspace row layout and highlight', () => {
+  it('sizes a page from the viewport lines, not from entries', () => {
+    // The column's viewport budget is in LINES and a workspace row now spends
+    // two of them: a ten-line page is five entries, not ten (R-182).
+    expect(workspacePageEntries(10)).toBe(5)
+    expect(workspacePageEntries(13)).toBe(6)
+    expect(workspacePageEntries(1)).toBe(1)
+    expect(workspacePageEntries(0)).toBe(1)
+  })
+
+  it('fills the selection block only while the column holds the keyboard', () => {
+    // Unfocused, the selected row keeps its TEXT highlight (the pointer, the
+    // bold suggestion-coloured name) and drops the fill, so it does not read
+    // as a second focus next to the session list's selected row (the 10-21
+    // real-machine report).
+    expect(workspaceRowBackground(true, false, false)).toBeUndefined()
+    expect(workspaceRowBackground(true, true, false)).toBe('selectionBg')
+    // Hover is a transient pointer affordance, never a selection change.
+    expect(workspaceRowBackground(false, false, true)).toBe('userMessageBackgroundHover')
+    expect(workspaceRowBackground(true, true, true)).toBe('selectionBg')
+  })
+
+  it('keeps the text emphasis and drops the fill on an unfocused selection', async () => {
+    const entries = buildWorkspaces([local, foreign])
+    const render = async (focused: boolean) =>
+      mountKitComponent(
+        React.createElement(WorkspaceList, {
+          React,
+          ui: hostUi,
+          entries,
+          selectedKey: workspaceKeyOf(foreignDir),
+          focused,
+          width: 24,
+          height: 10,
+          onSelect: () => undefined,
+          onWheel: () => undefined,
+        }),
+        { columns: 40, rows: 14 },
+      )
+    const unfocused = await render(false)
+    try {
+      const frame = unfocused.rawLatest()
+      expect(hasBackground(frame)).toBe(false)
+      const nameStyle = firstGlyphStyle(frame, 'elsewhere')
+      expect(nameStyle).not.toBe('')
+      const focused = await render(true)
+      try {
+        expect(hasBackground(focused.rawLatest())).toBe(true)
+        // Only the row's fill moves with the keyboard: the name keeps the
+        // same text styling in both states.
+        expect(firstGlyphStyle(focused.rawLatest(), 'elsewhere')).toBe(nameStyle)
+      } finally {
+        focused.unmount()
+      }
+    } finally {
+      unfocused.unmount()
+    }
+  })
+})
+
 describe('the workspace column in the scene', () => {
   it('expands with Tab and starts on all sessions when defaultScope is all', async () => {
     const harness = await mount(local, {
@@ -228,6 +311,39 @@ describe('the workspace column in the scene', () => {
       harness.resize(120, 20)
       await waitFor()
       expect(harness.latest()).not.toMatch(/❯\s*All\s*sessions/)
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('draws each workspace as a name line above its path line', async () => {
+    // The /resume row shape: the name answers "which workspace", the path
+    // beneath it answers "where is it". "All sessions" has no path and stays
+    // a single line, so the first workspace's name line follows it directly.
+    const harness = await mount(local, {
+      ...wide,
+      query: '',
+      defaultScope: 'all',
+      scanner: { scan: async () => [foreign, local] },
+    })
+    try {
+      await waitForMatch(() => harness.all(), /Foreign/)
+      harness.send('\t')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const lines = workspaceColumn(harness.latest()).split(/\r\n|\r|\n/)
+      const nameAt = lines.findIndex(line => line.includes('elsewhere'))
+      expect(nameAt).toBeGreaterThanOrEqual(0)
+      // The name line carries the name and the row's count, never the path...
+      expect(lines[nameAt]).not.toContain('/')
+      // ...and the path sits directly beneath it.
+      expect(lines[nameAt + 1]).toMatch(/^\s*P:\/elsewhere/)
+      // The one-line all-sessions row is followed by a workspace name line,
+      // not by a blank "path" line.
+      const allAt = lines.findIndex(line => /All\s*sessions/.test(line))
+      expect(allAt).toBeGreaterThanOrEqual(0)
+      expect(lines[allAt + 1]).toMatch(/elsewhere/)
     } finally {
       harness.dispose()
     }
@@ -264,6 +380,9 @@ describe('the workspace column in the scene', () => {
       expect(harness.latest()).toMatch(/Foreign/)
       expect(harness.latest()).not.toMatch(/Local/)
       expect(harness.latest()).toMatch(/P:\/elsewhere/)
+      // The switch is silent: the column's marker and the filtered list are
+      // the feedback, not a transient "Scope: ..." line.
+      expect(harness.latest()).not.toMatch(/Scope:/)
 
       // ↑ again lands on the all-sessions row: both sessions are back.
       harness.send('\u001b[A')
@@ -272,7 +391,8 @@ describe('the workspace column in the scene', () => {
       await waitFor()
       expect(harness.latest()).toMatch(/Local/)
       expect(harness.latest()).toMatch(/Foreign/)
-      expect(harness.latest()).toMatch(/Scope:\s*All\s*sessions/)
+      expect(harness.latest()).toMatch(/❯\s*All\s*sessions/)
+      expect(harness.latest()).not.toMatch(/Scope:/)
 
       // Enter hands the keyboard back to the list: typing edits the query
       // instead of being swallowed by the workspace column.
@@ -428,7 +548,9 @@ describe('the three-column layout regressions', () => {
   it('pages the workspace column by its own viewport, not the list height', async () => {
     // 20 rows: the session list gets 13, while the bordered column can show 10
     // (two border rows plus the title). A page that borrowed the list's 13
-    // overshoots by three rows and lands on a different workspace (R-182).
+    // overshoots by three rows (R-182), and a page counted in ENTRIES rather
+    // than lines would jump twice as far as the two-line rows allow: the page
+    // is five entries, landing on proj09.
     const dirs = Array.from({ length: 14 }, (_, index) => `D:\\proj${String(index).padStart(2, '0')}`)
     const sessions = dirs.map((cwd, index) => at(cwd, `s${index}`, `S${index}`, 1_000 + index))
     const harness = await mount(sessions[0]!, {
@@ -452,10 +574,10 @@ describe('the three-column layout regressions', () => {
       harness.resize(121, 20)
       await waitFor()
       const pane = workspaceColumn(harness.latest())
-      // Newest first: proj13 sits directly under "All sessions", so the tenth
-      // row down is proj04.
-      expect(pane).toMatch(/❯\s*.*proj04/)
-      expect(pane).not.toMatch(/❯\s*.*proj01/)
+      // Newest first: proj13 sits directly under "All sessions"; a five-entry
+      // page from there lands on proj09.
+      expect(pane).toMatch(/❯\s*.*proj09/)
+      expect(pane).not.toMatch(/❯\s*.*proj04/)
     } finally {
       harness.dispose()
     }
@@ -482,13 +604,25 @@ describe('the three-column layout regressions', () => {
       harness.send('\t')
       await waitForMatch(() => harness.all(), /named-tail/, 2_000)
       expect(harness.all()).toMatch(/named-tail/)
+      // A resize repaints the whole frame: the column's own lines can arrive
+      // as a diff, and latest() anchors on the last painted frame.
+      harness.resize(101, 20)
+      await waitFor()
+      // The path line underneath the name keeps the tail too (a shallow path
+      // is all head, so the column could otherwise never tell two deep
+      // workspaces with the same name apart).
+      const lines = workspaceColumn(harness.latest()).split(/\r\n|\r|\n/)
+      const nameAt = lines.findIndex(line => line.includes('named-tail'))
+      expect(nameAt).toBeGreaterThanOrEqual(0)
+      expect(lines[nameAt + 1]).toContain('…')
+      expect(lines[nameAt + 1]).toContain('named-tail')
       harness.send('\u001b[D')
       await waitFor()
       // ↓ from "All sessions" lands on the deep workspace, which the card
       // then names (selection is the apply step).
       harness.send('\u001b[B')
       await waitFor()
-      harness.resize(101, 20)
+      harness.resize(100, 20)
       await waitFor()
       const card =
         harness.latest().split(/\r\n|\r|\n/).find(line => line.includes('⌕')) ?? ''
@@ -573,11 +707,11 @@ describe.skipIf(!generation10)('the workspace column answers the wheel', () => {
       harness.resize(120, 20)
       await waitFor()
       const walked = harness.latest()
-      expect(walked).toMatch(/Scope:\s*D:\/proj3/)
       expect(walked).toMatch(/❯\s*.*proj3/)
       // The middle column really switched: only proj3's session is listed.
       expect(walked).toMatch(/S3\b/)
       expect(walked).not.toMatch(/S5\b/)
+      expect(walked).not.toMatch(/Scope:/)
 
       // Three ↓ presses reach the same row from the top — which is what "one
       // notch = three rows" means. ← focuses the column first.
@@ -587,12 +721,13 @@ describe.skipIf(!generation10)('the workspace column answers the wheel', () => {
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Scope:\s*All\s*sessions/)
+      expect(harness.latest()).toMatch(/❯\s*All\s*sessions/)
       harness.send('\u001b[B\u001b[B\u001b[B')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Scope:\s*D:\/proj3/)
+      expect(harness.latest()).toMatch(/❯\s*.*proj3/)
+      expect(harness.latest()).not.toMatch(/Scope:/)
     } finally {
       harness.dispose()
     }
@@ -664,10 +799,11 @@ describe('the workspace column answers the pointer', () => {
       harness.resize(120, 20)
       await waitFor()
       const clicked = harness.latest()
-      expect(clicked).toMatch(/Scope:\s*P:\/elsewhere/)
       expect(clicked).toMatch(/❯\s*.*elsewhere/)
       expect(clicked).toMatch(/Foreign/)
       expect(clicked).not.toMatch(/Local/)
+      // Selecting a workspace applies the scope silently.
+      expect(clicked).not.toMatch(/Scope:/)
       // The keyboard is back on the session list.
       harness.send('z')
       await waitFor()

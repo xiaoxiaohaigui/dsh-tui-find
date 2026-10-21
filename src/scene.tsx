@@ -48,6 +48,7 @@ import {
   WorkspaceList,
   workspaceDisplayLabel,
   workspaceKeyOf,
+  workspacePageEntries,
   workspaceShortLabel,
   type WorkspaceEntry,
 } from './find-workspaces.js'
@@ -336,7 +337,10 @@ export function FindScene(props: TuiSceneProps & {
     if (workspaceRef.current === cwd) return
     workspaceRef.current = cwd
     setWorkspace(cwd)
-    setStatus({ text: t('workspace-switched', { workspace: workspaceDisplayLabel(cwd) }), tone: 'info' })
+    // No status toast here: the column's own selection, the search card's
+    // range label and the middle list all repaint with the switch, so a
+    // transient "scope: <path>" line is pure noise under the cursor (10-21
+    // real-machine feedback).
   }, [])
 
   /** A workspace row's click: select it and hand the keyboard back to the
@@ -350,9 +354,9 @@ export function FindScene(props: TuiSceneProps & {
     [chooseWorkspace],
   )
 
-  /** Move the workspace selection by `delta` rows, clamping at both ends.
-   *  The current row is resolved by its stable key, not a stale index: the
-   *  list re-sorts as a sweep streams in. */
+  /** Move the workspace selection by `delta` ENTRIES (a row is two terminal
+   *  lines), clamping at both ends. The current entry is resolved by its
+   *  stable key, not a stale index: the list re-sorts as a sweep streams in. */
   const moveWorkspace = useCallback(
     (delta: number) => {
       if (workspaceEntries.length === 0) return
@@ -830,9 +834,10 @@ export function FindScene(props: TuiSceneProps & {
     focusWorkspace,
     moveWorkspace,
     // A page in the workspace column is its OWN viewport (the bordered
-    // column's interior), not the session list's height: jumping by the
-    // latter overshoots by the column's chrome rows (R-182).
-    workspacePageJump: Math.max(1, listHeight - WORKSPACE_CHROME_LINES),
+    // column's interior), not the session list's height (R-182), and the
+    // column's rows are two lines tall (the /resume shape): the helper turns
+    // the viewport's LINE budget into the ENTRY step moveWorkspace counts.
+    workspacePageJump: workspacePageEntries(Math.max(1, listHeight - WORKSPACE_CHROME_LINES)),
     setTimeFilter,
     setUseRegex,
     setTitleOnly,
@@ -1102,6 +1107,10 @@ export function FindScene(props: TuiSceneProps & {
         titleWidth={titleWidth}
         hitWidth={hitWidth}
         width={listWidth}
+        // The selection fill is the list's focus cue: it paints only while the
+        // list owns the keyboard (split hands focus to the workspace column
+        // or the reader; classic only ever renders the list here).
+        focused={mode === 'list'}
         onRowClick={clickRow}
         onRowHover={selectRow}
         onRowFold={toggleFold}

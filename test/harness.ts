@@ -408,6 +408,11 @@ export async function mountKitComponent(
   return {
     output: () => stripAnsi(output),
     latest: () => stripAnsi(frameTail(output)),
+    /** The cumulative stream with ANSI intact — for the style assertions the
+     *  stripped frames cannot carry (the scene harness exposes the same pair). */
+    raw: () => output,
+    /** The last painted frame with ANSI intact. */
+    rawLatest: () => frameTail(output),
     /** One WHOLE frame matching `pattern` — panel-view's read, for the callers
      *  that mount a panel here. A resize repaints the frame from scratch, while
      *  a plain update is a CELL DIFF (and an update issued after the queue

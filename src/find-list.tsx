@@ -109,6 +109,12 @@ export function ListView(props: {
   /** The list's own surface width — the terminal width in classic, the left
    *  column's width in the split layout; card metadata truncates to it. */
   width: number
+  /** Whether the list holds the keyboard. The selected row's FILL is the
+   *  focus cue, so it only paints while the list owns the keyboard; with the
+   *  focus in the workspace column or the reader the row keeps its text
+   *  treatment (marker, suggestion title) and drops the fill, leaving one lit
+   *  surface per screen (the 10-21 real-machine follow-up). */
+  focused: boolean
   onRowClick: (rowIndex: number) => void
   onRowHover: (rowIndex: number) => void
   /** Toggle a session's folded hits — the `(+N)` badge's own click, which
@@ -119,7 +125,7 @@ export function ListView(props: {
    *  runtime dispatches no context-menu events and the prop stays absent). */
   onRowContextMenu?: (rowIndex: number, event: ContextMenuEventLike) => void
 }): React.ReactElement {
-  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, width, onRowClick, onRowHover, onRowFold, onWheel, onRowContextMenu } = props
+  const { React: R, ui, rows, selected, height, titleWidth, hitWidth, width, focused, onRowClick, onRowHover, onRowFold, onWheel, onRowContextMenu } = props
   const { Box, Text } = ui
   const WheelBox = Box as unknown as React.ComponentType<WheelBoxProps>
   const ContextBox = Box as unknown as React.ComponentType<ContextBoxProps>
@@ -163,7 +169,7 @@ export function ListView(props: {
               key={row.rowId}
               flexDirection="column"
               flexShrink={0}
-              {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
+              {...(isSelected && focused ? { backgroundColor: 'selectionBg' as const } : {})}
               onClick={() => onRowClick(rowIndex)}
               onMouseEnter={() => onRowHover(rowIndex)}
               {...(onRowContextMenu !== undefined
@@ -252,7 +258,7 @@ export function ListView(props: {
             // stable mouse target instead of trailing whatever each hit's
             // text happens to measure.
             justifyContent="space-between"
-            {...(isSelected ? { backgroundColor: 'selectionBg' } : {})}
+            {...(isSelected && focused ? { backgroundColor: 'selectionBg' as const } : {})}
             onClick={() => onRowClick(rowIndex)}
             onMouseEnter={() => onRowHover(rowIndex)}
             {...(onRowContextMenu !== undefined
