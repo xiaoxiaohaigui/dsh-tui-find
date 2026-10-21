@@ -48,6 +48,7 @@ import {
   WorkspaceList,
   workspaceDisplayLabel,
   workspaceKeyOf,
+  workspaceShortLabel,
   type WorkspaceEntry,
 } from './find-workspaces.js'
 import { messageAtLine } from './preview.js'
@@ -930,12 +931,21 @@ export function FindScene(props: TuiSceneProps & {
       : entryShadow === undefined
         ? undefined
         : { kind: 'shadowed', key: entryShadow.helpKeys ?? formatShortcut(entryCombo ?? '') }
-  // The live range, spelled the same way on both surfaces that carry it: the
-  // search card's placeholder and the empty-list hint. A workspace path can be
-  // long; the TAIL is what names it (the last segment), while the prefix is
-  // what every workspace of one tree shares — so the cut keeps the end and
-  // drops the head (R-183).
-  const scopeLabel = tailWidth(workspaceDisplayLabel(workspace), Math.max(8, columns - 34))
+  // The live range, spelled per layout. Split's range is a workspace row, so
+  // both surfaces that carry it — the search card's placeholder and the
+  // empty-list hint — name that row; classic only ever toggles repo/all, so
+  // it keeps the two-state words on both (a path there would invent a third
+  // state the layout cannot reach — R-187). A workspace path can be long: the
+  // card keeps its TAIL (the last segment names it, R-183), while the hint
+  // renders inside the session list's column and uses the short name, bounded
+  // by that column so it wraps as a sentence instead of cutting a path
+  // mid-segment (R-188).
+  const scopeLabel = splitActive
+    ? tailWidth(workspaceDisplayLabel(workspace), Math.max(8, columns - 34))
+    : workspace === undefined
+      ? t('scope-all')
+      : t('scope-repo')
+  const hintScopeLabel = tailWidth(workspaceShortLabel(workspace), Math.max(8, listWidth - 34))
   const listHint = composeListHint(columns, splitActive, entryAdvisory, workspacePaneActive)
 
   // The open menu's overlay: a full-viewport click-catcher (click/right-click
@@ -1075,11 +1085,9 @@ export function FindScene(props: TuiSceneProps & {
             <Text dimColor italic>
               {splitActive
                 ? workspacePaneActive
-                  ? t('no-results-workspace-open-hint', { scope: scopeLabel })
-                  : t('no-results-workspace-closed-hint', { scope: scopeLabel })
-                : t('no-results-scope-hint', {
-                    scope: scope === 'repo' ? t('scope-repo') : t('scope-all'),
-                  })}
+                  ? t('no-results-workspace-open-hint', { scope: hintScopeLabel })
+                  : t('no-results-workspace-closed-hint', { scope: hintScopeLabel })
+                : t('no-results-scope-hint', { scope: scopeLabel })}
             </Text>
           )}
         </Box>

@@ -1457,6 +1457,16 @@ describe('sessionCwdMatches', () => {
     expect(sessionCwdMatches('C:/', 'D:/anything', true)).toBe(false)
     expect(sessionCwdMatches('C:/', 'c:/', true)).toBe(true)
   })
+
+  it('treats the POSIX root as a real, exact-only cwd (R-186)', () => {
+    // Collapsing '/' to '' used to make the root match nothing and share the
+    // all-sessions row's identity. It is a container like a drive root: it
+    // matches itself (however many separators spell it) and nothing under it.
+    expect(sessionCwdMatches('/', '/', true)).toBe(true)
+    expect(sessionCwdMatches('//', '/', true)).toBe(true)
+    expect(sessionCwdMatches('/', '/work', true)).toBe(false)
+    expect(sessionCwdMatches('/work', '/', true)).toBe(false)
+  })
 })
 
 describe('onSession incremental delivery', () => {

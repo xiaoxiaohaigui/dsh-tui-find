@@ -168,8 +168,10 @@ describe('helpSections', () => {
     expect(split).toContain('←')
     expect(split).not.toContain('Alt+P')
     // Split adds the workspace column's own section (↑↓ / Enter/→ / Tab /
-    // Esc); classic has no such column and keeps its original three sections.
-    expect(helpSections(100, true).map(section => section.rows.length)).toEqual([14, 4, 7, 5])
+    // Esc plus its pointer vocabulary) and one ← row in the list section —
+    // the only way INTO the column, which the sheet used to omit (R-189);
+    // classic has no such column and keeps its original three sections.
+    expect(helpSections(100, true).map(section => section.rows.length)).toEqual([15, 7, 7, 5])
     expect(helpSections(100, false).map(section => section.rows.length)).toEqual([14, 7, 5])
     // The workspace section carries the selection vocabulary, and the list
     // section's Tab row describes the column toggle instead of the old scope
@@ -181,6 +183,21 @@ describe('helpSections', () => {
     expect(splitTab?.action).toBe(t('help-list-workspace'))
     const classicTab = helpSections(100, false)[0]!.rows.find(row => row.keys === 'Tab')
     expect(classicTab?.action).toBe(t('help-list-scope'))
+
+    // Split's list section names BOTH arrows: → into the reader, ← into the
+    // workspace column (R-189).
+    const splitList = helpSections(100, true)[0]!.rows
+    expect(splitList.find(row => row.keys === '←')?.action).toBe(t('help-list-workspace-focus'))
+    expect(splitList.find(row => row.keys === '→')?.action).toBe(t('help-list-read-split'))
+
+    // The workspace section owns the column's pointer rows: a click applies
+    // and returns to the list, hover never moves the selection, and the wheel
+    // walks the rows (R-189) — the same vocabulary the README's table uses.
+    const workspace = helpSections(100, true)[1]!.rows
+    expect(workspace.find(row => row.keys === 'Click')?.action).toBe(t('help-workspace-click'))
+    expect(workspace.find(row => row.keys === 'Hover')?.action).toBe(t('help-workspace-hover'))
+    expect(workspace.find(row => row.keys === 'Wheel')?.action).toBe(t('help-workspace-wheel'))
+    expect(workspace.find(row => row.keys === 'Hover')?.action).toMatch(/highlight/i)
   })
 
   it('fills every cell at a comfortable width', () => {

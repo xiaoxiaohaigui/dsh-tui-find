@@ -200,14 +200,24 @@ export function compileRegex(query: string, caseSensitive: boolean): RegExp | un
 }
 
 /** Normalize a cwd for comparison: forward slashes, no trailing slash; case
- *  folded when the platform's filesystem semantics are case-insensitive. */
+ *  folded when the platform's filesystem semantics are case-insensitive.
+ *
+ *  A root spelled only with separators (`/`) stays `/`: collapsing it to
+ *  the empty string would make the POSIX root match NOTHING (the empty cwd is
+ *  the "unrecorded" sentinel) and hand it the all-sessions row's identity in
+ *  the workspace column (R-186). Like a drive root, it then matches exactly —
+ *  the string arithmetic already excludes `/x` descendants, and the
+ *  container rule below makes that explicit. */
 function normalizeCwd(path: string, caseInsensitive: boolean): string {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
-  return caseInsensitive ? normalized.toLowerCase() : normalized
+  const slashed = path.replace(/\\/g, '/')
+  const normalized = slashed.replace(/\/+$/, '')
+  const identity = normalized === '' && slashed.startsWith('/') ? '/' : normalized
+  return caseInsensitive ? identity.toLowerCase() : identity
 }
 
 const isContainer = (home: string, path: string): boolean =>
   (home !== '' && path === home) ||
+  path === '/' || // POSIX root (exact only, like a drive root)
   /^[a-z]:$/i.test(path) || // drive root: C:
   /^\/\/[^/]+\/[^/]+$/.test(path) || // UNC share root: //server/share
   /^\/\/\?\/[a-z]:$/i.test(path) || // extended drive root: //?/C:

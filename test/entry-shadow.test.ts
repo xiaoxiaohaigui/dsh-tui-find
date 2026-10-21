@@ -126,6 +126,13 @@ describe('sceneKeyShadow', () => {
     }
   })
 
+  it("names both jobs of split's ← in the shadow toast (R-189)", () => {
+    // ← is context-dependent: it returns from the reader and enters the
+    // workspace column from the list. The toast names both instead of the
+    // old reader-only copy.
+    expect(sceneKeyShadow('ctrl+left')?.actionKey).toBe('scene-key-left-arrow')
+  })
+
   it('leaves free combos alone', () => {
     // The default entry, the other ctrl letters the scene never answers, a
     // combo whose key the scene does not handle at all, and — importantly —

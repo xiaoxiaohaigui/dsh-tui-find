@@ -77,7 +77,7 @@ const NAMED_KEY_SHADOWS = new Map<ShortcutNamedKey, SceneKeyShadow>([
   ['tab', { helpKeys: 'Tab', actionKey: 'scene-key-tab' }],
   ['upArrow', { helpKeys: '↑↓', actionKey: 'help-list-select' }],
   ['downArrow', { helpKeys: '↑↓', actionKey: 'help-list-select' }],
-  ['leftArrow', { helpKeys: '←', actionKey: 'help-preview-focus' }],
+  ['leftArrow', { helpKeys: '←', actionKey: 'scene-key-left-arrow' }],
   ['rightArrow', { helpKeys: '→', actionKey: 'help-list-read-split' }],
   ['pageUp', { helpKeys: 'PgUp/PgDn', actionKey: 'help-list-page' }],
   ['pageDown', { helpKeys: 'PgUp/PgDn', actionKey: 'help-list-page' }],

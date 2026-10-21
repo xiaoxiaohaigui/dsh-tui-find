@@ -111,9 +111,15 @@ export function helpSections(
         // Split and classic spell the reader entry differently: split focuses
         // the always-on pane with →, classic opens the full-screen preview
         // with Alt+P. The sheet follows the live layout (the scene passes it).
-        splitActive
-          ? { keys: '→', action: t('help-list-read-split') }
-          : { keys: 'Alt+P', action: t('help-list-preview') },
+        // Split's ← is the only way INTO the workspace column from the list
+        // (the workspace section below covers the keys inside it), so it
+        // belongs next to the reader arrow here (R-189).
+        ...(splitActive
+          ? [
+              { keys: '→', action: t('help-list-read-split') },
+              { keys: '←', action: t('help-list-workspace-focus') },
+            ]
+          : [{ keys: 'Alt+P', action: t('help-list-preview') }]),
         { keys: 'Alt+C', action: t('help-list-copy') },
         { keys: 'Alt+E', action: t('help-list-expand') },
         { keys: 'Enter', action: t('help-list-resume') },
@@ -142,6 +148,13 @@ export function helpSections(
               { keys: 'Enter/→', action: t('help-workspace-apply') },
               { keys: 'Tab', action: t('help-workspace-hide') },
               { keys: 'Esc', action: t('help-workspace-back') },
+              // The pointer vocabulary differs here from the session list:
+              // a click applies the row and hands the keyboard back, hover
+              // must never move the selection (selecting IS applying), and
+              // the wheel walks the rows (R-189).
+              { keys: 'Click', action: t('help-workspace-click') },
+              { keys: 'Hover', action: t('help-workspace-hover') },
+              { keys: 'Wheel', action: t('help-workspace-wheel') },
             ],
           },
         ]

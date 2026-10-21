@@ -68,6 +68,19 @@ export const ALL_WORKSPACES_KEY = ''
 export const WORKSPACE_CHROME_LINES = 3
 
 /**
+ * Normalize a workspace path to the vocabulary the rows share: forward
+ * slashes, no trailing slash. A root spelled only with separators (`/`,
+ * `//`) stays `/` instead of collapsing to the empty string: the empty
+ * string is the all-sessions row's key, while the POSIX root is a real
+ * workspace (R-186). A drive root keeps its `C:\` -> `C:` spelling.
+ */
+function normalizeWorkspacePath(cwd: string): string {
+  const slashed = cwd.trim().replace(/\\/g, '/')
+  const normalized = slashed.replace(/\/+$/, '')
+  return normalized === '' && slashed.startsWith('/') ? '/' : normalized
+}
+
+/**
  * Normalize a cwd to its row identity: forward slashes, no trailing slash,
  * case folded where the platform's filesystem folds it — the same comparison
  * `sessionCwdMatches` makes, so two spellings of one workspace never split
@@ -75,7 +88,7 @@ export const WORKSPACE_CHROME_LINES = 3
  */
 export function workspaceKeyOf(cwd: string | undefined): string {
   if (cwd === undefined) return ALL_WORKSPACES_KEY
-  const normalized = cwd.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  const normalized = normalizeWorkspacePath(cwd)
   if (normalized === '') return ALL_WORKSPACES_KEY
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
@@ -91,7 +104,7 @@ const HOME = homedir().replace(/\\/g, '/').replace(/\/+$/, '')
  */
 export function workspaceDisplayLabel(cwd: string | undefined): string {
   if (cwd === undefined || cwd.trim() === '') return t('scope-all')
-  const normalized = cwd.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  const normalized = normalizeWorkspacePath(cwd)
   if (normalized === '') return t('scope-all')
   const folded = process.platform === 'win32' ? normalized.toLowerCase() : normalized
   const home = process.platform === 'win32' ? HOME.toLowerCase() : HOME
@@ -100,6 +113,20 @@ export function workspaceDisplayLabel(cwd: string | undefined): string {
     return rest === '' ? '~' : `~${rest}`
   }
   return normalized
+}
+
+/**
+ * A workspace's short display label: the segment that names it (the same
+ * tail the column's own rows keep). Places whose width cannot afford a path
+ * use this instead — the split layout's empty-result hint renders inside the
+ * session list's column, not across the viewport (R-188). The all-sessions
+ * row keeps its own words.
+ */
+export function workspaceShortLabel(cwd: string | undefined): string {
+  const label = workspaceDisplayLabel(cwd)
+  if (cwd === undefined || label === t('scope-all')) return label
+  const cut = label.lastIndexOf('/')
+  return cut === -1 ? label : label.slice(cut + 1) || '/'
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   buildWorkspaces,
   workspaceDisplayLabel,
   workspaceKeyOf,
+  workspaceShortLabel,
 } from '../src/find-workspaces.js'
 import { sessionCwdMatches } from '../src/core/search.js'
 import { setLangOverride } from '../src/i18n.js'
@@ -39,6 +40,20 @@ const workspaceColumn = (frame: string): string =>
     .map(line => {
       const parts = line.split('│')
       return parts.length >= 3 ? (parts[1] ?? '') : ''
+    })
+    .join('\n')
+
+/** The session list's own cells (between the workspace column and the reader
+ *  frame, or the line's end when no reader is shown). Used by the empty-state
+ *  hint cases, whose copy renders inside this column — not across the viewport
+ *  (R-188). */
+const listColumn = (frame: string): string =>
+  frame
+    .split(/\r\n|\r|\n/)
+    .filter(line => !line.includes('⌕'))
+    .map(line => {
+      const parts = line.split('│')
+      return parts.length >= 3 ? (parts[2] ?? '') : ''
     })
     .join('\n')
 
@@ -146,6 +161,20 @@ describe('buildWorkspaces', () => {
     const rows = buildWorkspaces([orphan, local])
     expect(rows).toHaveLength(2)
     expect(rows[0]?.count).toBe(2)
+  })
+
+  it('keeps the POSIX root distinct from the all-sessions row (R-186)', () => {
+    // '/' used to normalize to '' — the all-sessions row's key — so the root
+    // produced a duplicate key (two highlighted rows) and its own count/list
+    // disagreed with the core, which treated the empty cwd as "unrecorded".
+    expect(workspaceKeyOf('/')).toBe('/')
+    expect(workspaceKeyOf('//')).toBe('/')
+    expect(workspaceDisplayLabel('/')).toBe('/')
+    expect(workspaceShortLabel('/')).toBe('/')
+    const root = at('/', 'root', 'Root', 1_000)
+    const rows = buildWorkspaces([root])
+    expect(rows.map(row => row.key)).toEqual([ALL_WORKSPACES_KEY, '/'])
+    expect(rows[1]).toMatchObject({ cwd: '/', count: 1 })
   })
 
   it('resolves the same workspace through slashes and a trailing separator', () => {
@@ -311,6 +340,42 @@ describe('the workspace column in the scene', () => {
       harness.dispose()
     }
   })
+
+  it('spells the classic range in words on the card and the empty hint (R-187)', async () => {
+    // Classic only toggles repo/all: a workspace path on its search card
+    // invented a third state, while its empty hint already said "This repo" —
+    // one screen, two names for one range.
+    const harness = await mount(local, {
+      columns: 90,
+      rows: 20,
+      query: '',
+      layout: 'classic',
+      defaultScope: 'repo',
+      scanner: { scan: async () => [local] },
+    })
+    try {
+      await waitForMatch(() => harness.all(), /Local/)
+      harness.resize(91, 20)
+      await waitFor()
+      const card =
+        harness.latest().split(/\r\n|\r|\n/).find(line => line.includes('⌕')) ?? ''
+      // The host frame drops padding spaces, so words can arrive concatenated.
+      expect(card).toMatch(/Type\s*to\s*search\s*·\s*This\s*repo/)
+      expect(card).not.toContain(workspaceDisplayLabel(localDir))
+
+      // A query with no hits reaches the empty-state hint: the same words.
+      harness.send('zzz')
+      await waitFor()
+      harness.resize(90, 20)
+      await waitFor()
+      const hint =
+        harness.latest().split(/\r\n|\r|\n/).find(line => /Scope\s*is/.test(line)) ?? ''
+      expect(hint).toMatch(/Scope\s*is\s*"This\s*repo"/)
+      expect(harness.latest()).not.toContain(workspaceDisplayLabel(localDir))
+    } finally {
+      harness.dispose()
+    }
+  })
 })
 
 describe('the three-column layout regressions', () => {
@@ -429,6 +494,44 @@ describe('the three-column layout regressions', () => {
         harness.latest().split(/\r\n|\r|\n/).find(line => line.includes('⌕')) ?? ''
       expect(card).toContain('named-tail')
       expect(card).toContain('…')
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  it('fits the split empty-result hint label to the session column (R-188)', async () => {
+    // The hint renders inside the session list (46 columns at 120), but its
+    // label was budgeted on the full viewport: a deep path was cut mid-word
+    // across four lines. The hint now names the workspace by its short tail,
+    // bounded by the column it actually lives in.
+    const deepDir = `D:\\${'middle-segment'.repeat(2)}\\named-tail`
+    const deep = at(deepDir, 'deep', 'Deep', 1_000)
+    const harness = await mount(deep, {
+      columns: 120,
+      rows: 20,
+      query: 'zzz-nothing',
+      defaultScope: 'all',
+      scanner: { scan: async () => [deep] },
+    })
+    try {
+      await waitFor(300)
+      harness.send('\t')
+      await waitFor()
+      harness.send('\u001b[D')
+      await waitFor()
+      // ↓ from "All sessions" selects the deep workspace, whose empty result
+      // set is what paints the hint.
+      harness.send('\u001b[B')
+      await waitFor()
+      harness.resize(121, 20)
+      await waitFor()
+      const list = listColumn(harness.latest())
+      expect(list).toMatch(/Scope\s*is\s*"named-tail"/)
+      expect(list).not.toContain('middle-segment')
+      const hintLines = list.split(/\r\n|\r|\n/).filter(line => line.trim() !== '')
+      // One line for the range, at most one wrapped tail — not the four-line
+      // mid-token cut the review recorded.
+      expect(hintLines.length).toBeLessThanOrEqual(2)
     } finally {
       harness.dispose()
     }

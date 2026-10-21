@@ -70,7 +70,7 @@ A few behaviors worth knowing:
 
 ### The workspace column (split layout)
 
-The third column `Tab` opens is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets a row (most-recently-used first). The number at the row's end is **how many sessions the list shows once that row is picked** — the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse).
+The third column `Tab` opens is the visible form of the search scope: "All sessions" is pinned on top and every workspace the sweep found gets a row (most-recently-used first). The number at the row's end is **how many sessions the sweep found in that scope** — the same rule the scope itself runs (exact cwd, subdirectories, and the resumed-into-a-subdirectory inverse; containers such as home, drive roots and UNC roots match exactly). The time window (`Alt+T`) and the query filter the middle column further, so the number can exceed what the list shows at that moment.
 
 | Key / action | Effect |
 |---|---|

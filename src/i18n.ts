@@ -312,11 +312,21 @@ export const dict = {
   // Split's Tab row (same key, different job): expand/collapse the workspace
   // column. The workspace section below documents that column's own keys.
   'help-list-workspace': { zh: '展开 / 收起工作区列表', en: 'Expand / hide the workspace list' },
+  // Split list mode: the only way into the column from the session list.
+  'help-list-workspace-focus': {
+    zh: '进入工作区列表',
+    en: 'Enter the workspace list',
+  },
   'help-section-workspace': { zh: '工作区', en: 'Workspaces' },
   'help-workspace-select': { zh: '选择工作区（立即生效）', en: 'Select a workspace (applies immediately)' },
   'help-workspace-apply': { zh: '应用并回到会话列表', en: 'Apply and return to the session list' },
   'help-workspace-hide': { zh: '收起工作区列表', en: 'Hide the workspace list' },
   'help-workspace-back': { zh: '返回会话列表（保持选择）', en: 'Back to the session list (keep the selection)' },
+  // The column's pointer vocabulary is its own: selecting applies, so hover
+  // only tints and a click hands the keyboard back (R-189).
+  'help-workspace-click': { zh: '选中并交回会话列表', en: 'Select and hand the keyboard back' },
+  'help-workspace-hover': { zh: '只高亮（不切换范围）', en: 'Highlight only (never switches the scope)' },
+  'help-workspace-wheel': { zh: '按档移动（选中即生效）', en: 'Move by notch (the landed row applies)' },
   'help-list-regex': { zh: '切换正则匹配', en: 'Toggle regex matching' },
   'help-list-time': { zh: '切换时间范围', en: 'Cycle the time window' },
   'help-list-title-only': { zh: '切换标题限定（仅搜索会话标题）', en: 'Toggle title-only search (session titles only)' },
@@ -353,6 +363,14 @@ export const dict = {
   // The shadow table's name for Tab: classic toggles the scope, split
   // expands/collapses the workspace column — one neutral phrase for both.
   'scene-key-tab': { zh: '切换范围 / 展开工作区列表', en: 'Switch scope / show the workspace list' },
+  // The shadow table's name for ←: split preview returns to the list, split
+  // list enters the workspace column — one neutral phrase for both modes
+  // (R-189). Classic's ← does nothing, so the entry can only take the split
+  // meanings.
+  'scene-key-left-arrow': {
+    zh: '返回列表 / 进入工作区列表',
+    en: 'Back to the list / enter the workspace list',
+  },
   'help-preview-scroll': { zh: '逐行滚动', en: 'Scroll line by line' },
   'help-preview-page': { zh: '翻页滚动', en: 'Scroll by page' },
   'help-preview-hits': { zh: '跳转下 / 上一个命中', en: 'Jump to the next / previous hit' },
@@ -364,9 +382,12 @@ export const dict = {
     zh: '布局形态：分栏 / 经典（/settings 或行配置 layout）',
     en: 'Layout form: split / classic (/settings or the layout row-config key)',
   },
-  'help-mouse-click': { zh: '选中并打开确认', en: 'Select and open the confirm' },
+  'help-mouse-click': {
+    zh: '选中（会话行打开恢复确认）',
+    en: 'Select (a session row opens the resume confirm)',
+  },
   'help-mouse-fold': { zh: '折叠 / 展开该会话命中（▸ (+N) 徽标）', en: 'Fold / unfold the session\u2019s hits (the \u25b8 (+N) badge)' },
-  'help-mouse-hover': { zh: '移动选择', en: 'Move the selection' },
+  'help-mouse-hover': { zh: '移动选择（会话列表）', en: 'Move the selection (session list)' },
   'help-mouse-wheel': {
     zh: '按档移动（列表 / 工作区按条目、阅读窗按行）',
     en: 'Move by notch (rows in the list and the workspace column, lines in the reader)',
