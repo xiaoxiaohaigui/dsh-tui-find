@@ -107,13 +107,30 @@ export function glyphStyle(frame: string, glyph: string): string {
  *  theme produces follows the HOST generation (0.10.1 renders
  *  `userMessageBackgroundHover` as SGR 44, 0.10.2 as truecolor), so a test
  *  pinning one depth fails on the other for no real reason. `49` (default
- *  background) is a RESET, not a fill, and does not count. */
+ *  background) is a RESET, not a fill, and does not count.
+ *
+ *  Extended colours carry their arguments INSIDE the same SGR sequence
+ *  (`38;5;n`, `38;2;r;g;b`, and the `48` background twins), so the arguments
+ *  must be skipped rather than scanned as standalone parameters: a truecolor
+ *  foreground like `38;2;94;102;115` contains `102`, which is a perfectly
+ *  ordinary RGB component and NOT the bright-green background code. The
+ *  scanner reads each parameter in order and jumps over an extended form's
+ *  arguments (the CI-only failure: TERM unset makes chalk truecolor and the
+ *  old per-part scan called every such foreground a fill). */
 export function hasBackground(style: string): boolean {
   for (const match of style.matchAll(/\u001b\[([0-9;]*)m/g)) {
-    for (const part of (match[1] ?? '').split(';')) {
-      if (part.length === 0) continue
-      const value = Number(part)
-      if ((value >= 40 && value <= 47) || (value >= 100 && value <= 107) || value === 48) return true
+    const parts = (match[1] ?? '').split(';').filter(part => part.length > 0).map(Number)
+    for (let index = 0; index < parts.length; index += 1) {
+      const value = parts[index] ?? 0
+      if (value === 48) return true
+      if (value === 38) {
+        // 38;5;n (256-colour) or 38;2;r;g;b (truecolor): the tail is the colour.
+        const mode = parts[index + 1]
+        if (mode === 5) index += 2
+        else if (mode === 2) index += 4
+        continue
+      }
+      if ((value >= 40 && value <= 47) || (value >= 100 && value <= 107)) return true
     }
   }
   return false
