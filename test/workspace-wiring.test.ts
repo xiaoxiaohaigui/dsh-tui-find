@@ -457,7 +457,7 @@ describe('the workspace column in the scene', () => {
       scanner: { scan: async () => [local] },
     })
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       harness.send('\u001b[C')
       await waitFor()
       harness.send('\t')

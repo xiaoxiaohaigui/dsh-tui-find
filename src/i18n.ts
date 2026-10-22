@@ -194,7 +194,7 @@ export const dict = {
   },
 
   // ── preview pane ─────────────────────────────────────────────────────
-  'preview-title': { zh: '只读预览 · {{title}}', en: 'Read-only preview · {{title}}' },
+  'preview-title': { zh: '预览 · {{title}}', en: 'Preview · {{title}}' },
   // n/N jump feedback in the reader's status row: the 1-based ordinal of
   // the hit just landed on, over the session's hit total.
   'preview-hit-jump': { zh: '命中 {{index}}/{{total}}', en: 'Hit {{index}}/{{total}}' },

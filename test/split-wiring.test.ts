@@ -126,7 +126,7 @@ const listRowSegment = (frame: string, text: string | RegExp): string => {
   for (const line of frame.split(/\r\n|\r|\n/)) {
     if (!hits(line)) continue
     for (const segment of line.split('│')) {
-      if (hits(segment) && !segment.includes('Read-only')) return segment
+      if (hits(segment) && !segment.includes('Preview ·')) return segment
     }
   }
   return ''
@@ -170,7 +170,7 @@ describe('split rendering and anchoring', () => {
       // Right column: the reader head, anchored to the card's FIRST message
       // hit (message #2) — the conversation head (#1) sits above the window
       // and must not show.
-      expect(frame).toMatch(/Read-only\s*preview\s*·\s*Preview\s*wiring/)
+      expect(frame).toMatch(/Preview\s*·\s*Preview\s*wiring/)
       expect(frame).toMatch(/10\s*msgs/)
       expect(frame).toMatch(/✦\s*AI\s*#2\s*◆/)
       expect(frame).not.toMatch(/You\s*#1\b/)
@@ -189,7 +189,7 @@ describe('split rendering and anchoring', () => {
     const session = sessionWithMessages(['intro', `${pad}deepneedle marker tail`, 'tail'])
     const harness = await mount(session, { ...wide, query: '' })
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       for (const char of 'deepneedle') {
         harness.send(char)
         await waitFor(40)
@@ -228,7 +228,7 @@ describe('split rendering and anchoring', () => {
     const session = sessionWithMessages(['intro', `${'aZZ'.repeat(70)}q`, 'zzz '.repeat(40)])
     const harness = await mount(session, { ...wide, query: 'a' })
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       // → hands the keyboard to the reader; ↓ three rows scrolls the message
       // head off the top, and the forced repaint proves the manual scroll
       // survives an unrelated render (the dedup's own contract).
@@ -263,7 +263,7 @@ describe('split rendering and anchoring', () => {
     // glyph). The cursor vocabulary the list owns is asserted unchanged.
     const harness = await mount(splitSession(), wide)
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       harness.resize(121, 20)
       await waitFor()
       const listFocus = harness.latest()
@@ -296,7 +296,7 @@ describe('split rendering and anchoring', () => {
     // ANSI stream — `latest()` strips exactly the escape that carries it.
     const harness = await mount(splitSession(), wide)
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       harness.resize(121, 20)
       await waitFor()
       // The pane's top-left corner is painted (it carries a colour) and dim
@@ -430,7 +430,7 @@ describe('split rendering and anchoring', () => {
     const session = sessionWithMessages(['intro', `${pad}deepneedle marker tail`, 'tail'])
     const harness = await mount(session, { ...wide, query: 'deepneedle' })
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       // ↓ onto the hit row re-anchors the reader to that message.
       harness.send('\u001b[B')
       await waitFor()
@@ -592,7 +592,7 @@ describe('split focus handoff', () => {
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).toMatch(/Preview\s*·/)
       expect(harness.latest()).toMatch(/→\s*read/)
       // ...and typing filters again; zero results dismiss the reader with
       // the selection.
@@ -601,13 +601,13 @@ describe('split focus handoff', () => {
       harness.resize(121, 20)
       await waitFor()
       expect(harness.latest()).toMatch(/⌕\s*needlex/)
-      expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).not.toMatch(/Preview\s*·/)
       // Backspace restores the query, the selection and the reader.
       harness.send('\u007f')
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).toMatch(/Preview\s*·/)
     } finally {
       harness.dispose()
     }
@@ -623,7 +623,7 @@ describe('split focus handoff', () => {
     const session = sessionWithMessages(['needle one', `${pad}needle marker tail`, 'needle three'])
     const harness = await mount(session, { ...wide, query: 'needle' })
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       // ↓↓ onto the long message's hit row re-anchors the reader onto the
       // keyword, with that message's header scrolled off the 9-row window.
       harness.send('\u001b[B\u001b[B')
@@ -659,7 +659,7 @@ describe('split focus handoff', () => {
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).not.toMatch(/Preview\s*·/)
       // Nothing is selected, so → must not flip into the reader focus (the
       // classic Alt+P branch no-ops the same way, REVIEW R-057): the hint
       // line keeps the list vocabulary...
@@ -682,7 +682,7 @@ describe('split focus handoff', () => {
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).toMatch(/Preview\s*·/)
     } finally {
       harness.dispose()
     }
@@ -749,11 +749,11 @@ describe.skipIf(!generation10)('split wheel locality', () => {
       scanner: { scan: async () => sessions },
     })
     try {
-      await waitForMatch(() => harness.all(), /Read-only\s*preview/)
+      await waitForMatch(() => harness.all(), /Preview\s*·/)
       harness.resize(121, 20)
       await waitFor()
       // The reader starts on the first session (the selection's session).
-      expect(harness.latest()).toMatch(/preview\s*·\s*s0/)
+      expect(harness.latest()).toMatch(/Preview\s*·\s*s0/)
       // ONE notch down over the list. Rows are [s0 card, s0 hit, s1 card,
       // s1 hit, …], so a one-row step would still read s0 while the guest's
       // ±3 lands on s1's hit row.
@@ -761,15 +761,15 @@ describe.skipIf(!generation10)('split wheel locality', () => {
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/preview\s*·\s*s1/)
-      expect(harness.latest()).not.toMatch(/preview\s*·\s*s0/)
+      expect(harness.latest()).toMatch(/Preview\s*·\s*s1/)
+      expect(harness.latest()).not.toMatch(/Preview\s*·\s*s0/)
       // Three arrow presses (three rows by definition) reach the same place
       // from the top, which is what "the wheel moved three rows" means.
       harness.send('\u001b[A\u001b[A\u001b[A')
       await waitFor()
       harness.resize(121, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/preview\s*·\s*s0/)
+      expect(harness.latest()).toMatch(/Preview\s*·\s*s0/)
     } finally {
       harness.dispose()
     }
@@ -842,7 +842,7 @@ describe.skipIf(!generation10)('split pointer into the list from reader focus', 
       await waitFor()
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).toMatch(/Preview\s*·/)
       expect(harness.closed()).toBe(0)
     } finally {
       harness.dispose()
@@ -887,7 +887,7 @@ describe.skipIf(!generation10)('split pointer into the list from reader focus', 
       expect(frame).toMatch(/▴\s*less/)
       // The reader pane is untouched: folding is a list act, and the click
       // never reached the pane's own handlers.
-      expect(paneText(frame)).toMatch(/Read-only\s*preview/)
+      expect(paneText(frame)).toMatch(/Preview\s*·/)
       expect(frame).not.toMatch(/Resum[^?\r]{0,20}session\?/)
     } finally {
       harness.dispose()
@@ -899,7 +899,7 @@ describe('split width gate and classic layout config', () => {
   it('falls back to the classic rendering below 100 columns', async () => {
     const harness = await mount(splitSession(), { columns: 80, rows: 20 })
     try {
-      expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).not.toMatch(/Preview\s*·/)
       // Alt+P still opens the classic FULL-SCREEN preview: it carries the
       // log-path row the split pane never shows. (The solo title sits on
       // screen row 1 — the host's row-1 diff quirk keeps it out of captured
@@ -919,13 +919,13 @@ describe('split width gate and classic layout config', () => {
   it('crosses the width gate on resize in both directions', async () => {
     const harness = await mount(splitSession(), wide)
     try {
-      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).toMatch(/Preview\s*·/)
       harness.resize(90, 20)
       await waitFor()
-      expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).not.toMatch(/Preview\s*·/)
       harness.resize(120, 20)
       await waitFor()
-      expect(harness.latest()).toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).toMatch(/Preview\s*·/)
     } finally {
       harness.dispose()
     }
@@ -934,7 +934,7 @@ describe('split width gate and classic layout config', () => {
   it('never splits when the layout config says classic', async () => {
     const harness = await mount(splitSession(), { ...wide, layout: 'classic' })
     try {
-      expect(harness.latest()).not.toMatch(/Read-only\s*preview/)
+      expect(harness.latest()).not.toMatch(/Preview\s*·/)
       harness.send('\u001bp')
       await waitFor()
       harness.resize(121, 20)

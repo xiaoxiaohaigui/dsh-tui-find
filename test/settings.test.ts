@@ -333,4 +333,30 @@ describe('settings namespace', () => {
     expect(schema?.({})['panel']).toBe(false)
     expect(schema?.({ panel: true })['panel']).toBe(true)
   })
+
+  it('carries the workspace column switch in the ≤0.1.6 namespace schema (R-195)', () => {
+    const schemaOver = (resolved?: Config) => {
+      let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
+      const { ctx } = fakeContext({
+        settings: {
+          register: (_namespace: unknown, registered: unknown) => {
+            schema = registered as NonNullable<typeof schema>
+            return { get: () => ({}), watch: () => () => {} }
+          },
+        },
+      })
+      registerSettingsSection(ctx, wiringOver({ current: {} }, resolved))
+      return schema
+    }
+
+    // Same failure shape as the panel row above (R-145): on this generation
+    // the namespace IS the value source, so a `workspacePane` key missing from
+    // it would read a stored `false` back as the default (on) and the column
+    // would come back on every start. Pin the default, the stored switch, and
+    // the apply-time resolved fallback.
+    const schema = schemaOver()
+    expect(schema?.({})['workspacePane']).toBe(true)
+    expect(schema?.({ workspacePane: false })['workspacePane']).toBe(false)
+    expect(schemaOver({ workspacePane: false })?.({})['workspacePane']).toBe(false)
+  })
 })
