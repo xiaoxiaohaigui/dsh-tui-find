@@ -65,7 +65,7 @@
  * @module dsh-tui-find/core/scan
  */
 import { createHash } from 'node:crypto'
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { decodeFrame, sniffEncoding, walkFrames, type LogLine } from './frames.js'
 import {
@@ -321,24 +321,50 @@ function logCandidates(dir: string, entries: readonly string[]): LogCandidate[] 
 }
 
 /**
+ * Whether `path` is a real directory below the configured root — a symlink
+ * or junction is refused before it is traversed. Enumeration must stay inside
+ * the root: a linked directory placed under it would otherwise pull logs from
+ * anywhere on the machine into the local index (REVIEW R-199). The root
+ * itself is not checked here; a store may legitimately sit behind a link.
+ */
+function isRealDirectory(path: string): boolean {
+  try {
+    const stats = lstatSync(path)
+    return stats.isDirectory() && !stats.isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+/**
  * Stat one candidate log into {@link LogFacts}; undefined when it does not
  * exist or is not a regular file (a vanished or odd entry simply is not
- * listed). Stat-only, with no `existsSync` pre-check: enumeration runs
- * synchronously before the sweep's first yield, so every session costs at
- * most one syscall per candidate encoding.
+ * listed). `lstat` refuses a symbolic link: the log itself must be a real
+ * file below the root, not a pointer out of it (REVIEW R-199). Stat-only,
+ * with no `existsSync` pre-check: enumeration runs synchronously before the
+ * sweep's first yield, so every session costs at most one syscall per
+ * candidate encoding.
  */
 function statFile(path: string): LogFacts | undefined {
   const observedAtMs = Date.now()
   try {
-    const stats = statSync(path)
-    if (!stats.isFile()) return undefined
+    const stats = lstatSync(path)
+    if (stats.isSymbolicLink() || !stats.isFile()) return undefined
     return { path, bytes: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, observedAtMs }
   } catch {
     return undefined
   }
 }
 
-/** Enumerate every session log under the roots; first hit wins per id. */
+/**
+ * Enumerate every session log under the roots; first hit wins per id.
+ *
+ * Entries BELOW a root are traversal-checked: a workspace directory or
+ * session directory that is a symlink/junction is skipped, and so is a
+ * symlinked log, so the sweep cannot be steered outside the store
+ * (REVIEW R-199). The root itself may be a link — only its descendants are
+ * constrained.
+ */
 export function enumerateLogs(sessionRoot?: string): Map<string, LogFacts> {
   const found = new Map<string, LogFacts>()
   for (const root of sessionsRoots(sessionRoot)) {
@@ -354,15 +380,20 @@ export function enumerateLogs(sessionRoot?: string): Map<string, LogFacts> {
       // must not walk the enumeration out of the root. (readdirSync never
       // returns names with separators, so dot entries are the only risk.)
       if (ws === '.' || ws === '..') continue
+      const workspaceDir = join(root, ws)
+      // A link here would walk the whole workspace out of the store (R-199).
+      if (!isRealDirectory(workspaceDir)) continue
       let ids: string[]
       try {
-        ids = readdirSync(join(root, ws))
+        ids = readdirSync(workspaceDir)
       } catch {
         continue
       }
       for (const id of ids) {
         if (found.has(id) || !isSafeSessionId(id)) continue
-        const dir = join(root, ws, id)
+        const dir = join(workspaceDir, id)
+        // Same rule one level down: a session directory link is not a session.
+        if (!isRealDirectory(dir)) continue
         let entries: string[]
         try {
           entries = readdirSync(dir)

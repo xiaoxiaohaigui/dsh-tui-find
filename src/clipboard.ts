@@ -6,35 +6,48 @@
  * the raw OSC 52, inside tmux the DCS-passthrough-wrapped variant.
  *
  * Native is gated on `SSH_CONNECTION` (over SSH those tools would write the
- * remote clipboard; OSC 52 is the right path there). Windows uses `clip.exe`
- * (always present; Unicode handling imperfect but good enough for a
- * fallback), exactly like the host.
+ * remote clipboard; OSC 52 is the right path there). Windows uses the host's
+ * own tool, but by ABSOLUTE path (`%SystemRoot%\System32\clip.exe`): libuv
+ * resolves a bare `clip` against the CWD first, so a project-local clip.exe
+ * planted in dsh's working directory would run instead, with dsh's whole
+ * environment inherited (REVIEW R-197).
  *
  * @module dsh-tui-find/clipboard
  */
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 const ESC = '\u001b'
 const BEL = '\u0007'
 
+/** The native clipboard command for this platform, or undefined when there
+ *  is none (or its absolute path is missing). POSIX keeps the host's
+ *  PATH-resolved tool; Windows must not: `clip` is a bare name and libuv
+ *  resolves it against the CWD first, so a project-local clip.exe would run
+ *  with dsh's environment (REVIEW R-197). */
+function nativeClipboardCommand(): string | undefined {
+  switch (process.platform) {
+    case 'darwin':
+      return 'pbcopy'
+    case 'linux':
+      return 'wl-copy'
+    case 'win32': {
+      const root = process.env['SystemRoot'] || process.env['windir'] || 'C:\\Windows'
+      const clip = join(root, 'System32', 'clip.exe')
+      return existsSync(clip) ? clip : undefined
+    }
+    default:
+      return undefined
+  }
+}
+
 /** Fire-and-forget native clipboard write; failures are silent because
  *  OSC 52 may still have succeeded. */
 function copyNative(text: string): void {
-  let command: string
   try {
-    switch (process.platform) {
-      case 'darwin':
-        command = 'pbcopy'
-        break
-      case 'win32':
-        command = 'clip'
-        break
-      case 'linux':
-        command = 'wl-copy'
-        break
-      default:
-        return
-    }
+    const command = nativeClipboardCommand()
+    if (command === undefined) return
     const child = spawn(command, [], { stdio: ['pipe', 'ignore', 'ignore'] })
     child.on('error', () => {})
     child.stdin?.on('error', () => {})

@@ -3,6 +3,8 @@ dist/
 *.tsbuildinfo
 *.tgz
 test/fixtures/generated/
+# 早期提交遗留的夹具清单（绝对路径；现由 pretest 生成到 generated/）
+test/fixtures/manifest.json
 
 # Agent 协作文档（工作记录与交接资料，不随仓库发布）
 AGENTS.md

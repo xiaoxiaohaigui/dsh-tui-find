@@ -97,9 +97,18 @@ export function workspacePageEntries(bodyHeight: number): number {
  * `//`) stays `/` instead of collapsing to the empty string: the empty
  * string is the all-sessions row's key, while the POSIX root is a real
  * workspace (R-186). A drive root keeps its `C:\` -> `C:` spelling.
+ *
+ * Control characters are dropped before anything else. The live cwd is
+ * echoed to the terminal WITHOUT passing through `events.ts`'s
+ * `sanitizeText` (only log-derived text does), so a directory name carrying
+ * ESC/BEL/C1 would otherwise reach `<Text>` and inject terminal sequences
+ * (R-200). No legitimate path contains one.
  */
 function normalizeWorkspacePath(cwd: string): string {
-  const slashed = cwd.trim().replace(/\\/g, '/')
+  // `\p{Cc}` mirrors sanitizeText's set; a path keeps none of it, newline
+  // included. `String.prototype.trim` would leave most control characters in
+  // place, so this runs before the trim.
+  const slashed = cwd.replace(/\p{Cc}/gu, '').trim().replace(/\\/g, '/')
   const normalized = slashed.replace(/\/+$/, '')
   return normalized === '' && slashed.startsWith('/') ? '/' : normalized
 }

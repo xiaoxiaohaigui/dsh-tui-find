@@ -8,7 +8,7 @@
  * completion, shrink fallback, and the journal's record-only posture.
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
@@ -30,6 +30,14 @@ import {
 import type { ScanProgress, ScannedSession } from '../src/core/scan.js'
 
 const FIXTURE_ROOT = join(import.meta.dirname, 'fixtures', 'generated')
+
+/** A directory link: a junction on Windows (no elevation needed), a plain
+ *  symlink elsewhere. The `junction` type argument is Windows-only, so POSIX
+ *  gets the bare form. */
+const linkDirectory = (target: string, link: string): void => {
+  if (process.platform === 'win32') symlinkSync(target, link, 'junction')
+  else symlinkSync(target, link)
+}
 
 /**
  * Settle the generated fixture tree past the scanner's stamp-tick guard before
@@ -314,6 +322,57 @@ describe('enumerateLogs', () => {
     expect(migrated.messages.map(m => m.text)).not.toContain('已退役 v0 世代的正文')
     expect(searchSessions(sessions, '已退役', { scope: 'all' })).toEqual([])
     expect(searchSessions(sessions, '迁移后', { scope: 'all' })).toHaveLength(1)
+  })
+
+  it('refuses a linked workspace directory under the session root (R-199)', () => {
+    // A junction/symlink below the store must not steer the sweep outside it:
+    // enumeration walks real directories only. The shape is the one the
+    // security round proved: <root>/d____linked -> an external workspace.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-find-link-root-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dsh-tui-find-link-outside-'))
+    try {
+      const id = '99000000-0000-4000-8000-000000000019'
+      const outsideSession = join(outside, 'ws', id)
+      mkdirSync(outsideSession, { recursive: true })
+      writeFileSync(join(outsideSession, 'session.jsonl'), '{"type":"session"}\n', 'utf8')
+      linkDirectory(join(outside, 'ws'), join(root, 'd____linked'))
+
+      expect(enumerateLogs(root).size).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a linked session directory but keeps a linked root (R-199)', () => {
+    const real = mkdtempSync(join(tmpdir(), 'dsh-tui-find-link-real-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dsh-tui-find-link-outside-'))
+    const rootLink = `${real}-link`
+    try {
+      const id = '9a000000-0000-4000-8000-00000000001a'
+      const realSession = join(real, 'ws', id)
+      mkdirSync(realSession, { recursive: true })
+      writeFileSync(join(realSession, 'session.jsonl'), '{"type":"session"}\n', 'utf8')
+
+      // The root itself may be a link: a store behind one still enumerates.
+      linkDirectory(real, rootLink)
+      expect(enumerateLogs(rootLink).get(id)?.path).toBe(join(rootLink, 'ws', id, 'session.jsonl'))
+
+      // A session directory INSIDE a real workspace may not be one.
+      const linkedId = '9b000000-0000-4000-8000-00000000001b'
+      const outsideSession = join(outside, 'session')
+      mkdirSync(outsideSession, { recursive: true })
+      writeFileSync(join(outsideSession, 'session.jsonl'), '{"type":"session"}\n', 'utf8')
+      linkDirectory(outsideSession, join(real, 'ws', linkedId))
+
+      const logs = enumerateLogs(real)
+      expect(logs.has(linkedId)).toBe(false)
+      expect(logs.get(id)?.path).toBe(join(realSession, 'session.jsonl'))
+    } finally {
+      rmSync(rootLink, { recursive: true, force: true })
+      rmSync(real, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
 

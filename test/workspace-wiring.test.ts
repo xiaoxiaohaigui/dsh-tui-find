@@ -222,6 +222,22 @@ describe('buildWorkspaces', () => {
       expect(workspaceDisplayLabel(underHome).startsWith('~')).toBe(true)
     }
   })
+
+  it('drops control characters from a live cwd before it reaches the terminal (R-200)', () => {
+    // The workspace column prints the LIVE cwd, which never passes through
+    // events.ts's sanitizeText (only log-derived text does). A directory name
+    // carrying ESC/BEL/C1 must not repaint the terminal or emit OSC.
+    const hostile = 'C:\\work\\\u001b[2J\u0007repo\u0085'
+    const label = workspaceDisplayLabel(hostile)
+    expect(label).toBe('C:/work/[2Jrepo')
+    expect(label).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u)
+    expect(workspaceKeyOf(hostile)).toBe(workspaceKeyOf('C:/work/[2Jrepo'))
+
+    // A path that is NOTHING but control characters resolves like an empty
+    // cwd: no second row with an invisible key.
+    expect(workspaceDisplayLabel('\u001b\u0007')).toBe('All sessions')
+    expect(workspaceKeyOf('\u001b\u0007')).toBe(ALL_WORKSPACES_KEY)
+  })
 })
 
 describe('the workspace row layout and highlight', () => {
