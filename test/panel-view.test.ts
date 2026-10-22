@@ -11,15 +11,24 @@
 import { Writable, PassThrough } from 'node:stream'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// The caret-mode tests read SGR 7 off the raw stream, and chalk strips escapes
+// off-TTY: turn colours on BEFORE this file's imports, i.e. before chalk
+// resolves FORCE_COLOR at module load. Every other assertion strips ANSI, so
+// the extra escapes change nothing for them.
+vi.hoisted(() => {
+  process.env['FORCE_COLOR'] = '1'
+})
 import React from 'react'
 import * as hostUi from '../node_modules/@deepseek-harness-tui/dsh-tui/lib/types/ui.js'
 import { resolveConfig, type Config } from '../src/config.js'
 import type { ScanOptions, ScannedSession, SessionScanner } from '../src/core/scan.js'
 import { setLangOverride } from '../src/i18n.js'
 import { buildFindPanelComponent, type FindPanelProps, type PanelHostApi, type PanelKeyEvent } from '../src/panel.js'
+import type { HostCursorOptions } from '../src/vendor/host-cursor.js'
 import { FindPanelDriver } from '../src/panel-model.js'
-import { stripAnsi, waitFor, waitForMatch, waitUntil } from './harness.js'
+import { hasInverse, stripAnsi, waitFor, waitForMatch, waitUntil } from './harness.js'
 
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
 
@@ -61,6 +70,21 @@ function loadCursorContext(): React.Context<CursorDeclaration> {
   return mod.default
 }
 
+/** The hook module `src/vendor/host-cursor.ts` falls back to, reached the same
+ *  way — it answers whether this host generation can show a native caret at
+ *  all (0.15.0 added the flag; 0.9.3/0.13.0/0.14.x have only the declaration). */
+function loadHookModule(): { useNativeCursor?: () => boolean } {
+  const entryUrl = import.meta.resolve('@deepseek-harness-tui/dsh-tui')
+  const root = fileURLToPath(entryUrl).replace(/[\\/]lib[\\/]types[\\/].*$/, '')
+  return createRequire(import.meta.url)(`${root}/lib/types/ink/hooks/use-declared-cursor.js`) as {
+    useNativeCursor?: () => boolean
+  }
+}
+
+/** 0.15.0+ only: the legs below that gate on it run on the matrix's 0.16.1
+ *  host, not on the 0.9.3 dev baseline. */
+const nativeCaretAvailable = typeof loadHookModule().useNativeCursor === 'function'
+
 function stubSession(id: string, matches = 1): ScannedSession {
   return {
     id,
@@ -95,6 +119,9 @@ interface ViewFixture {
    *  the panel consumed it (preventDefault). */
   send(input: string, key: Record<string, unknown> = {}): boolean
   output(): string
+  /** The cumulative stream with its ANSI intact — for style assertions the
+   *  stripped frames cannot carry (the painted caret's SGR 7, most of all). */
+  raw(): string
   latest(): string
   /** One WHOLE frame matching `pattern`, returned so the caller keeps its own
    *  `expect` (a deadline miss surfaces as a normal assertion diff). A plain
@@ -125,6 +152,11 @@ async function mountPanel(
     /** Wrap the mounted element — the cursor tests provide the host's own
      *  cursor-declaration context so the panel's declaration is observable. */
     wrap?: (element: React.ReactElement) => React.ReactElement
+    /** Cursor hooks stapled onto the panel kit. Today's panel kit carries none
+     *  (`TuiPanelUi` narrows to components), so the bridge takes its vendored
+     *  fallback in production; handing it the 0.15.0 public pair here pins the
+     *  native-caret mode deterministically on any host generation. */
+    cursorHooks?: { useDeclaredCursor?: unknown; useNativeCursor?: unknown }
     /** Refuse every scene open, so the panel records its error notice — the
      *  R-165 row shape (`panel-open-failed`). */
     refuseOpen?: boolean
@@ -159,6 +191,7 @@ async function mountPanel(
     Text: hostUi.Text,
     Divider: StubDivider,
     useTerminalSize: () => ({ columns: width, rows: height }),
+    ...options.cursorHooks,
   } as unknown as FindPanelProps['ui']
   const Component = buildFindPanelComponent(driver)
 
@@ -247,6 +280,7 @@ async function mountPanel(
       return consumed
     },
     output: () => stripAnsi(output),
+    raw: () => output,
     latest,
     async wholeFrame(pattern: RegExp): Promise<string> {
       const deadline = Date.now() + 4_000
@@ -701,6 +735,76 @@ describe('find panel component', () => {
       expect(calls.length).toBeGreaterThan(0)
       expect(calls.every(call => call.declaration === null)).toBe(true)
       expect(calls[0]?.node).toBeTruthy()
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('stands the painted caret down where the kit reports a native one', async () => {
+    // 0.15.0+: the declaration opts into the terminal's own caret, so painting
+    // the block too would double it. The kit here carries the public pair a
+    // future panel kit may expose; today's resolves through the vendored
+    // fallback, which reports the same flag (the gated case below).
+    const calls: HostCursorOptions[] = []
+    const view = await mountPanel({
+      cursorHooks: {
+        useDeclaredCursor: (options: HostCursorOptions) => {
+          calls.push(options)
+          return () => {}
+        },
+        useNativeCursor: () => true,
+      },
+    })
+    try {
+      const declared = calls.at(-1)
+      expect(declared).toMatchObject({ line: 0, column: 2, active: true, visible: true })
+      expect(hasInverse(view.raw())).toBe(false)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('paints the fallback block where the renderer has no native caret', async () => {
+    const view = await mountPanel({
+      cursorHooks: {
+        useDeclaredCursor: () => () => {},
+        useNativeCursor: () => false,
+      },
+    })
+    try {
+      // Static output and pre-0.15 hosts keep the block; reverse video is the
+      // only inverse the panel ever paints.
+      expect(hasInverse(view.raw())).toBe(true)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('follows the vendored native flag on hosts that have one (0.15.0+)', async () => {
+    // The panel kit carries no cursor hooks on any released host, so the
+    // vendored fallback is the panel's production route — it has to report the
+    // host's native flag, not just supply the declaration hook.
+    if (!nativeCaretAvailable) return
+    const calls: Array<{ declaration: unknown }> = []
+    const context = loadCursorContext()
+    const view = await mountPanel({
+      wrap: element =>
+        React.createElement(
+          context.Provider,
+          {
+            value: declaration => {
+              calls.push({ declaration })
+            },
+          },
+          element,
+        ),
+    })
+    try {
+      const declared = calls.filter(call => call.declaration !== null).at(-1)?.declaration as
+        | { visible?: boolean }
+        | undefined
+      expect(declared?.visible).toBe(true)
+      expect(hasInverse(view.raw())).toBe(false)
     } finally {
       view.unmount()
     }

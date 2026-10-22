@@ -20,7 +20,7 @@
  *   controls stay out of reach here (regex/title/time live in config or in the
  *   scene), and the panel searches with the configured defaults for them.
  *   `pinyin` (default on) covers what a missing IME caret would otherwise
- *   cost: see the note on `declarePanelCursor`.
+ *   cost: see the IME note on FindPanel.
  * - The panel component is unmounted whenever another tab is active
  *   (`mountPolicy: 'active'`), so all state lives in FindPanelDriver
  *   (panel-model.ts) and the component only renders it.
@@ -41,7 +41,7 @@ import { ListView } from './find-list.js'
 import { wheelRows, type RowUi } from './find-types.js'
 import type { FindPanelDriver } from './panel-model.js'
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js'
-import { useHostDeclaredCursor } from './vendor/host-cursor.js'
+import { useHostCursor, type HostCursorKit } from './vendor/host-cursor.js'
 import { hostStringWidth } from './vendor/host-width.js'
 import { displayWidth, tailWidth, truncateWidth } from './width.js'
 
@@ -209,9 +209,11 @@ function resolvePanelId(panels: PanelServiceSurface): string | undefined {
  * chat input's own declaration, at the bottom of the screen). The bridge is the
  * one the scene's search card already uses; it needs a `ref` on a host Box,
  * which a panel CAN have — the adapter narrows the `ui` TYPE, but the runtime
- * Box forwards `ref` (R-153). Declaring is best-effort: a host whose hook file
- * moved degrades to no declaration, exactly the pre-fix behaviour, and pinyin
- * search stays the way around an IME entirely (`denglu` finds 登录).
+ * Box forwards `ref` (R-153). On 0.15.0+ the same declaration opts into the
+ * terminal's own caret (0.15.0's `visible`), so the painted block only remains
+ * where the host has no native cursor. Declaring is best-effort: a host whose
+ * hook file moved degrades to no declaration, exactly the pre-fix behaviour,
+ * and pinyin search stays the way around an IME entirely (`denglu` finds 登录).
  */
 export function buildFindPanelComponent(driver: FindPanelDriver): React.ComponentType<FindPanelProps> {
   const FindPanel = (props: FindPanelProps): React.ReactElement => {
@@ -366,7 +368,6 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
 
     const titleWidth = Math.max(1, Math.min(48, contentWidth - 4))
     const hitWidth = Math.max(1, contentWidth - 4)
-    const caret = focused ? <Text inverse>{' '}</Text> : null
     // R-172: the query row is painted by the HOST's renderer, and the caret
     // column declared to it has to be the host's own measurement — one column
     // off is a candidate window one cell away from the caret. Both the tail's
@@ -380,10 +381,17 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
     // focus, and the host hook clears only when the parked node is ours, so
     // losing focus hands the cursor back without clobbering another declarer.
     const caretColumn = 2 + (snapshot.query.length === 0 ? 0 : measure(queryTail))
-    const declareCursor =
-      useHostDeclaredCursor !== undefined
-        ? useHostDeclaredCursor({ line: 0, column: caretColumn, active: focused })
-        : undefined
+    // The panel's kit has no cursor hooks (it is the host's narrowed panel
+    // kit), so the bridge resolves through its vendored fallback. On 0.15.0+
+    // that fallback also reports the terminal's own caret, and the painted
+    // block stands down; the cell itself stays either way (R-154).
+    const { ref: declareCursor, native } = useHostCursor(ui as unknown as HostCursorKit, {
+      line: 0,
+      column: caretColumn,
+      active: focused,
+      visible: focused,
+    })
+    const caret = focused ? <Text inverse={!native}>{' '}</Text> : null
 
     return (
       <Box flexDirection="column" paddingLeft={1} paddingRight={1} width={width} flexShrink={0}>

@@ -136,6 +136,27 @@ export function hasBackground(style: string): boolean {
   return false
 }
 
+/** Whether an SGR run turns on reverse video (SGR 7), at any position in a
+ *  combined parameter list. `27` (off) is a different parameter, and an
+ *  extended colour's `38;5;7` index is skipped rather than read as a 7 — the
+ *  same scanning rule {@link hasBackground} uses. */
+export function hasInverse(stream: string): boolean {
+  for (const match of stream.matchAll(/\u001b\[([0-9;]*)m/g)) {
+    const parts = (match[1] ?? '').split(';').filter(part => part.length > 0).map(Number)
+    for (let index = 0; index < parts.length; index += 1) {
+      const value = parts[index] ?? 0
+      if (value === 7) return true
+      if (value === 38 || value === 48) {
+        // 38;5;n / 48;5;n (256-colour) or 38;2;r;g;b (truecolor): skip the tail.
+        const mode = parts[index + 1]
+        if (mode === 5) index += 2
+        else if (mode === 2) index += 4
+      }
+    }
+  }
+  return false
+}
+
 /** Poll the cumulative stream until `pattern` appears or the deadline lapses.
  *  Stream arrival is arrival-driven (flush gaps double up to their ceiling,
  *  parallel workers and cold working-tree copies add scheduling delay), so
@@ -231,6 +252,11 @@ export async function mount(
      *  carries its own config/scanner/notify/initialQuery and overrides the
      *  matching options above. */
     component?: React.ComponentType<HarnessSceneProps>
+    /** Replace the ui kit the scene receives (default: the installed kit).
+     *  The native-cursor tests hand in the same kit with the 0.15.0 cursor
+     *  hooks stubbed in, so both caret modes are pinnable on the 0.9.3 dev
+     *  baseline without a second host generation on disk. */
+    ui?: typeof hostUi
   } = {},
 ): Promise<Harness> {
   const columns = options.columns ?? 80
@@ -274,7 +300,7 @@ export async function mount(
   const scanner = options.scanner ?? { scan: async () => [session] }
   const props = {
     React,
-    ui: hostUi,
+    ui: options.ui ?? hostUi,
     channel,
     close: () => {
       closeCount += 1

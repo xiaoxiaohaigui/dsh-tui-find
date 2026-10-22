@@ -13,7 +13,7 @@ import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
 import { t } from './i18n.js'
 import type { ScanProgress, ScannedSession } from './core/scan.js'
 import { displayWidth, tailWidth, truncateWidth } from './width.js'
-import { useHostDeclaredCursor } from './vendor/host-cursor.js'
+import { useHostCursor, type HostCursorKit } from './vendor/host-cursor.js'
 import { displayTitle, type RowUi, type TextColor, type Ui } from './find-types.js'
 
 /**
@@ -253,15 +253,18 @@ export function composeWorkspaceHint(columns: number): string {
 }
 
 /**
- * The bordered search card: `⌕ ` prefix, inverse block caret at the query's
- * end (the caret is append-only — the scene never moves it), and a
- * right-aligned dimmed placeholder carrying the scope while empty, so the
- * terminal-painted IME preedit can never collide with it (the host
- * SearchBox's own empty-state shape).
+ * The bordered search card: `⌕ ` prefix, a caret cell at the query's end
+ * (the caret is append-only — the scene never moves it), and a right-aligned
+ * dimmed placeholder carrying the scope while empty, so the terminal-painted
+ * IME preedit can never collide with it (the host SearchBox's own empty-state
+ * shape).
  *
- * When the host's cursor hook is reachable, the native terminal cursor is
- * declared at the caret every frame — that is what pins the IME preedit
- * INLINE at the input instead of the screen's bottom row.
+ * The caret itself has two modes, the same split the host's own inputs use:
+ * the terminal's own caret where the host can show one (0.15.0+, real TTY),
+ * and the painted inverse block everywhere else (older hosts, static output).
+ * The declaration is also what pins the IME preedit INLINE at the input
+ * instead of the screen's bottom row; `focused` says whether this row owns
+ * the keyboard, so the native caret cannot pulse here while the reader has it.
  */
 export function SearchCard(props: {
   React: TuiSceneProps['React']
@@ -274,8 +277,11 @@ export function SearchCard(props: {
   /** Active non-default filters, precomposed ('近 7 天 · 正则'); '' when none. */
   filters: string
   columns: number
+  /** Whether the query owns the keyboard: list mode yes, the reader and the
+   *  workspace column take printable keys away from it. */
+  focused: boolean
 }): React.ReactElement {
-  const { React: R, ui, query, scopeLabel, filters, columns } = props
+  const { React: R, ui, query, scopeLabel, filters, columns, focused } = props
   const { Box, Text } = ui
   const placeholder = t('search-placeholder', { scope: scopeLabel })
   const contentWidth = Math.max(1, columns - 4)
@@ -287,10 +293,17 @@ export function SearchCard(props: {
   // Caret column relative to the bordered box: border (1) + paddingX (1) +
   // `⌕ ` (2) + the visible query tail before the caret.
   const caretColumn = 4 + (empty ? 0 : displayWidth(tail))
-  const declareCursor =
-    useHostDeclaredCursor !== undefined
-      ? useHostDeclaredCursor({ line: 1, column: caretColumn, active: true })
-      : undefined
+  // `active` stays true in every mode: parking the cursor is what keeps an IME
+  // composition on this row, and an unfocused declaration is hidden anyway.
+  // `visible` carries the focus instead — see vendor/host-cursor.ts. The cast
+  // is the 0.9.3 type baseline: a 0.15.0+ kit carries both hooks at runtime,
+  // and the bridge probes for them rather than trusting either declaration.
+  const { ref: declareCursor, native } = useHostCursor(ui as unknown as HostCursorKit, {
+    line: 1,
+    column: caretColumn,
+    active: true,
+    visible: focused,
+  })
   return (
     <Box
       flexShrink={0}
@@ -303,7 +316,9 @@ export function SearchCard(props: {
       {empty ? (
         <Box flexDirection="row" width="100%">
           <Text>⌕ </Text>
-          <Text inverse>{' '}</Text>
+          {/* The terminal draws the caret on 0.15.0+; the block is the
+              static fallback (reserving the cell either way). */}
+          <Text inverse={!native}>{' '}</Text>
           <Box flexGrow={1} />
           <Text dimColor wrap="truncate">
             {filters === '' ? placeholder : `${placeholder} · ${filters}`}
@@ -315,7 +330,7 @@ export function SearchCard(props: {
             <Text wrap="truncate-end">
             {'⌕ '}
             {tail}
-            <Text inverse>{' '}</Text>
+            <Text inverse={!native}>{' '}</Text>
             </Text>
           </Box>
           {filters === '' ? null : (

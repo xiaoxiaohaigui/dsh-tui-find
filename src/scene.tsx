@@ -1211,7 +1211,15 @@ export function FindScene(props: TuiSceneProps & {
             {header.right}
           </Text>
         </Box>
-        <SearchCard React={React} ui={ui} query={query} scopeLabel={scopeLabel} filters={activeFilters} columns={columns} />
+        <SearchCard
+          React={React}
+          ui={ui}
+          query={query}
+          scopeLabel={scopeLabel}
+          filters={activeFilters}
+          columns={columns}
+          focused={mode === 'list'}
+        />
         <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
           {workspacePaneActive && (
             <WorkspaceList
@@ -1280,7 +1288,15 @@ export function FindScene(props: TuiSceneProps & {
           {header.right}
         </Text>
       </Box>
-      <SearchCard React={React} ui={ui} query={query} scopeLabel={scopeLabel} filters={activeFilters} columns={columns} />
+      <SearchCard
+        React={React}
+        ui={ui}
+        query={query}
+        scopeLabel={scopeLabel}
+        filters={activeFilters}
+        columns={columns}
+        focused={mode === 'list'}
+      />
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         {listBody}
       </Box>
