@@ -217,6 +217,12 @@ const FIXTURES: readonly [string, string][] = [
   ['non-bmp mixed with readings', '😀x啊y中z'],
   ['length-changing fold and a reading', 'İ啊'],
   ['length-changing fold around a reading', 'İ啊İ'],
+  // The incremental fold-unit mapping walks forward from the previous
+  // match and falls back to the binary search past its cap; a single
+  // letter whose FIRST match sits beyond the cap in a fold that carries a
+  // table is the shape that exercises the fallback (İ folds to two units
+  // and 中 opens the pinyin tables, so both mapping paths are non-identity).
+  ['sparse match past the mapping cap', 'İ中' + 'x'.repeat(200) + 'a' + 'x'.repeat(200)],
 ]
 
 /** Deterministic LCG so a failure reproduces exactly. */
@@ -271,6 +277,21 @@ function randomCorpus(count: number, seed: number): string[] {
     out.push(text)
   }
   return out
+}
+
+/** One single-message session per fixture text, title included, so a query
+ *  exercises the title and message paths alike. */
+function makeSession(text: string, index: number): ScannedSession {
+  const message: IndexedMessage = { seq: 1, role: 'user', text, at: undefined }
+  return {
+    id: 'fixture-' + index,
+    path: 'P:/fixture/' + index,
+    bytes: 1,
+    modifiedAt: index,
+    title: text,
+    header: { cwd: undefined, createdAt: undefined },
+    messages: [message],
+  }
 }
 
 describe('fold build equivalence (phase 1a-2b)', () => {
@@ -384,23 +405,11 @@ describe('fold build equivalence (phase 1a-2b)', () => {
   }, 30_000)
 
   it('keeps the search results and highlight ranges byte-identical', () => {
-    const make = (text: string, index: number): ScannedSession => {
-      const message: IndexedMessage = { seq: 1, role: 'user', text, at: undefined }
-      return {
-        id: `fixture-${index}`,
-        path: `P:\\fixture\\${index}`,
-        bytes: 1,
-        modifiedAt: index,
-        title: text,
-        header: { cwd: undefined, createdAt: undefined },
-        messages: [message],
-      }
-    }
     const texts = [...FIXTURES.map(([, text]) => text), ...randomCorpus(120, 0xc0ffee)]
-    const pool = texts.map(make)
+    const pool = texts.map(makeSession)
     // Needles that exercise every path: literal, pinyin readings, initials,
     // case sensitivity, a mixed one and a CJK one.
-    const queries = ['auth', 'AUTH', 'zs', 'zhangsan', 'chongqing', 'zhang', '中', '龘', 'ß', 'İ', '😀', 'e']
+    const queries = ['auth', 'AUTH', 'zs', 'zhangsan', 'chongqing', 'zhang', '中', '龘', 'ß', 'İ', '😀', 'e', 'a', 'A']
     for (const query of queries) {
       for (const caseSensitive of [false, true]) {
         for (const pinyin of [false, true]) {
@@ -424,6 +433,34 @@ describe('fold build equivalence (phase 1a-2b)', () => {
             }
           }
           expect(JSON.stringify(hits), name).toBe(JSON.stringify(expected))
+        }
+      }
+    }
+  })
+
+  it('serves one-letter pinyin needles from the initials chain alone', () => {
+    // The live fast path scans the all-initials chain and nothing else for a
+    // one-letter needle (see pushPinyinCursors). This oracle scans every
+    // chain, so it is the one place a reading-chain match the initials chain
+    // does not carry would show up. Polyphones are the case that matters:
+    // their later readings start with letters the first-reading chain lacks.
+    const texts = [
+      '重庆长沙银行行业音乐快乐',
+      '漳州厦门长乐 重庆银行 音乐',
+      '混合 Mixed 文本 重A庆a 长沙_行',
+      '啊俄哦一乙 ＡＵＴＨ',
+      'İstanbul ß 中文 😀𠮷 zs',
+      'deploy 张三 to prod 搜索 done',
+    ]
+    const pool = texts.map(makeSession)
+    for (const letter of 'abcdefghijklmnopqrstuvwxyz') {
+      for (const needle of [letter, letter.toUpperCase()]) {
+        for (const caseSensitive of [false, true]) {
+          const options = { scope: 'all', pinyin: true, caseSensitive } as const
+          const name = JSON.stringify(needle) + ' sensitive=' + caseSensitive
+          expect(JSON.stringify(searchSessions(pool, needle, options)), name).toBe(
+            JSON.stringify(referenceHits(pool, needle, { pinyin: true, caseSensitive })),
+          )
         }
       }
     }

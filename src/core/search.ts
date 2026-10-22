@@ -396,6 +396,20 @@ function foldCodePoint(
 }
 
 /**
+ * Case-fold one ASCII code unit without materialising a string.
+ *
+ * The pinyin chains' non-table half appends a character per code point, and
+ * the canonical mappings on ASCII are pure arithmetic (A-Z <-> a-z), so
+ * slice + toUpperCase/toLowerCase would allocate a string per character for
+ * nothing. Non-ASCII keeps the Unicode mapping, which can change length
+ * (ß -> SS), so this helper stays ASCII-only.
+ */
+function foldAsciiCode(code: number, caseSensitive: boolean): number {
+  if (caseSensitive) return code >= 0x61 && code <= 0x7a ? code - 0x20 : code
+  return code >= 0x41 && code <= 0x5a ? code + 0x20 : code
+}
+
+/**
  * Whether one UTF-16 unit is a low surrogate. Paired with the high-surrogate
  * test it is what makes the fold's per-code-point walk a plain char-code
  * scan: `codePointAt` would decode every unit, while the fold only needs the
@@ -596,6 +610,10 @@ interface PinyinReadings {
   /** The reading-string prefix up to the first reading. */
   readonly first: string
   readonly initials: string
+  /** Offset of each reading inside {@link raw}; the first is always 0. The
+   *  all-readings chain records one syllable start per entry, so the build
+   *  reads the offsets instead of re-splitting raw per document. */
+  readonly partStarts: readonly number[]
 }
 
 const readingsCache = new Map<string, PinyinReadings>()
@@ -623,13 +641,54 @@ function readingsOf(char: string): PinyinReadings | undefined {
   const raw = PINYIN_READINGS[char]
   if (raw === undefined) return undefined
   const parts = raw.split(' ')
+  const partStarts: number[] = []
+  let offset = 0
+  for (const part of parts) {
+    partStarts.push(offset)
+    offset += part.length + 1
+  }
   const parsed: PinyinReadings = {
     raw,
     first: parts[0]!,
     initials: parts.map(part => part[0]!).join(''),
+    partStarts,
   }
   readingsCache.set(char, parsed)
   return parsed
+}
+
+/**
+ * Code-unit to readings index for the BMP table characters, or -1. The build
+ * asks for one reading per CODE POINT, and readingsOf takes a one-character
+ * string, which would allocate that string just to hash it (1.4M allocations
+ * on a 1.4M-character index; measured as the build's largest avoidable cost).
+ * The dense table turns the same lookup into one array load, and the parsed
+ * readings stay shared with the readingsOf cache.
+ *
+ * Built lazily: a build that never reaches a table character pays nothing,
+ * and the 256 KiB index is one allocation either way. Surrogate pairs still
+ * go through readingsOf, because the generated table spells its non-BMP
+ * keys as pairs.
+ */
+let readingsUnitIndex: Int32Array | undefined
+const readingsUnitList: PinyinReadings[] = []
+
+function readingsOfUnit(text: string, at: number, size: number): PinyinReadings | undefined {
+  if (size !== 1) return readingsOf(text.slice(at, at + 2))
+  let index = readingsUnitIndex
+  if (index === undefined) {
+    index = new Int32Array(0x10000).fill(-1)
+    for (const char of Object.keys(PINYIN_READINGS)) {
+      if (char.length !== 1) continue
+      const parsed = readingsOf(char)
+      if (parsed === undefined) continue
+      readingsUnitList.push(parsed)
+      index[char.charCodeAt(0)] = readingsUnitList.length - 1
+    }
+    readingsUnitIndex = index
+  }
+  const slot = index[text.charCodeAt(at)]!
+  return slot === -1 ? undefined : readingsUnitList[slot]
 }
 
 const pinyinFoldCache = new WeakMap<object, PinyinFoldEntry>()
@@ -766,29 +825,30 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     const at = utf16
     const size = codePointSize(text, at)
     utf16 += size
-    const before = { all: allUnits, first: firstUnits, allInit: allInitUnits, firstInit: firstInitUnits }
-    const parsed = readingsOf(text.slice(at, utf16))
+    // Verdict inputs, read before this step's appends. Locals instead of an
+    // object: this runs once per code point (1.4M times on the plugin's own
+    // index) and the object was pure allocation.
+    const beforeAll = allUnits
+    const beforeFirst = firstUnits
+    const beforeAllInit = allInitUnits
+    const beforeFirstInit = firstInitUnits
+    const parsed = readingsOfUnit(text, at, size)
     if (parsed !== undefined) tableChars += 1
     if (parsed !== undefined) {
       hasTable = true
-      // Every reading is appended exactly as the table spells it — readings
-      // separated by one space — because a needle can never contain a space:
-      // the separators stay invisible to matching while keeping a polyphone's
-      // readings from gluing into phantom syllables. Each reading's first
-      // unit is a syllable boundary the reading chains may start on.
+      // The chain text IS the table's own space-separated reading string: a
+      // needle can never contain a space, so the separators stay invisible to
+      // matching while keeping a polyphone's readings from gluing into phantom
+      // syllables. One append lands every reading and separator at once, and
+      // the recorded starts are the readings' offsets inside that same string
+      // (the previous build re-scanned raw for spaces and appended piece by
+      // piece).
       allStarts.push(allUnits)
-      let readingAt = 0
-      for (;;) {
-        const next = parsed.raw.indexOf(' ', readingAt)
-        const reading = next === -1 ? parsed.raw.slice(readingAt) : parsed.raw.slice(readingAt, next)
-        all.append(reading)
-        allUnits += reading.length
-        if (next === -1) break
-        all.append(' ')
-        allUnits += 1
-        allStarts.push(allUnits)
-        readingAt = next + 1
+      for (let part = 1; part < parsed.partStarts.length; part++) {
+        allStarts.push(allUnits + parsed.partStarts[part]!)
       }
+      all.append(parsed.raw)
+      allUnits += parsed.raw.length
       firstStarts.push(firstUnits)
       first.append(parsed.first)
       firstUnits += parsed.first.length
@@ -812,8 +872,18 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
       // caller's verbatim `matchRanges` scan). Any length change the
       // mapping introduces (ß → SS) is absorbed by `cumUnits`/`cpStart`
       // like in every other fold.
-      const char = text.slice(at, utf16)
-      const literal = caseSensitive ? char.toUpperCase() : char.toLowerCase()
+      // One ASCII unit folds by arithmetic instead of slice + toLowerCase:
+      // this branch runs for every non-table character, and the mapping is
+      // canonical on ASCII (see foldAsciiCode). Everything else, non-BMP
+      // pairs included, keeps the Unicode mapping.
+      const ascii = size === 1 ? text.charCodeAt(at) : -1
+      let literal: string
+      if (ascii >= 0 && ascii < 0x80) {
+        literal = String.fromCharCode(foldAsciiCode(ascii, caseSensitive))
+      } else {
+        const char = text.slice(at, utf16)
+        literal = caseSensitive ? char.toUpperCase() : char.toLowerCase()
+      }
       // Non-table text remains ordinary case-insensitive literal text in
       // every chain, and each code point is a valid segment so words such
       // as `auth` still match across their character boundaries.
@@ -839,14 +909,14 @@ function buildPinyinFolds(text: string, caseSensitive: boolean): PinyinFolds | u
     // It compared a UTF-16 offset against a code-point count, so it could only
     // ever diverge after a surrogate pair, and that pair already failed the
     // `size !== 1` term on its own step; it never decided a verdict alone.
-    if (allRows === undefined && (size !== 1 || allUnits - before.all !== 1)) allRows = openRows(codePoints + 1)
-    if (firstRows === undefined && (size !== 1 || firstUnits - before.first !== 1)) {
+    if (allRows === undefined && (size !== 1 || allUnits - beforeAll !== 1)) allRows = openRows(codePoints + 1)
+    if (firstRows === undefined && (size !== 1 || firstUnits - beforeFirst !== 1)) {
       firstRows = openRows(codePoints + 1)
     }
-    if (allInitRows === undefined && (size !== 1 || allInitUnits - before.allInit !== 1)) {
+    if (allInitRows === undefined && (size !== 1 || allInitUnits - beforeAllInit !== 1)) {
       allInitRows = openRows(codePoints + 1)
     }
-    if (firstInitRows === undefined && (size !== 1 || firstInitUnits - before.firstInit !== 1)) {
+    if (firstInitRows === undefined && (size !== 1 || firstInitUnits - beforeFirstInit !== 1)) {
       firstInitRows = openRows(codePoints + 1)
     }
     if (allRows !== undefined) allRows[codePoints + 1] = allUnits
@@ -955,9 +1025,35 @@ function pinyinNeedleOf(term: string, caseSensitive: boolean): string | undefine
  * The reading chains carry the syllable boundary that keeps a query from
  * starting mid-syllable; the initials chains run contiguously and pass no
  * bitmap (see {@link PinyinFolds}).
+ *
+ * A ONE-LETTER needle is served by the all-initials chain alone, and the
+ * other three chains are not scanned at all. The proof is the syllable rule
+ * plus what each chain spells:
+ *
+ * - a reading-chain match is accepted only at a syllable start, i.e. at the
+ *   first letter of one of that character's readings — and the all-initials
+ *   chain spells exactly those letters, at the same original character;
+ * - a single letter cannot span a reading boundary, so no reading-chain match
+ *   can cover a character the initials chain does not;
+ * - non-table text is appended verbatim to every chain, so the literal
+ *   occurrences agree too; and firstInitials (one letter per character) is a
+ *   subset of allInitials (one letter per reading).
+ *
+ * The union of the four chains' ranges therefore has the same ORIGINAL spans
+ * as the initials chain's alone — every range is one character wide either
+ * way, so even the touching-span merge cannot differ. Measured on the real
+ * store: a single-letter query drops from ~38 ms to ~9 ms, with the results
+ * byte-identical over every letter in both sensitivities (pinned by
+ * test/fold-equivalence.test.ts's one-letter sweep).
  */
 function pushPinyinCursors(out: RangeCursor[], folds: PinyinFolds, needle: string): void {
   const cpStart = folds.cpStart
+  if (needle.length === 1) {
+    if (needle.length <= folds.allInitials.folded.length) {
+      out.push(new FoldCursor(folds.allInitials, needle, cpStart, undefined))
+    }
+    return
+  }
   out.push(new FoldCursor(folds.allReadings, needle, cpStart, folds.allReadings.segmentStarts))
   if (folds.firstReading !== folds.allReadings) {
     out.push(new FoldCursor(folds.firstReading, needle, cpStart, folds.firstReading.segmentStarts))
@@ -1076,6 +1172,9 @@ class FoldCursor implements RangeCursor {
   start = 0
   end = 0
   private at = 0
+  /** Last code-point index this cursor mapped a folded unit onto (see
+   *  codePointOf); matches ascend, so the next lookup starts here. */
+  private cpHint = 0
   private readonly fold: FoldedText
   private readonly needle: string
   private readonly cpStart: Uint32Array | undefined
@@ -1112,13 +1211,43 @@ class FoldCursor implements RangeCursor {
         this.start = found
         this.end = this.at
       } else {
-        this.start = cpStart[charOfUnit(fold, found)]!
-        this.end = cpStart[charOfUnit(fold, this.at - 1) + 1]!
+        this.start = cpStart[this.codePointOf(found)]!
+        this.end = cpStart[this.codePointOf(this.at - 1) + 1]!
       }
       return true
     }
   }
+
+  /**
+   * The code point a folded UTF-16 index belongs to.
+   *
+   * Matches ascend, so the previous answer is where the next lookup starts:
+   * walking forward from it replaces the per-match binary search with one
+   * stride over the table (measured 1.2-1.6x on dense single-letter scans,
+   * where the initials chain is scanned edge to edge). The walk is CAPPED,
+   * though: a sparse first match deep inside a long document must not turn
+   * into a linear scan, so past the cap the binary search answers. An identity
+   * fold carries no table and is its own mapping.
+   */
+  private codePointOf(unit: number): number {
+    const table = this.fold.cumUnits
+    if (table === undefined) return unit
+    let cp = this.cpHint
+    const limit = Math.min(cp + INCREMENTAL_MAP_LIMIT, table.length - 1)
+    while (cp < limit && table[cp + 1]! <= unit) cp += 1
+    if (cp === limit && cp + 1 < table.length && table[cp + 1]! <= unit) {
+      cp = charOfUnit(this.fold, unit)
+    }
+    this.cpHint = cp
+    return cp
+  }
 }
+
+/** How many prefix-table rows {@link FoldCursor.codePointOf} may walk before
+ *  falling back to the binary search: enough to make a dense match run
+ *  amortized O(1) per range, small enough that a lone match at the end of a
+ *  long document costs at most this many comparisons before the search. */
+const INCREMENTAL_MAP_LIMIT = 64
 
 /** The code point a folded UTF-16 index belongs to (binary search). An
  *  identity fold IS its own mapping, so the index is the answer. */
