@@ -48,12 +48,13 @@ import { displayWidth, tailWidth, truncateWidth } from './width.js'
 /** Panel id SUFFIX only: the host assigns the final id when it accepts the
  *  registration (the descriptor's id is never the wiring key), and the panel
  *  is addressed through {@link resolvePanelId}. The prefix is the caller's
- *  verified component identity first, then the owning loader entry id (hosts
- *  with dsh-TUI #1474 peel its `include:` composition marker), and only
- *  otherwise a synthesized `act<N>`. This plugin rides the C-070
- *  direct-activation path, so on hosts before #1474 it lands on
- *  `act<N>:search` and the number can change across restarts. No form is
- *  something a user types into the host's enable list. */
+ *  verified Component identity when the admission loader bound one
+ *  (`<componentId>:search`, durable), and otherwise a number synthesized per
+ *  activation — `act<N>:search` on hosts up to 0.16.x, and the session-only
+ *  `session:act<N>:search` from upstream #1695 on. Only the session form is
+ *  temporary: it never reaches the persisted panel list, and the number can
+ *  change across restarts. No form is something a user types into the host's
+ *  enable list. */
 export const PANEL_ID = 'search'
 /** The panel API generation this module is written against — the host rejects
  *  any other value outright (`TUI_PANEL_API_VERSION`). */
@@ -184,13 +185,12 @@ interface PanelServiceSurface {
 /**
  * The host-assigned final id of this plugin's panel, read back from `list()`
  * (the descriptor's own id is only the suffix). The host namespaces the id
- * with the caller's verified component identity first, then with the owning
- * loader entry id (hosts with #1474 peel its `include:` composition marker
- * before using it), and synthesizes `act<N>` only when neither exists — this
- * plugin rides the documented C-070 direct-activation path, so the prefix
- * depends on the host generation: `act<N>:` before #1474, `<entry id>:`
- * after it. Read-only call, wrapped: a liveness-gate rejection just means
- * no badge.
+ * with the caller's verified Component identity when the activation has one,
+ * and otherwise synthesizes a per-activation number: `act<N>:` up to 0.16.x,
+ * `session:act<N>:` from upstream #1695 on (that form is session-only and
+ * never persisted). Matching the `:search` suffix alone keeps every
+ * generation on one path, with no version probe. Read-only call, wrapped: a
+ * liveness-gate rejection just means no badge.
  */
 function resolvePanelId(panels: PanelServiceSurface): string | undefined {
   try {

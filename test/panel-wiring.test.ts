@@ -72,7 +72,7 @@ interface PanelDescriptor {
  *  identity argument and hands back a real disposer; `list` answers with the
  *  FINAL ids the host assigns (the plugin's own id is only the suffix), and
  *  `badge` records what the driver asks for. */
-function stubPanels() {
+function stubPanels(prefix = 'act1') {
   const descriptors: PanelDescriptor[] = []
   const identities: unknown[] = []
   const badges: Array<{ id: string; badge: unknown }> = []
@@ -85,7 +85,7 @@ function stubPanels() {
         if (at >= 0) descriptors.splice(at, 1)
       }
     }),
-    list: vi.fn(() => descriptors.map(descriptor => ({ id: `act1:${descriptor.id}`, title: descriptor.title }))),
+    list: vi.fn(() => descriptors.map(descriptor => ({ id: `${prefix}:${descriptor.id}`, title: descriptor.title }))),
     badge: vi.fn((id: string, badge: unknown) => {
       badges.push({ id, badge })
       return true
@@ -272,13 +272,44 @@ describe('registerFindPanel', () => {
     const driver = { bindBadge: vi.fn() } as unknown as FindPanelDriver
     registerFindPanel(ctx, { driver })
 
-    // The id the host lands is NOT the plugin's `<pluginId>:search` form: it is
-    // whatever `list()` answers with (a component identity when the activation
-    // has one, `act<N>:search` on the direct-activation path this plugin rides).
+    // The id the host lands is whatever `list()` answers with — never the
+    // descriptor's own `search`. Up to 0.16.x an unverified activation gets
+    // `act<N>:search`; #1695 moves that to the session-only `session:act<N>:`
+    // namespace and a verified Component keeps `<componentId>:search` — the
+    // suffix lookup has to cover all three without a version probe.
     expect(driver.bindBadge).toHaveBeenCalledTimes(1)
     const emit = vi.mocked(driver.bindBadge).mock.calls[0]![0]
     emit({ level: 'info', unread: 0 })
     expect(panels.badge).toHaveBeenCalledWith('act1:search', { level: 'info', unread: 0 })
+  })
+
+  it('addresses the session-only temporary namespace (upstream #1695)', () => {
+    const panels = stubPanels('session:act7')
+    const { ctx } = stubCtx({ tuiPanels: panels.runtime })
+    const driver = { bindBadge: vi.fn() } as unknown as FindPanelDriver
+    registerFindPanel(ctx, { driver })
+
+    // An unverified activation is a TEMPORARY panel from #1695 on: the host
+    // numbers it per run and never lets the id reach the persisted list. The
+    // badge must still land, or a background sweep that settles off screen
+    // loses its only signal.
+    const emit = vi.mocked(driver.bindBadge).mock.calls[0]![0]
+    emit({ level: 'error', unread: 0 })
+    expect(panels.badge).toHaveBeenCalledWith('session:act7:search', { level: 'error', unread: 0 })
+  })
+
+  it('addresses a verified Component id back from the host unchanged', () => {
+    const panels = stubPanels('dsh-tui-find')
+    const { ctx } = stubCtx({ tuiPanels: panels.runtime })
+    const driver = { bindBadge: vi.fn() } as unknown as FindPanelDriver
+    registerFindPanel(ctx, { driver })
+
+    // When the admission loader bound the package's dsh-plugin.json the host
+    // uses that Component id as the namespace and the id is durable; the
+    // plugin must not rewrite it into a synthesized one.
+    const emit = vi.mocked(driver.bindBadge).mock.calls[0]![0]
+    emit({ level: 'info', unread: 0 })
+    expect(panels.badge).toHaveBeenCalledWith('dsh-tui-find:search', { level: 'info', unread: 0 })
   })
 
   it('wires the driver badge when the panel only lands on a retry (R-147)', () => {
