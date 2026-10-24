@@ -32,6 +32,25 @@
  * the branch below logs its failure instead of swallowing it.
  * Background: docs/decisions/2026-09-24-settings-generation-adaptation.md.
  *
+ * ## The card owns a page (≥0.17.0)
+ *
+ * 0.17.0 pages the screen into top-level tabs (#1619): a section that declares
+ * `page` joins every section sharing its id, and every section without one —
+ * third-party cards included — lands on the default "General" page next to the
+ * host's own knobs. The tab strip appears only once at least one section
+ * declares a page, so a card that wants its own room has to ask for it. The
+ * card therefore declares {@link CARD_PAGE}: the plugin id as the page id and a
+ * short translated tab label.
+ *
+ * The declaration is unconditional, never version-branched: 0.13.0–0.16.x
+ * `register()` spreads the section into its stored, frozen copy (`...section`)
+ * and no screen reads the key, so the field is inert display metadata there.
+ * That is why it needs no probe — a capability probe exists to keep a MISSING
+ * seam from failing, while this one only gains meaning. Both halves of the
+ * host's page validation (`[a-z][a-z0-9_-]*` id, non-empty title) apply at
+ * `register()` time on 0.17.0, where a rejection throws and costs the whole
+ * card, so the literal is pinned with `satisfies` and test/settings.test.ts.
+ *
  * ## The card is two-level
  *
  * The section page shows the fields that carry no `group` plus one navigation
@@ -131,6 +150,32 @@ export interface SettingsWiring {
 const zh = (text: string): { zh: string } => ({ zh: text })
 
 /**
+ * The 0.17.0+ top-level page (tab) contract, re-declared locally because this
+ * plugin compiles against dsh-TUI 0.9.3 — the last tarball npm can install, and
+ * therefore a reference that predates `TuiSettingsSection.page` (see
+ * docs/decisions/2026-10-20-host-baseline-0-13.md §3). The shape mirrors the
+ * host's `TuiSettingsPage` (`adapter/ports/channel-settings.d.ts`); keep the two
+ * in sync when either moves.
+ */
+export interface SettingsPage {
+  readonly id: string
+  readonly title: string
+  readonly descriptions?: Readonly<Partial<Record<'zh' | 'en', string>>>
+}
+
+/**
+ * The page this card owns, so the plugin's knobs leave the host's default
+ * "General" page and get a tab of their own. The id is the plugin id — the
+ * upstream authoring convention for plugin pages — and the host validates it
+ * with the section-namespace grammar plus a non-empty title at register time.
+ */
+const CARD_PAGE = {
+  id: SETTINGS_NS,
+  title: 'Session search',
+  descriptions: zh('会话搜索'),
+} as const satisfies SettingsPage
+
+/**
  * The card's subpages, in display order. The root page keeps what a user
  * retunes while reading a result (scope, time window, layout, the workspace
  * column's initial state, the global entry), and each group here is a
@@ -169,13 +214,22 @@ type CardGroupId = (typeof CARD_GROUPS)[number]['id']
  */
 type CardField = Omit<TuiSettingsField, 'group'> & { group?: CardGroupId }
 
+/**
+ * The section as registered: the host's shape plus the page field 0.17.0+
+ * reads. The intersection keeps the literal valid against BOTH compile
+ * references — 0.9.3 (no `page` at all) locally, and 0.17.0 inside the host
+ * matrix, whose swapped declarations already carry the real `TuiSettingsPage`.
+ */
+type CardSection = TuiSettingsSection & { readonly page?: SettingsPage }
+
 /** The card, mirroring the row config keys one-to-one and split into the root
  *  page's everyday knobs plus {@link CARD_GROUPS}' subpages. */
-function section(ns: string): TuiSettingsSection {
+function section(ns: string): CardSection {
   return {
     ns,
     title: 'dsh-tui-find (session search)',
     descriptions: zh('dsh-tui-find（会话搜索）'),
+    page: CARD_PAGE,
     groups: CARD_GROUPS,
     fields: [
       {

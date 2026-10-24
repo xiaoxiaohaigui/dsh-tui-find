@@ -19,6 +19,8 @@ import {
 
 type Card = {
   ns: string
+  /** The declared top-level page (0.17.0+ tab); older hosts store it unused. */
+  page?: { id: string; title: string; descriptions?: { zh?: string } }
   /** The declared subpages, in display order (the host validates these). */
   groups?: Array<{ id: string; descriptions?: { zh?: string } }>
   fields: Array<{
@@ -116,6 +118,9 @@ describe('settings namespace', () => {
     registerSettingsSection(ctx, wiringOver({ current: {} }))
     expect(registered).toEqual([SETTINGS_NS])
     expect(seen.cards).toHaveLength(1)
+    // The page rides the same section object on every generation: 0.17.0+
+    // renders it as a tab, older hosts store it and never read it.
+    expect(seen.cards[0]?.page?.id).toBe(SETTINGS_NS)
     expect(seen.logs).toEqual([])
   })
 
@@ -236,6 +241,26 @@ describe('settings namespace', () => {
     registerSettingsSection(ctx, wiringOver({ current: {} }))
     const paths = (seen.cards[0]?.fields ?? []).map(field => field.path.join('.'))
     expect([...paths].sort()).toEqual([...LIVE_CONFIG_KEYS].sort())
+  })
+
+  it('declares its own /settings page so the card leaves the host General tab', () => {
+    // 0.17.0 pages the screen into tabs and drops every page-less section onto
+    // the default "General" page, where the host's own knobs live — the card
+    // asks for its own room instead. The host validates BOTH halves at
+    // register time (id grammar, non-empty title) and a rejection throws out
+    // of register(), costing the whole card; the id also has to stay clear of
+    // the group ids, which are a different navigation level.
+    const { ctx, seen } = fakeContext({ settings: undefined })
+    registerSettingsSection(ctx, wiringOver({ current: {} }))
+    const card = seen.cards[0]
+    const page = card?.page
+
+    expect(page?.id).toBe(SETTINGS_NS)
+    expect(page?.id).toMatch(/^[a-z][a-z0-9_-]*$/)
+    expect((page?.title ?? '').length).toBeGreaterThan(0)
+    // Like every other card text, the tab label follows the TUI language.
+    expect((page?.descriptions?.zh ?? '').length).toBeGreaterThan(0)
+    expect(card?.groups?.map(group => group.id)).not.toContain(page?.id)
   })
 
   it('keeps the card two-level: everyday knobs on the page, the rest behind declared subpages', () => {

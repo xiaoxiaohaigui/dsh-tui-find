@@ -60,15 +60,18 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *    is the leg that compiles and RUNS the plugin against a supported host's
  *    real declarations (the devDependency stays on 0.9.3 because that is the
  *    last published tarball npm can install — see the decision).
- *  - `0.16.1` — the release line on the dev machine since 2026-10-20: the
- *    panel-entry ownership rework (upstream #1441) plus the paging guard that
- *    returns while the right column holds focus (the key is still dropped
- *    there, not forwarded to the panel).
+ *  - `0.17.0` — the release line since 2026-10-24: the paged `/settings`
+ *    screen (upstream #1619 — a plugin card now declares its own `page`, which
+ *    the host validates at register time), the native caret from 0.15.0, and
+ *    the panel-identity split (#1683/#1695) that made `sidePanel.panels` an
+ *    exact set.
  *
  *  Pre-0.13 hosts are no longer supported and no longer pinned: peer 下限抬到
  *  `>=0.13.0` 之后，0.9.3/0.10.1/0.12.0 的软探测 no-op 路径不再是对外承诺。
- *  0.14.x/0.15.x are covered by 0.16.1 for every seam this plugin uses. */
-const DEFAULT_HOSTS = ['0.13.0', '0.16.1']
+ *  0.14.x–0.16.x are covered by 0.13.0 and 0.17.0 for every seam this plugin
+ *  uses; the paged screen only exists on 0.17.0, and the floor leg keeps the
+ *  page-less shape honest (the extra field must stay inert there). */
+const DEFAULT_HOSTS = ['0.13.0', '0.17.0']
 
 function parseArgs(argv) {
   const hosts = []

@@ -158,6 +158,12 @@ describe('mount integration (headless harness)', () => {
           // the whole card; see settings.ts's module doc).
           const card = sections.list().find(s => s.ns === 'dsh-tui-find')
           observed.push(`groups=${card?.groups?.map(group => group.id).join(',') ?? 'none'}`)
+          // 0.17.0 validates the declared page at register time (id grammar +
+          // non-empty title) and a rejection throws out of register() — i.e.
+          // the whole card would be missing above. Older hosts store the key
+          // verbatim and never read it, so the same assertion holds on both.
+          const page = (card as { page?: { id?: string } } | undefined)?.page
+          observed.push(`page=${page?.id ?? 'none'}`)
         } catch (error) {
           observed.push(`error=${(error as Error).message}`)
         }
@@ -170,6 +176,7 @@ describe('mount integration (headless harness)', () => {
     expect(observed).toContain('afterClose=none')
     expect(observed.some(o => o.startsWith('sections=') && o.includes('dsh-tui-find'))).toBe(true)
     expect(observed).toContain('groups=matching,indexing,advanced')
+    expect(observed).toContain('page=dsh-tui-find')
   })
 
   it('stays healthy when the mediated command registration degrades', async () => {

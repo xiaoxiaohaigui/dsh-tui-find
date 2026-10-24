@@ -69,7 +69,8 @@ jobs:
 
   # The two-leg host compatibility matrix (0.13.0 = the supported floor, whose
   # line introduced the sidebar / `ctx.tuiPanels` the panel depends on, and
-  # 0.16.1 = the current release line) is this repo's release gate; see
+  # 0.17.0 = the current release line, whose paged `/settings` screen reads the
+  # page every plugin card declares) is this repo's release gate; see
   # docs/decisions/2026-10-20-host-baseline-0-13.md (which raised the floor
   # from 0.9.3) and docs/decisions/2026-09-12-dual-version-compat-strategy.md.
   # It copies the installed tree, swaps in each published host tarball and runs
@@ -91,7 +92,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --include=dev
-      - name: Host matrix (0.13.0 + 0.16.1)
+      - name: Host matrix (0.13.0 + 0.17.0)
         run: npm run verify:hosts
 
   # The published tarball must never carry workspace docs, scripts or tests.
