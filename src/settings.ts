@@ -37,10 +37,11 @@
  * 0.17.0 pages the screen into top-level tabs (#1619): a section that declares
  * `page` joins every section sharing its id, and every section without one —
  * third-party cards included — lands on the default "General" page next to the
- * host's own knobs. The tab strip appears only once at least one section
- * declares a page, so a card that wants its own room has to ask for it. The
- * card therefore declares {@link CARD_PAGE}: the plugin id as the page id and a
- * short translated tab label.
+ * host's own knobs. The tab strip itself renders once the screen holds MORE
+ * than one page (a stock host always keeps its own card on the default page,
+ * so declaring one lands on a two-page screen), so a card that wants its own
+ * room has to ask for it. The card therefore declares {@link CARD_PAGE}: the
+ * plugin id as the page id and a short translated tab label.
  *
  * The declaration is unconditional, never version-branched: 0.13.0–0.16.x
  * `register()` spreads the section into its stored, frozen copy (`...section`)

@@ -159,9 +159,12 @@ describe('mount integration (headless harness)', () => {
           const card = sections.list().find(s => s.ns === 'dsh-tui-find')
           observed.push(`groups=${card?.groups?.map(group => group.id).join(',') ?? 'none'}`)
           // 0.17.0 validates the declared page at register time (id grammar +
-          // non-empty title) and a rejection throws out of register() — i.e.
-          // the whole card would be missing above. Older hosts store the key
-          // verbatim and never read it, so the same assertion holds on both.
+          // trimmed non-empty title); a rejection throws out of register(), so
+          // the card would be missing above — on that leg this reads back the
+          // host-validated page. 0.13–0.16 register() just spreads the section
+          // and their channel projection drops the key, so there this proves
+          // "stored without throwing", not that the screen ignores it (that
+          // half is the matrix leg's job: the old screens never read it).
           const page = (card as { page?: { id?: string } } | undefined)?.page
           observed.push(`page=${page?.id ?? 'none'}`)
         } catch (error) {

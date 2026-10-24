@@ -257,9 +257,12 @@ describe('settings namespace', () => {
 
     expect(page?.id).toBe(SETTINGS_NS)
     expect(page?.id).toMatch(/^[a-z][a-z0-9_-]*$/)
-    expect((page?.title ?? '').length).toBeGreaterThan(0)
+    // The host TRIMS before rejecting, so a whitespace-only title passes a
+    // bare length check here yet throws inside 0.17.0's register() — the one
+    // variant only the expensive matrix leg would catch.
+    expect((page?.title ?? '').trim().length).toBeGreaterThan(0)
     // Like every other card text, the tab label follows the TUI language.
-    expect((page?.descriptions?.zh ?? '').length).toBeGreaterThan(0)
+    expect((page?.descriptions?.zh ?? '').trim().length).toBeGreaterThan(0)
     expect(card?.groups?.map(group => group.id)).not.toContain(page?.id)
   })
 
