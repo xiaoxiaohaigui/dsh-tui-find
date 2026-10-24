@@ -27,7 +27,7 @@
  *
  * Usage:
  *   node scripts/verify-host-matrix.mjs                 # every pinned host
- *   node scripts/verify-host-matrix.mjs --host 0.11.2   # replace the default legs
+ *   node scripts/verify-host-matrix.mjs --host 0.16.1   # replace the default legs
  *   node scripts/verify-host-matrix.mjs --keep          # keep the copies
  *
  * Exit code is non-zero if any host fails (pack, build or test); each
@@ -68,9 +68,13 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *
  *  Pre-0.13 hosts are no longer supported and no longer pinned: peer 下限抬到
  *  `>=0.13.0` 之后，0.9.3/0.10.1/0.12.0 的软探测 no-op 路径不再是对外承诺。
- *  0.14.x–0.16.x are covered by 0.13.0 and 0.17.0 for every seam this plugin
- *  uses; the paged screen only exists on 0.17.0, and the floor leg keeps the
- *  page-less shape honest (the extra field must stay inert there). */
+ *  The two legs are ENDPOINTS, not a proof that the versions between them are
+ *  identical: 0.15.0's native caret and 0.16.x's panel-enable merge (#1441,
+ *  unlike 0.17.0's exact-set semantics) are real intermediate differences, so
+ *  add `--host 0.15.0` when touching the cursor hook and `--host 0.16.1` when
+ *  touching panel registration / persisted panel choices. The paged screen
+ *  only exists on 0.17.0, and the floor leg keeps the page-less shape honest
+ *  (the extra field must stay inert there). */
 const DEFAULT_HOSTS = ['0.13.0', '0.17.0']
 
 function parseArgs(argv) {
