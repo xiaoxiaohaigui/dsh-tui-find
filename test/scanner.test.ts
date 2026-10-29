@@ -965,6 +965,14 @@ describe('offset watermark (incremental decode)', () => {
       const before = statSync(path)
       expect(before.mtimeMs).toBe(pinned.getTime())
 
+      // The cache guard refuses an entry committed inside its own ctime tick,
+      // and the entry's observation never ages — so if the first scan runs in
+      // that tick, EVERY later sweep re-proves the bytes through the guard and
+      // the second scan below would miss even with ctime dropped from the
+      // token. Let the creation tick close first; then the entry is servable
+      // and the post-rewrite miss can only come from the token itself.
+      await new Promise(resolve => setTimeout(resolve, STAMP_TICK_GUARD_MS + 50))
+
       const scanner = new SessionScanner()
       const first = await scanner.scan({ sessionRoot: root })
       expect(first[0]!.messages.map(m => m.text)).toEqual([originalText])

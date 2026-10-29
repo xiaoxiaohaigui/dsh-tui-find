@@ -29,6 +29,26 @@ import plugin, {
 import { getLang } from '../dist/i18n.js'
 import type { TuiSettingsSectionsHost } from '@deepseek-harness-tui/dsh-tui/settings-sections'
 
+/** The sidebar panel service arrived with 0.13.0; the dev baseline (0.9.3)
+ *  does not export the subpath, so this leg skips the panel observation while
+ *  the host matrix (0.13.0/0.17.0) runs it against the real service. */
+const PANELS_SPECIFIER = '@deepseek-harness-tui/dsh-tui/panels'
+const PANELS_PLUGIN = (
+  await import(PANELS_SPECIFIER).catch(() => undefined)
+)?.default as { name: string; apply: (ctx: Context) => void } | undefined
+/** The host generation this leg compiles against, read from the installed
+ *  package — the panel-service test below is about OUR assumption, not the
+ *  host's: every supported leg (>= 0.13.0) must expose it. */
+const HOST_VERSION = (
+  JSON.parse(readFileSync(join(import.meta.dirname, '..', 'node_modules', '@deepseek-harness-tui', 'dsh-tui', 'package.json'), 'utf8')) as {
+    version: string
+  }
+).version
+const HOST_SUPPORTS_PANELS = (() => {
+  const [major = 0, minor = 0] = HOST_VERSION.split('.').map(part => Number.parseInt(part, 10))
+  return major > 0 || minor >= 13
+})()
+
 // These mounts activate the real plugin; keep the watermark journal off so
 // no test ever writes against the real ~/.dsh-tui tree.
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
@@ -99,6 +119,14 @@ async function waitForActivation(observed: readonly string[]): Promise<void> {
   )
 }
 
+describe('host packaging assumptions', () => {
+  it('exposes the panel service exactly on the supported host generations', () => {
+    // A silent skip on a supported leg would hide a removed export behind a
+    // green matrix: the 0.13.0 floor and the release line must both carry it.
+    expect(PANELS_PLUGIN !== undefined).toBe(HOST_SUPPORTS_PANELS)
+  })
+})
+
 describe('mediated admission rejection classifier', () => {
   it('recognizes the host ComponentIdentityError shape and nothing else', () => {
     // The host internal carries the code OUTSIDE the message (name:
@@ -132,6 +160,10 @@ describe('mount integration (headless harness)', () => {
     await sleep(30)
     root.plugin(TuiSceneRuntime)
     root.plugin(TuiSettingsSectionsRuntime)
+    // Mount the real panel service too on hosts that ship one (0.13.0+): the
+    // plugin's own register/whenSeamMounted path is then entered against the
+    // host's actual validation and store, not the test suite's stand-in.
+    if (PANELS_PLUGIN !== undefined) root.plugin(PANELS_PLUGIN)
     await sleep(30)
     // Every tui runtime method is caller- and liveness-checked through the
     // service proxy, so verification runs inside the plugin's own apply —
@@ -167,6 +199,13 @@ describe('mount integration (headless harness)', () => {
           // half is the matrix leg's job: the old screens never read it).
           const page = (card as { page?: { id?: string } } | undefined)?.page
           observed.push(`page=${page?.id ?? 'none'}`)
+          // The host-assigned panel id, from the host's own list. The panel is
+          // accepted (or refused) inside the plugin activation just like the
+          // scene registration above; a refusal would leave this empty.
+          const panels = ctx.get('tuiPanels', false) as
+            | { list(): Array<{ id: string; source?: string }> }
+            | undefined
+          observed.push(`panels=${panels?.list().map(panel => panel.id).join(',') ?? 'none'}`)
         } catch (error) {
           observed.push(`error=${(error as Error).message}`)
         }
@@ -180,6 +219,14 @@ describe('mount integration (headless harness)', () => {
     expect(observed.some(o => o.startsWith('sections=') && o.includes('dsh-tui-find'))).toBe(true)
     expect(observed).toContain('groups=matching,indexing,advanced')
     expect(observed).toContain('page=dsh-tui-find')
+    if (PANELS_PLUGIN !== undefined) {
+      // The descriptor cleared the host's own register() validation and the
+      // host assigned the panel its prefixed id — the "panel missing" real-
+      // machine check, now on every matrix run.
+      const listed = observed.find(entry => entry.startsWith('panels=')) ?? ''
+      expect(listed).not.toBe('panels=none')
+      expect(listed.split('=')[1]?.split(',')).toContainEqual(expect.stringMatching(/:search$/u))
+    }
   })
 
   it('stays healthy when the mediated command registration degrades', async () => {
