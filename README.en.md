@@ -189,6 +189,8 @@ npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each
 
 The suite covers frame-chain parsing, the scanner (change tokens and the stamp-tick guard, offset-watermark incremental decode, generation enumeration, sub-agent filtering), search (multi-term AND / regex / pinyin / title-only / time window / scope), the regex backtracking cost screen, the preview reader and the scene wiring (against the real host renderer, with mouse injection), the shared list model, host-generation dispatch and the settings card, and the entry combo's grammar and shadow table — see the cases under `test/` for the itemized list.
 
+The host matrix runs the whole suite against the real 0.13.0 / 0.17.0 tarballs; `test/admission.test.ts` also mounts the host's own scene, settings and **panel** runtimes (the panel service is 0.13.0+) so the plugin registers through the real services. A missing scene, panel or settings card therefore fails the matrix instead of waiting for a real-machine check.
+
 ## Requirements
 
 - dsh-TUI **≥ 0.13.0** (v0.15 community-draft plugin system): 0.13.0 is the line that introduced the right column and `ctx.tuiPanels`, and it is this plugin's minimum supported host (`peerDependencies` says the same). Pre-0.13 hosts are unsupported and have no sidebar panel
