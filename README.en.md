@@ -123,8 +123,8 @@ dsh-TUI 0.13.0 added the right column, and the plugin registers a "Search" panel
 
 **Known limits**
 
-- **`PgUp`/`PgDn` do not reach the panel** (0.13.0–0.17.0; 0.17.0 ships the same guard, not yet re-tested key by key on a real terminal): the host's paging guard `return`s from the `(key.pageUp || key.pageDown) && fullscreen` branch — including while the panel has focus — and that `return` leaves the one `useInput` callback that owns the panel's only dispatch point (`sidePanel.handleKey`, further down in the same callback), so the panel can never see the key. The plugin keeps its branch, so moving the dispatch ahead of the guard would light it up; paging in the scene and its reader is unaffected.
-- **No `Ctrl`/`Alt` combos** (the host routes those to the chat), so the only modifiers available are `Tab` and `Shift+Tab` — `Alt+E` from the scene cannot reach the panel, which is why folding lives on `Shift+Tab`.
+- **`PgUp`/`PgDn` do not reach the panel** (0.13.0–0.18.0; 0.18.0 ships the same guard, re-checked in source on 2026-11-01, not yet re-tested key by key on a real terminal): the host's paging guard `return`s from the `(key.pageUp || key.pageDown) && fullscreen` branch — including while the panel has focus — and that `return` leaves the one `useInput` callback that owns the panel's only dispatch point (`sidePanel.handleKey`, further down in the same callback), so the panel can never see the key. The plugin keeps its branch, so moving the dispatch ahead of the guard would light it up; paging in the scene and its reader is unaffected.
+- **No usable `Ctrl`/`Alt` combos** (the host routes those to the chat; from 0.18.0 the keymap paste chord is dispatched to the panel first and then swallowed by the host, so it stays unusable), so the only modifiers available are `Tab` and `Shift+Tab` — `Alt+E` from the scene cannot reach the panel, which is why folding lives on `Shift+Tab`.
 
 **IME**: the panel declares the terminal cursor at the query caret so the candidate window follows the input; the declaration goes through a host-internal hook and silently degrades (candidates fall back to the chat input at the bottom) when unavailable — pinyin (`denglu` → 登录, on by default) still works there, as does the full-screen scene. While the query row is empty and the panel holds the keyboard, the row paints the cursor only: composition is invisible to the plugin, so a placeholder would be shoved around by the pre-edit.
 
@@ -184,12 +184,12 @@ Session root is probed in order (first hit wins): the `sessionRoot` config (excl
 npm install          # dev dependencies
 npm run build        # tsc → dist/
 npm test             # pretest builds and generates fixtures, then runs the full vitest suite
-npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each on 0.13.0 (supported floor) and 0.17.0 (release line)
+npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each on 0.13.0 (supported floor) and 0.18.0 (release line)
 ```
 
 The suite covers frame-chain parsing, the scanner (change tokens and the stamp-tick guard, offset-watermark incremental decode, generation enumeration, sub-agent filtering), search (multi-term AND / regex / pinyin / title-only / time window / scope), the regex backtracking cost screen, the preview reader and the scene wiring (against the real host renderer, with mouse injection), the shared list model, host-generation dispatch and the settings card, and the entry combo's grammar and shadow table — see the cases under `test/` for the itemized list.
 
-The host matrix runs the whole suite against the real 0.13.0 / 0.17.0 tarballs; `test/admission.test.ts` also mounts the host's own scene, settings and **panel** runtimes (the panel service is 0.13.0+) so the plugin registers through the real services. A missing scene, panel or settings card therefore fails the matrix instead of waiting for a real-machine check.
+The host matrix runs the whole suite against the real 0.13.0 / 0.18.0 tarballs; `test/admission.test.ts` also mounts the host's own scene, settings and **panel** runtimes (the panel service is 0.13.0+) so the plugin registers through the real services. A missing scene, panel or settings card therefore fails the matrix instead of waiting for a real-machine check.
 
 ## Requirements
 

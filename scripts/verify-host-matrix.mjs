@@ -60,11 +60,15 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *    is the leg that compiles and RUNS the plugin against a supported host's
  *    real declarations (the devDependency stays on 0.9.3 because that is the
  *    last published tarball npm can install — see the decision).
- *  - `0.17.0` — the release line since 2026-10-24: the paged `/settings`
- *    screen (upstream #1619 — a plugin card now declares its own `page`, which
- *    the host validates at register time), the native caret from 0.15.0, and
- *    the panel-identity split (#1683/#1695) that made `sidePanel.panels` an
- *    exact set.
+ *  - `0.18.0` — the release line since 2026-11-01. It carries the paged
+ *    `/settings` screen from 0.17.0 (upstream #1619 — a plugin card declares
+ *    its own `page`, which the host validates at register time), the native
+ *    caret from 0.15.0, the panel-identity split (#1683/#1695) that made
+ *    `sidePanel.panels` an exact set, and the DSH 0.2.1-rc.3–rc.5 validated
+ *    line. Its only plugin-facing keyboard change is the side-panel paste
+ *    routing (#1767/#1785): the keymap paste chord is dispatched to the active
+ *    panel first and then swallowed, so a panel handler that types `input`
+ *    must exclude ctrl/meta/super.
  *
  *  Pre-0.13 hosts are no longer supported and no longer pinned: peer 下限抬到
  *  `>=0.13.0` 之后，0.9.3/0.10.1/0.12.0 的软探测 no-op 路径不再是对外承诺。
@@ -73,9 +77,9 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *  unlike 0.17.0's exact-set semantics) are real intermediate differences, so
  *  add `--host 0.15.0` when touching the cursor hook and `--host 0.16.1` when
  *  touching panel registration / persisted panel choices. The paged screen
- *  only exists on 0.17.0, and the floor leg keeps the page-less shape honest
- *  (the extra field must stay inert there). */
-const DEFAULT_HOSTS = ['0.13.0', '0.17.0']
+ *  exists on 0.17.0+ (the current leg); the floor leg keeps the page-less shape
+ *  honest (the extra field must stay inert there). */
+const DEFAULT_HOSTS = ['0.13.0', '0.18.0']
 
 function parseArgs(argv) {
   const hosts = []

@@ -515,11 +515,12 @@ describe('find panel component', () => {
       // scope it started in.
       expect(view.driver.scope()).toBe('repo')
 
-      // Paging is exercised through a synthetic event: the 0.13.0/0.14.0 host
-      // never delivers these two keys to a panel at all (its pageUp/pageDown
-      // guard returns before the sidebar's only dispatch point — R-168), so what
-      // this pins is that the branch CONSUMES them, kept for the host release
-      // that fixes that. The README documents them as inert meanwhile.
+      // Paging is exercised through a synthetic event: hosts 0.13.0–0.18.0
+      // never deliver these two keys to a panel at all (the pageUp/pageDown
+      // guard returns before the sidebar's only dispatch point — R-168;
+      // re-checked on 0.18.0 source 2026-11-01), so what this pins is that the
+      // branch CONSUMES them, kept for the host release that fixes that. The
+      // README documents them as inert meanwhile.
       expect(view.send('', { pageUp: true })).toBe(true)
       expect(view.driver.getSnapshot().selected).toBe(0)
     } finally {

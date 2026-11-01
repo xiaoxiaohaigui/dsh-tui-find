@@ -13,10 +13,12 @@
  *   sidebar routes plain characters to the active panel's `host.onKey` first
  *   and swallows whatever the panel leaves (useSidePanel: "the right column
  *   owns the keyboard while focused"), so a focused panel is a pure keyboard
- *   surface. Ctrl/Alt chords never arrive (they stay with the host's global
- *   actions), which leaves exactly two modifier keys for the panel's own
- *   toggles: Tab switches the search scope and Shift+Tab folds, the same
- *   vocabulary the scene binds to Tab and Alt+E. The rest of the scene's
+ *   surface. Ctrl/Alt chords are not the panel's (they stay with the host's
+ *   global actions; 0.18.0 forwards the keymap paste chord here first and then
+ *   swallows it — the modifier guard below ignores it), which leaves exactly
+ *   two modifier keys for the panel's own toggles: Tab switches the search
+ *   scope and Shift+Tab folds, the same vocabulary the scene binds to Tab and
+ *   Alt+E. The rest of the scene's
  *   controls stay out of reach here (regex/title/time live in config or in the
  *   scene), and the panel searches with the configured defaults for them.
  *   `pinyin` (default on) covers what a missing IME caret would otherwise
@@ -304,18 +306,21 @@ export function buildFindPanelComponent(driver: FindPanelDriver): React.Componen
             // Tab switches the search scope and Shift+Tab folds — the scene's
             // own vocabulary, mapped onto the only two modifier keys a sidebar
             // panel can own. Alt+E (the scene's fold chord) never arrives here:
-            // the sidebar hands every ctrl/alt chord back to the chat before
-            // the panel's dispatcher runs, so a plugin panel has no Alt layer
-            // at all (useSidePanel: "Ctrl/Alt combos fall through to Chat").
+            // apart from the 0.18.0 keymap paste chord (dispatched here first,
+            // then swallowed by the host — #1767), the sidebar hands ctrl/alt
+            // chords back to the chat before this dispatcher runs, so a plugin
+            // panel has no Alt layer (useSidePanel: "Ctrl/Alt combos fall
+            // through to Chat").
             if (key.shift === true) driver.toggleFold()
             else driver.toggleScope()
             event.preventDefault()
             return
           }
-          // Ctrl/Alt chords are never delivered here (the host keeps them for
-          // its global actions), but `super` is (kitty CSI-u; see PanelKeyFlags)
-          // and a Cmd/Win chord is not query text — the scene's `plain` rule
-          // (R-171).
+          // Ctrl/Alt chords belong to the host's global actions, except the
+          // 0.18.0 paste chord that is delivered here first — this guard is
+          // what keeps it from being typed as query text. `super` does arrive
+          // (kitty CSI-u; see PanelKeyFlags) and a Cmd/Win chord is not query
+          // text either — the scene's `plain` rule (R-171).
           if (key.ctrl === true || key.meta === true || key.super === true) return
           if (input.length > 0) {
             driver.appendInput(input)
