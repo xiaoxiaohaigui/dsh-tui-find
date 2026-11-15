@@ -134,7 +134,7 @@ From dsh-TUI 0.20.1 on, the plugin contributes rows to the composer's `@` comple
 
 | Field | Content |
 |---|---|
-| Row label | The session's title plus its short id (`简历意向岗位改为维修 [1e801a47]`), kept within 80 columns; an untitled session shows its id alone |
+| Row label | The session's title plus its short id (`Some session title [abc12345]`), kept within 80 columns; an untitled session shows its id alone |
 | Row detail | How many places matched inside that session |
 | What it inserts | A continuation prompt: `Picking up <keywords> from the session "<title>":` — you append what you actually want done. The short id is **not** in the sentence: it exists for the human picking a row, and inside a prompt it is noise the model cannot resolve |
 
