@@ -288,7 +288,7 @@ describe('settings namespace', () => {
     // host turns into a thrown registration.
     for (const field of card?.fields ?? []) (pages[field.group ?? '(root)'] ??= []).push(field.path.join('.'))
     expect(pages).toEqual({
-      '(root)': ['defaultScope', 'defaultTime', 'layout', 'workspacePane', 'panel', 'shortcut'],
+      '(root)': ['defaultScope', 'defaultTime', 'layout', 'workspacePane', 'panel', 'mention', 'shortcut'],
       matching: ['caseSensitive', 'regex', 'pinyin', 'titleOnly'],
       indexing: ['showSubagentSessions', 'indexTools', 'indexThinking', 'maxMessageChars', 'warmup'],
       advanced: ['sessionRoot'],
@@ -388,3 +388,24 @@ describe('settings namespace', () => {
     expect(schemaOver({ workspacePane: false })?.({})['workspacePane']).toBe(false)
   })
 })
+  it('carries the @ mention switch in the ≤0.1.6 namespace schema (R-216)', () => {
+    // Same failure shape as the panel row above: on this generation the
+    // namespace IS the value source, so a `mention` key missing from the
+    // schema resolves a stored `false` back to the default (on) and the @
+    // provider keeps answering after the user turned it off.
+    let schema: ((value: Record<string, unknown>) => Record<string, unknown>) | undefined
+    const { ctx } = fakeContext({
+      settings: {
+        register: (_namespace: unknown, registered: unknown) => {
+          schema = registered as NonNullable<typeof schema>
+          return { get: () => ({}), watch: () => () => {} }
+        },
+      },
+    })
+    registerSettingsSection(ctx, wiringOver({ current: {} }, { mention: false }))
+    expect(schema?.({})['mention']).toBe(false)
+    expect(schema?.({ mention: true })['mention']).toBe(true)
+    // The card field points at a path the schema must actually serve, or it
+    // renders editable and silently never persists.
+    expect(schema?.({ mention: false })['mention']).toBe(false)
+  })

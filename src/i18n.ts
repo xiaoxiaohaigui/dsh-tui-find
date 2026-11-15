@@ -281,6 +281,31 @@ export const dict = {
   'panel-scope-tag': { zh: '范围：{{scope}}', en: 'Scope: {{scope}}' },
   'panel-open-failed': { zh: '无法打开 /find 场景', en: 'Could not open the /find scene' },
   'hint-seg-open': { zh: '**Enter** 打开', en: '**Enter** open' },
+
+  // ── composer @ mention provider ('tuiMentions', 0.20.1+) ──────────────
+  // The provider title sits beside every row this plugin contributes; the
+  // label is the session's own title (data, never translated).
+  'mention-provider-title': { zh: '历史会话', en: 'Sessions' },
+  'mention-detail': { zh: '{{n}} 处命中', en: '{{n}} hits' },
+  // The inserted sentence. Plain words on purpose: the host replaces the typed
+  // '@query' with this verbatim, so it must read as something the user could
+  // have typed, carry no '@' token, and leave the actual request to them.
+  //
+  // It is a CONTINUATION prompt ("picking up X from that session:"), not a
+  // citation: the agent cannot open the referenced session — this plugin gives
+  // it no reader — so a sentence that implies the details are available only
+  // invites a confident invention. The session TITLE carries the real signal;
+  // that is why it rides here as well as in the row label.
+  //
+  // No {{id}} here on purpose. The short id belongs to the POPUP (telling two
+  // same-titled sessions apart for the human picking), and inside a prompt it
+  // is noise the model cannot resolve. It rides the row label instead, which
+  // is also where the host's (label, insertText) dedupe key needs the
+  // difference (REVIEW R-221).
+  'mention-insert': {
+    zh: '接着会话「{{title}}」里 {{query}} 那件事：',
+    en: 'Picking up {{query}} from the session "{{title}}":',
+  },
   'hint-seg-fold': { zh: 'Shift+Tab 折叠', en: 'Shift+Tab fold' },
   'hint-seg-type': { zh: '输入搜索', en: 'Type to search' },
 

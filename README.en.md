@@ -123,10 +123,35 @@ dsh-TUI 0.13.0 added the right column, and the plugin registers a "Search" panel
 
 **Known limits**
 
-- **`PgUp`/`PgDn` do not reach the panel** (0.13.0–0.18.0; 0.18.0 ships the same guard, re-checked in source on 2026-11-01, not yet re-tested key by key on a real terminal): the host's paging guard `return`s from the `(key.pageUp || key.pageDown) && fullscreen` branch — including while the panel has focus — and that `return` leaves the one `useInput` callback that owns the panel's only dispatch point (`sidePanel.handleKey`, further down in the same callback), so the panel can never see the key. The plugin keeps its branch, so moving the dispatch ahead of the guard would light it up; paging in the scene and its reader is unaffected.
+- **`PgUp`/`PgDn` do not reach the panel** (0.13.0–0.20.1; 0.20.1 ships the same guard, re-checked in source on 2026-11-15, not yet re-tested key by key on a real terminal): the host's paging guard `return`s from the `(key.pageUp || key.pageDown) && fullscreen` branch — including while the panel has focus — and that `return` leaves the one `useInput` callback that owns the panel's only dispatch point (`sidePanel.handleKey`, further down in the same callback), so the panel can never see the key. The plugin keeps its branch, so moving the dispatch ahead of the guard would light it up; paging in the scene and its reader is unaffected.
 - **No usable `Ctrl`/`Alt` combos** (the host routes those to the chat; from 0.18.0 the keymap paste chord is dispatched to the panel first and then swallowed by the host, so it stays unusable), so the only modifiers available are `Tab` and `Shift+Tab` — `Alt+E` from the scene cannot reach the panel, which is why folding lives on `Shift+Tab`.
 
 **IME**: the panel declares the terminal cursor at the query caret so the candidate window follows the input; the declaration goes through a host-internal hook and silently degrades (candidates fall back to the chat input at the bottom) when unavailable — pinyin (`denglu` → 登录, on by default) still works there, as does the full-screen scene. While the query row is empty and the panel holds the keyboard, the row paints the cursor only: composition is invisible to the plugin, so a placeholder would be shoved around by the pre-edit.
+
+### @ completion in the prompt box (0.20.1+)
+
+From dsh-TUI 0.20.1 on, the plugin contributes rows to the composer's `@` completion popup: type `@keywords` and it answers from the session index this plugin has already built, in the same card as file names. The use case is narrow on purpose — "we talked about this before" — without opening `/find` first and copying the result with `Alt+C`.
+
+| Field | Content |
+|---|---|
+| Row label | The session's title plus its short id (`简历意向岗位改为维修 [1e801a47]`), kept within 80 columns; an untitled session shows its id alone |
+| Row detail | How many places matched inside that session |
+| What it inserts | A continuation prompt: `Picking up <keywords> from the session "<title>":` — you append what you actually want done. The short id is **not** in the sentence: it exists for the human picking a row, and inside a prompt it is noise the model cannot resolve |
+
+**Where the line is (deliberately)**: that sentence is ALL it inserts — never the matched message body, never an `@` token, never a tool invocation. A completion popup is a completion popup, not a channel for moving conversation text into a prompt; read the original with `/find`.
+
+The sentence is phrased as a **continuation**, not a citation, and that is deliberate too: the plugin gives the agent no way to read a past session, so "referring to the discussion in…" would put the model in a position where inventing is the only move. "Picking up … from the session" is honest and hands the thread back to you.
+
+**What answers**: the same scanner and the same in-memory index as `/find` and the sidebar panel, so all three agree about which sessions exist and what is in them. Matching follows the config (case sensitivity, pinyin, title-only, regex — in regex mode the whole text after `@` is one pattern); the index shape (`indexTools` / `indexThinking` / `showSubagentSessions` / `maxMessageChars` / `sessionRoot`) refreshes quietly on the next keystroke after it changes.
+
+- **Always scoped to all sessions**: this seam hands the provider no cwd, and a repo-scoped search with nothing to compare against matches nothing — the label and detail are the disambiguation a cwd would have provided.
+- **The first `@` of a cold process may come back empty**: the host gives every provider 300 ms per query and the plugin answers from memory only — it never decodes a log inside that budget. The index normally comes from the background warm-up or from the scene/panel sweep; when nobody has swept yet the plugin starts one pass in the background (for `@` alone: it takes no slot in the one-sweep-at-a-time discipline and preempts neither the panel nor the warm-up), and the next keystroke finds it ready.
+- **Turn it off with `mention: false`** (the settings card's front page): the provider is **released from the host** (not left mounted and muted), so `@` falls back to file names; flipping it back re-registers immediately, no restart.
+
+**Known limits (both decided by the seam itself)**
+
+- **Ordering**: the host appends provider rows whose label the fuzzy matcher did not score AFTER every file row, and the popup shows 6 rows. So when the same words hit both file names and (only) session bodies, the session rows fall outside the window — narrow the `@` query to a word only the conversation contains, or use `/find`.
+- **The first query can be slow**: the host budgets 300 ms per provider, and `complete` runs synchronously (the host side is only a timer, it cannot preempt). On a multi-thousand-session library the FIRST query pays one pinyin-fold build (measured ~350 ms at 3000 sessions; 14-19 ms per keystroke afterwards; the background warm-up usually absorbs that first build).
 
 ## Search semantics
 
@@ -150,6 +175,7 @@ Override on the plugin row in `cordis.patch.yml` (all keys optional):
       layout: 'split'            # scene layout: split (default, list + reader, needs >= 100 columns) | classic (single column + full-screen preview)
       workspacePane: true        # show the workspace column when /find opens (default on; Tab still toggles it, split only)
       panel: true                # sidebar search panel switch (default on)
+      mention: true              # @ completion in the prompt box, answered from this plugin's index (default on; needs dsh-TUI 0.20.1+)
       caseSensitive: false       # case-sensitive matching (default off)
       regex: false               # start with regex matching on (default off; Alt+R toggles it live)
       pinyin: true               # pinyin matching (default on; letter-only terms also match Chinese via readings + initials)
@@ -184,17 +210,18 @@ Session root is probed in order (first hit wins): the `sessionRoot` config (excl
 npm install          # dev dependencies
 npm run build        # tsc → dist/
 npm test             # pretest builds and generates fixtures, then runs the full vitest suite
-npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each on 0.13.0 (supported floor) and 0.18.0 (release line)
+npm run verify:hosts # host matrix: isolated-copy host swap, one build+test each on 0.13.0 (supported floor) and 0.20.1 (release line)
 ```
 
 The suite covers frame-chain parsing, the scanner (change tokens and the stamp-tick guard, offset-watermark incremental decode, generation enumeration, sub-agent filtering), search (multi-term AND / regex / pinyin / title-only / time window / scope), the regex backtracking cost screen, the preview reader and the scene wiring (against the real host renderer, with mouse injection), the shared list model, host-generation dispatch and the settings card, and the entry combo's grammar and shadow table — see the cases under `test/` for the itemized list.
 
-The host matrix runs the whole suite against the real 0.13.0 / 0.18.0 tarballs; `test/admission.test.ts` also mounts the host's own scene, settings and **panel** runtimes (the panel service is 0.13.0+) so the plugin registers through the real services. A missing scene, panel or settings card therefore fails the matrix instead of waiting for a real-machine check.
+The host matrix runs the whole suite against the real 0.13.0 / 0.20.1 tarballs; add `--host 0.18.0` when touching the `@` provider — that is the pre-0.20.1 leg which exercises the structural soft probe's no-op posture; `test/admission.test.ts` also mounts the host's own scene, settings and **panel** runtimes (the panel service is 0.13.0+) so the plugin registers through the real services. A missing scene, panel or settings card therefore fails the matrix instead of waiting for a real-machine check.
 
 ## Requirements
 
 - dsh-TUI **≥ 0.13.0** (v0.15 community-draft plugin system): 0.13.0 is the line that introduced the right column and `ctx.tuiPanels`, and it is this plugin's minimum supported host (`peerDependencies` says the same). Pre-0.13 hosts are unsupported and have no sidebar panel
 - The sidebar panel ships with that baseline (0.13.0+ always has `ctx.tuiPanels`); a host build whose seam is missing still gets the soft fallback — zero registration, zero warnings
+- **`@` completion in the prompt box needs dsh-TUI 0.20.1+** (`ctx.tuiMentions`); older hosts get no registration and no warning, and `@` keeps completing file names only
 - Version policy and verification scope: `docs/decisions/2026-10-20-host-baseline-0-13.md`
 - Node `^22.19 || >=24`; Windows / macOS / Linux
 

@@ -150,6 +150,13 @@ export interface PanelDriverOptions {
   /** The single-sweep slot. Absent = unarbitrated (tests, and any composition
    *  where the panel is the only sweeper). */
   readonly gate?: SweepGate
+  /** A sweep landed: hand the settled list to whoever else searches with this
+   *  scanner. The composer's `@` provider is the caller — without this it has
+   *  to buy a whole second pass on a cold process just to answer one keystroke
+   *  (REVIEW R-223). Fired for landed and for aborted sweeps alike: both hand
+   *  over a usable list, and the receiver owns the decision of whether it wants
+   *  it. Never called for a FAILED sweep (there is no list to hand over). */
+  readonly onSettledSweep?: (sessions: readonly ScannedSession[]) => void
 }
 
 /**
@@ -514,6 +521,13 @@ export class FindPanelDriver {
         this.derive()
         this.settle()
         this.announceSettled(false)
+        // R-223: the list is settled and already decoded — give the other
+        // searchers on this scanner (the @ provider) a free start.
+        try {
+          this.options.onSettledSweep?.(result)
+        } catch {
+          // A handoff is additive: a receiver's failure changes nothing here.
+        }
       })
       .catch((error: unknown) => {
         // A stale sweep's rejection is not this panel's failure: an aborted

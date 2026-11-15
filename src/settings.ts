@@ -291,6 +291,16 @@ function section(ns: string): CardSection {
         kind: 'boolean',
       },
       {
+        path: ['mention'],
+        label: 'Composer @ suggestions',
+        descriptions: zh('输入框 @ 补全'),
+        hint: 'Answer the @ completion popup in the prompt box with this plugin\'s session index (needs dsh-TUI 0.20.1+). Off = the provider stays registered but never answers. Applies immediately.',
+        hintDescriptions: zh(
+          '用本插件的会话索引回答输入框里 @ 补全弹窗（需 dsh-TUI 0.20.1+）。关闭 = 提供方仍注册但不再应答。立即生效。',
+        ),
+        kind: 'boolean',
+      },
+      {
         path: ['caseSensitive'],
         group: 'matching',
         label: 'Case-sensitive',
@@ -509,6 +519,11 @@ function registerNamespaceScope(
       // back to the default (on) and re-register the panel on every boot —
       // exactly the "it comes back" failure the row exists to prevent (R-145).
       panel: z.boolean().default(resolved.panel),
+      // Same rule as `panel` above, and the same bug if it is missing (R-216,
+      // the R-145/R-195 family): a stored `mention: false` that the namespace
+      // schema does not declare resolves back to the default (on), so the @
+      // provider keeps answering after the user turned it off.
+      mention: z.boolean().default(resolved.mention),
       caseSensitive: z.boolean().default(resolved.caseSensitive),
       regex: z.boolean().default(resolved.regex),
       pinyin: z.boolean().default(resolved.pinyin),
@@ -609,6 +624,7 @@ type ConfigValue = {
   layout?: 'split' | 'classic'
   workspacePane?: boolean
   panel?: boolean
+  mention?: boolean
   caseSensitive?: boolean
   regex?: boolean
   pinyin?: boolean

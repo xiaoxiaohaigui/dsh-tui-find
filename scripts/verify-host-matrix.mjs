@@ -60,15 +60,16 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *    is the leg that compiles and RUNS the plugin against a supported host's
  *    real declarations (the devDependency stays on 0.9.3 because that is the
  *    last published tarball npm can install — see the decision).
- *  - `0.18.0` — the release line since 2026-11-01. It carries the paged
- *    `/settings` screen from 0.17.0 (upstream #1619 — a plugin card declares
- *    its own `page`, which the host validates at register time), the native
- *    caret from 0.15.0, the panel-identity split (#1683/#1695) that made
- *    `sidePanel.panels` an exact set, and the DSH 0.2.1-rc.3–rc.5 validated
- *    line. Its only plugin-facing keyboard change is the side-panel paste
- *    routing (#1767/#1785): the keymap paste chord is dispatched to the active
- *    panel first and then swallowed, so a panel handler that types `input`
- *    must exclude ctrl/meta/super.
+ *  - `0.20.1` — the release line since 2026-11-15. It carries everything the
+ *    0.18.0 leg did (the paged `/settings` screen from 0.17.0 — upstream #1619,
+ *    a plugin card declares its own `page`, validated at register time — the
+ *    native caret from 0.15.0, the panel-identity split #1683/#1695, and the
+ *    side-panel paste routing #1767/#1785) PLUS the one addition the plugin
+ *    actually branches on: `ctx.tuiMentions` (upstream #1716), the composer's
+ *    `@` completion seam. That is why this leg is the default and 0.18.0 is
+ *    not (REVIEW R-229): with 0.18.0 pinned, `HOST_SUPPORTS_MENTIONS` was false
+ *    on every leg and CI never executed the admission test's mention branch.
+ *    Its DSH line is 0.2.2-rc.3.
  *
  *  Pre-0.13 hosts are no longer supported and no longer pinned: peer 下限抬到
  *  `>=0.13.0` 之后，0.9.3/0.10.1/0.12.0 的软探测 no-op 路径不再是对外承诺。
@@ -78,8 +79,11 @@ const PACKAGE = '@deepseek-harness-tui/dsh-tui'
  *  add `--host 0.15.0` when touching the cursor hook and `--host 0.16.1` when
  *  touching panel registration / persisted panel choices. The paged screen
  *  exists on 0.17.0+ (the current leg); the floor leg keeps the page-less shape
- *  honest (the extra field must stay inert there). */
-const DEFAULT_HOSTS = ['0.13.0', '0.18.0']
+ *  honest (the extra field must stay inert there). Add `--host 0.18.0` /
+ *  `--host 0.20.0` when touching the `@` provider: those legs predate
+ *  `ctx.tuiMentions` and are the only place the structural soft probe's
+ *  no-op posture is exercised against a real 0.19/0.20-shaped host. */
+const DEFAULT_HOSTS = ['0.13.0', '0.20.1']
 
 function parseArgs(argv) {
   const hosts = []

@@ -36,7 +36,7 @@ import type React from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from './config.js'
 import { t } from './i18n.js'
-import type { SessionScanner } from './core/scan.js'
+import type { ScannedSession, SessionScanner } from './core/scan.js'
 import { prewarmFolds, PREWARM_MAX_MESSAGES, PREWARM_MAX_MS } from './core/search.js'
 import { registerSeamWithRetry } from './seam.js'
 import type { SweepClaim, SweepGate } from './sweep-gate.js'
@@ -183,6 +183,12 @@ export interface WarmupDriverOptions {
    *  the seam tests that predate the panel keep the old behavior (this sweep
    *  is the only background one). */
   readonly gate?: SweepGate
+  /** The warm sweep landed: hand its decoded list to the other searchers on
+   *  this scanner (the composer's `@` provider). Without it the provider
+   *  cannot answer from a warm index and buys a second pass on a cold process
+   *  (REVIEW R-223). Never called for a sweep that was cancelled, superseded
+   *  or failed. */
+  readonly onSwept?: (sessions: readonly ScannedSession[]) => void
 }
 
 /**
@@ -284,6 +290,14 @@ export class WarmupDriver {
         // The scan already answered for an aborted or superseded run; the
         // prewarm must not start one that nobody is waiting for.
         if (this.superseded(controller)) return
+        // R-223: hand the decoded list to the other searchers on this scanner
+        // before the fold prewarm (which is about the SCENE's first keystroke,
+        // not theirs).
+        try {
+          this.options.onSwept?.(sessions)
+        } catch {
+          // Additive handoff: a receiver's failure changes nothing here.
+        }
         // A partial warm is the normal outcome of the budget: the search
         // simply builds the rest on demand (see prewarmFolds).
         return prewarmFolds(sessions, {

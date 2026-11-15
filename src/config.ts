@@ -87,6 +87,11 @@ export type Config = {
    *  panel's id to its own enable list on every registration, so this row is
    *  the only durable opt-out (see docs/decisions/2026-10-04-…§5). */
   panel?: boolean
+  /** Answer the composer's `@` completion popup with the plugin's own index
+   *  (dsh-TUI 0.20.1+). Default ON. OFF makes the provider inert: it stays
+   *  registered (nothing is persisted host-side, so there is nothing to opt
+   *  out of) but never answers and never spends a scan. */
+  mention?: boolean
   /** Case-sensitive matching. Default OFF (spec §6 freeze). */
   caseSensitive?: boolean
   /** Treat queries as JavaScript regular expressions by default. Default
@@ -144,6 +149,7 @@ export const LIVE_CONFIG_KEYS = [
   'layout',
   'workspacePane',
   'panel',
+  'mention',
   'caseSensitive',
   'regex',
   'pinyin',
@@ -262,6 +268,9 @@ const configFields = {
   // the host's own enable list re-appends a plugin id on every registration,
   // so this switch is the only DURABLE opt-out (see the decision file §5).
   panel: z.boolean().default(true),
+  // The composer's `@` provider (dsh-TUI 0.20.1+). OFF = the registered
+  // provider answers nothing, so the popup keeps showing files only.
+  mention: z.boolean().default(true),
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
   pinyin: z.boolean().default(true),
@@ -312,6 +321,9 @@ export interface ResolvedConfig {
   readonly workspacePane: boolean
   /** Register the sidebar panel (dsh-TUI 0.13.0+); false = never register. */
   readonly panel: boolean
+  /** Answer the composer's `@` popup with the plugin's index (0.20.1+);
+   *  false = the provider stays registered but always answers empty. */
+  readonly mention: boolean
   readonly caseSensitive: boolean
   readonly regex: boolean
   readonly pinyin: boolean
@@ -341,6 +353,7 @@ export function resolveConfig(raw: Config | undefined): ResolvedConfig {
     layout: value.layout === 'classic' ? 'classic' : 'split',
     workspacePane: value.workspacePane !== false,
     panel: value.panel !== false,
+    mention: value.mention !== false,
     caseSensitive: value.caseSensitive === true,
     regex: value.regex === true,
     pinyin: value.pinyin !== false,

@@ -49,6 +49,33 @@ const HOST_SUPPORTS_PANELS = (() => {
   return major > 0 || minor >= 13
 })()
 
+/** The composer `@` provider service arrived with 0.20.1; the dev baseline
+ *  (0.9.3) does not export the subpath, so the observation below only runs on
+ *  a matrix leg new enough to ship it. */
+const MENTIONS_SPECIFIER = '@deepseek-harness-tui/dsh-tui/extensions'
+const HOST_SUPPORTS_MENTIONS = (() => {
+  const [major = 0, minor = 0] = HOST_VERSION.split('.').map(part => Number.parseInt(part, 10))
+  return major > 0 || minor >= 20
+})()
+/** The service class, when this leg's package ships one. Resolved through the
+ *  version gate rather than a catch alone: an older package exports neither the
+ *  class nor the subpath, and a silent catch would hide a genuine import bug. */
+/** The slice of `TuiMentionRuntime` the probe below drives. `register` is the
+ *  only method plugins get; the duplicate-id refusal is the host's own
+ *  admission answer, which is exactly what proves a provider landed. */
+interface MentionSurfaceLike {
+  register(provider: {
+    id: string
+    title: string
+    complete(query: string, signal: AbortSignal): readonly never[]
+  }): () => void
+}
+
+const MENTIONS_PLUGIN = HOST_SUPPORTS_MENTIONS
+  ? ((await import(MENTIONS_SPECIFIER).catch(() => undefined)) as
+      | { TuiMentionRuntime?: { name: string; apply: (ctx: Context) => void } }
+      | undefined)?.TuiMentionRuntime
+  : undefined
 // These mounts activate the real plugin; keep the watermark journal off so
 // no test ever writes against the real ~/.dsh-tui tree.
 process.env['DSH_TUI_FIND_WATERMARK'] = 'off'
@@ -164,6 +191,11 @@ describe('mount integration (headless harness)', () => {
     // plugin's own register/whenSeamMounted path is then entered against the
     // host's actual validation and store, not the test suite's stand-in.
     if (PANELS_PLUGIN !== undefined) root.plugin(PANELS_PLUGIN)
+    // The composer's @ provider service (0.20.1+): mounting the REAL runtime
+    // puts the plugin's structural probe and its registration through the
+    // host's own admission (id grammar, title cells, budget) instead of a
+    // stand-in — the same reason the panel service is mounted above.
+    if (MENTIONS_PLUGIN !== undefined) root.plugin(MENTIONS_PLUGIN)
     await sleep(30)
     // Every tui runtime method is caller- and liveness-checked through the
     // service proxy, so verification runs inside the plugin's own apply —
@@ -206,6 +238,23 @@ describe('mount integration (headless harness)', () => {
             | { list(): Array<{ id: string; source?: string }> }
             | undefined
           observed.push(`panels=${panels?.list().map(panel => panel.id).join(',') ?? 'none'}`)
+          // R-217: "the service is mounted" proves nothing about OUR
+          // provider. Probe it the way the host itself would — a second
+          // registration of the same id must be refused with the duplicate
+          // error iff the plugin's provider actually landed.
+          const mentions = ctx.get('tuiMentions', false) as MentionSurfaceLike | undefined
+          if (MENTIONS_PLUGIN === undefined) observed.push('mentions=unsupported')
+          else if (typeof mentions?.register !== 'function') observed.push('mentions=missing')
+          else {
+            try {
+              const dispose = mentions.register({ id: 'dsh-tui-find', title: 'probe', complete: () => [] })
+              dispose()
+              observed.push('mentions=NOT-REGISTERED')
+            } catch (error) {
+              const text = error instanceof Error ? error.message : String(error)
+              observed.push(`mentions=${text.includes('already registered') ? 'registered' : `error:${text}`}`)
+            }
+          }
         } catch (error) {
           observed.push(`error=${(error as Error).message}`)
         }
@@ -219,6 +268,17 @@ describe('mount integration (headless harness)', () => {
     expect(observed.some(o => o.startsWith('sections=') && o.includes('dsh-tui-find'))).toBe(true)
     expect(observed).toContain('groups=matching,indexing,advanced')
     expect(observed).toContain('page=dsh-tui-find')
+    if (HOST_SUPPORTS_MENTIONS) {
+      // R-217: the probe registers the SAME id the plugin uses and requires
+      // the host's duplicate refusal — that fires only if the plugin's
+      // provider is in the host's map. "The service exists" would pass even
+      // with the plugin's registration deleted.
+      expect(observed).toContain('mentions=registered')
+    } else {
+      // Older legs: the seam is genuinely absent, and the plugin must not have
+      // invented one (the structural probe's no-op posture).
+      expect(observed).toContain('mentions=unsupported')
+    }
     if (PANELS_PLUGIN !== undefined) {
       // The descriptor cleared the host's own register() validation and the
       // host assigned the panel its prefixed id — the "panel missing" real-

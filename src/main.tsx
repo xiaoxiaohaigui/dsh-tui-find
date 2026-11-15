@@ -50,6 +50,7 @@ import { SessionScanner } from './core/scan.js'
 import { sceneKeyShadow } from './entry-shadow.js'
 import { dict, setLangOverride, t } from './i18n.js'
 import { makeNotifier } from './notify.js'
+import { registerMentionProvider, MentionRegistration, type MentionIndex } from './mention.js'
 import { registerFindPanel, FindPanelRegistration } from './panel.js'
 import { FindPanelDriver } from './panel-model.js'
 import { FindScene, type SceneSeed } from './scene.js'
@@ -204,6 +205,12 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   let applyPanelToggle: ((enabled: boolean) => void) | undefined
 
   /**
+   * The live `mention` row switch, same reason: the settings callback below
+   * is registered outside setupScenes' scope.
+   */
+  let applyMentionToggle: ((enabled: boolean) => void) | undefined
+
+  /**
    * The combo the host actually ACCEPTED for the global entry (undefined
    * while the entry is off), maintained by `bindShortcut` below and read by
    * the scene at render time.
@@ -270,12 +277,18 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     // are single-tenant, so the two background-ish sweepers take turns — the
     // user-facing panel outranks the opportunistic warm-up.
     const gate = new SweepGate()
+    // The composer's `@` provider index, declared before the driver because
+    // the driver's settle hands its list straight over (R-223): a panel sweep
+    // already decoded everything, so the first `@` of a cold process must not
+    // buy a second pass just to answer one keystroke.
+    let mentionIndex: MentionIndex | undefined
     const driver = new FindPanelDriver({
       scanner,
       config: () => runtimeConfig,
       isSceneOpen,
       gate,
       openScene: seed => openSceneWith(seed),
+      onSettledSweep: sessions => mentionIndex?.adopt(sessions),
     })
     // Visible to the shared scene opener above, so `/find` and the global
     // shortcut can make the panel's sweep stand down.
@@ -340,6 +353,20 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       )
     }
 
+    // The composer's `@` completion provider (dsh-TUI 0.20.1+): answers from
+    // the same scanner, so the mention popup and /find agree about what
+    // exists. The `mention` row is live and its OFF half RELEASES the host
+    // registration (MentionRegistration → MentionHandle), so a disabled row
+    // leaves no provider behind for the composer to ask on every keystroke.
+    const mentionRegistration = new MentionRegistration(() => {
+      const handle = registerMentionProvider(ctx, { scanner, config: () => runtimeConfig, isSceneOpen })
+      mentionIndex = handle.index
+      return handle
+    })
+    mentionRegistration.sync(runtimeConfig.mention)
+    applyMentionToggle = enabled => mentionRegistration.sync(enabled)
+    ctx.effect(() => () => mentionRegistration.dispose())
+
     // Background warm-up index (batch 4): one delayed sweep on the SAME
     // scanner, so the first /find open pays per-file stats instead of the
     // cold decode. Progress rides tuiStatus.registerView when the host has
@@ -355,6 +382,9 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       // through the scene-open path (让位), not through this probe.
       isSceneOpen,
       gate,
+      // R-223: the same handoff the panel driver performs — whichever
+      // background sweep lands first seeds the @ provider's index.
+      onSwept: sessions => mentionIndex?.adopt(sessions),
     })
   }
   whenSeamMounted(ctx, 'tuiScenes', () => ctx.get('tuiScenes', false), setupScenes)
@@ -627,6 +657,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
       // The sidebar panel is the other live surface knob: turning it off must
       // unregister (and, per the row's contract, never come back on its own).
       applyPanelToggle?.(next.panel)
+      applyMentionToggle?.(next.mention)
     },
   })
 }

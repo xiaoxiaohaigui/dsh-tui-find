@@ -63,6 +63,7 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
       layout: 'split',
       workspacePane: true,
       panel: true,
+      mention: true,
       caseSensitive: false,
       regex: false,
       pinyin: true,
@@ -86,6 +87,16 @@ describe('resolveConfig — schema defaults stay in sync with the defensive laye
     expect(resolveConfig({ workspacePane: false }).workspacePane).toBe(false)
     expect(resolveConfig({ workspacePane: 'no' as never }).workspacePane).toBe(true)
     expect(LIVE_CONFIG_KEYS).toContain('workspacePane')
+  })
+
+  it('mention defaults on and only an explicit false disables it', () => {
+    // The composer's @ provider answers by default (the row is inert, not
+    // unregistered, so "off" must never leak a half state).
+    expect(resolveConfig({}).mention).toBe(true)
+    expect(resolveConfig({ mention: true }).mention).toBe(true)
+    expect(resolveConfig({ mention: false }).mention).toBe(false)
+    expect(resolveConfig({ mention: 'no' as never }).mention).toBe(true)
+    expect(LIVE_CONFIG_KEYS).toContain('mention')
   })
 
   it('warmup defaults on and only an explicit false disables it', () => {
